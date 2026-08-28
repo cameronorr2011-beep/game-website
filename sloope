@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>SLOPE — Neon Runner</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#000308;touch-action:none;
+    font-family:'Courier New',monospace;user-select:none;-webkit-user-select:none}
+  canvas{display:block}
+  #hud{position:fixed;top:14px;left:18px;color:#0f6;font-size:30px;letter-spacing:2px;
+    text-shadow:0 0 8px #0f6,0 0 26px #0f6;display:none;z-index:5;pointer-events:none}
+  #hud small{display:block;font-size:14px;color:#0fa;opacity:.75;margin-top:4px}
+  .overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;z-index:10;text-align:center;color:#fff;
+    background:radial-gradient(ellipse at center,rgba(0,25,12,.55),rgba(0,3,8,.93))}
+  .overlay h1{font-size:min(18vw,110px);margin:0;letter-spacing:.15em;
+    color:#0f6;text-shadow:0 0 10px #0f6,0 0 40px #0f6,0 0 90px #0c3}
+  .overlay p{color:#8fc;margin:12px 0 0;font-size:16px;letter-spacing:1px}
+  .stat{font-size:24px;margin:6px 0}
+  .blink{animation:bl 1.2s infinite}@keyframes bl{50%{opacity:.2}}
+  #over{display:none}
+  #over h1{color:#f33;text-shadow:0 0 10px #f33,0 0 40px #f33,0 0 90px #900}
+</style>
+</head>
+<body>
+<div id="hud"><span id="hudScore">0</span><small>BEST <span id="hudBest">0</span></small></div>
+<div id="menu" class="overlay">
+  <h1>SLOPE</h1>
+  <p>← → / A D &nbsp;·&nbsp; or drag to steer &nbsp;·&nbsp; dodge red, don't fall</p>
+  <p class="blink">CLICK OR PRESS SPACE TO START</p>
+</div>
+<div id="over" class="overlay">
+  <h1>GAME OVER</h1>
+  <div class="stat">SCORE&nbsp; <span id="final">0</span></div>
+  <div class="stat" style="color:#0f6">BEST&nbsp; <span id="bestEl">0</span></div>
+  <p class="blink">CLICK OR PRESS SPACE TO RETRY</p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ================= SCENE ================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x000308);
+scene.fog = new THREE.Fog(0x000308, 18, 105);
+
+const camera = new THREE.PerspectiveCamera(72, innerWidth/innerHeight, .1, 500);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// The whole track lives in a tilted group => it actually dives downhill
+const world = new THREE.Group();
+world.rotation.x = -0.12;
+scene.add(world);
+
+scene.add(new THREE.AmbientLight(0x334455));
+const dl = new THREE.DirectionalLight(0xffffff, .7);
+dl.position.set(6,12,4); scene.add(dl);
+
+// Parallax starfield (ignores fog so it stays visible)
+const sp = [];
+for(let i=0;i<420;i++) sp.push((Math.random()-.5)*300, Math.random()*90-30, -Math.random()*340+20);
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.Float32BufferAttribute(sp,3));
+const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({color:0x77bbff, size:.7, fog:false, transparent:true, opacity:.8}));
+scene.add(stars);
+
+/* ================= CONSTANTS / SHARED ================= */
+const TILE=4, COLS=3, ROWS=8;
+const TRACK_W = TILE*COLS, CHUNK_LEN = TILE*ROWS, H = CHUNK_LEN/2, N_CHUNKS = 11;
+const BALL_R = .55, MAXV = 22, ACC = 95;
+
+const tileGeo = new THREE.BoxGeometry(TILE-.18, .6, TILE-.18);
+const tileMat = new THREE.MeshLambertMaterial({color:0x0e1622});
+const obsGeo  = new THREE.BoxGeometry(1.6,1.6,1.6);
+const obsMat  = new THREE.MeshLambertMaterial({color:0xff1133, emissive:0x770011});
+const obsWire = new THREE.MeshBasicMaterial({color:0xff5566, wireframe:true});
+const railGeo = new THREE.BoxGeometry(.18,.3,CHUNK_LEN);
+const railMat = new THREE.MeshBasicMaterial({color:0x00ffcc});
+const trailGeo= new THREE.SphereGeometry(.42,10,8);
+const partGeo = new THREE.SphereGeometry(.14,6,5);
+
+/* ================= BALL ================= */
+const ball = new THREE.Group();
+const coreMat = new THREE.MeshPhongMaterial({color:0x00ff88, emissive:0x00aa44, shininess:90});
+ball.add(new THREE.Mesh(new THREE.SphereGeometry(BALL_R,24,18), coreMat));
+const glow = new THREE.Mesh(new THREE.SphereGeometry(BALL_R+.06,12,8),
+  new THREE.MeshBasicMaterial({color:0x88ffcc, wireframe:true, transparent:true, opacity:.45}));
+ball.add(glow);
+const bLight = new THREE.PointLight(0x00ff88, 1.4, 26);
+bLight.position.set(0,1.5,0); ball.add(bLight);
+ball.position.set(0, BALL_R, 0);
+world.add(ball);
+
+// trail
+const TRAIL_N = 26, trail = [], hist = [];
+for(let i=0;i<TRAIL_N;i++){
+  const t = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({color:0x00ff88, transparent:true, opacity:.3*(1-i/TRAIL_N)}));
+  t.scale.setScalar(.9*(1-i/TRAIL_N)+.1);
+  world.add(t); trail.push(t);
+}
+
+/* ================= TRACK CHUNKS ================= */
+let chunks = [];
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const difficulty = () => {
+  const s = Math.floor(distance/2);
+  return { holeP: Math.min(.10 + s*.00045, .55),
+           obsP:  Math.min(.16 + s*.00055, .75) };
+};
+
+function makeChunk(z, safe){
+  const g = new THREE.Group();
+  g.position.z = z;
+  const chunk = {g, z, holes:new Set(), obstacles:[]};
+  const d = difficulty();
+
+  for(let r=0;r<ROWS;r++){
+    // holes in the floor
+    const hr = [];
+    if(!safe && Math.random() < d.holeP){
+      hr.push(Math.floor(Math.random()*COLS));
+      if(Math.random() < d.holeP*.45){
+        const c2 = Math.floor(Math.random()*COLS);
+        if(!hr.includes(c2)) hr.push(c2);
+      }
+    }
+    hr.forEach(c => chunk.holes.add(c+','+r));
+
+    for(let c=0;c<COLS;c++){
+      if(chunk.holes.has(c+','+r)) continue;
+      const m = new THREE.Mesh(tileGeo, tileMat);
+      m.position.set((c-(COLS-1)/2)*TILE, -.3, (r-(ROWS-1)/2)*TILE);
+      g.add(m);
+    }
+    // red obstacles
+    if(!safe && Math.random() < d.obsP){
+      const free = [];
+      for(let c=0;c<COLS;c++) if(!chunk.holes.has(c+','+r)) free.push(c);
+      if(free.length){
+        const c = free[Math.floor(Math.random()*free.length)];
+        const o = new THREE.Mesh(obsGeo, obsMat);
+        const w = new THREE.Mesh(obsGeo, obsWire); w.scale.setScalar(1.03); o.add(w);
+        o.position.set((c-(COLS-1)/2)*TILE + (Math.random()*1.4-.7), .8,
+                       (r-(ROWS-1)/2)*TILE + (Math.random()*1.6-.8));
+        g.add(o);
+        chunk.obstacles.push({x:o.position.x, zLocal:o.position.z});
+      }
+    }
+  }
+  // neon rails
+  [-1,1].forEach(s=>{
+    const rail = new THREE.Mesh(railGeo, railMat);
+    rail.position.set(s*(TRACK_W/2+.09), .05, 0);
+    g.add(rail);
+  });
+  world.add(g);
+  chunks.push(chunk);
+}
+
+function moveWorld(dt){
+  for(let i=chunks.length-1;i>=0;i--){
+    const ch = chunks[i];
+    ch.z += speed*dt;
+    ch.g.position.z = ch.z;
+    if(ch.z > H+8){ world.remove(ch.g); chunks.splice(i,1); }
+  }
+  let minZ = Infinity;
+  chunks.forEach(c => minZ = Math.min(minZ, c.z));
+  while(chunks.length < N_CHUNKS){ makeChunk(minZ-CHUNK_LEN, false); minZ -= CHUNK_LEN; }
+  stars.rotation.y += .008*dt;
+}
+
+/* ================= PARTICLES ================= */
+let parts = [];
+function burst(x,y,z){
+  for(let i=0;i<30;i++){
+    const m = new THREE.Mesh(partGeo, new THREE.MeshBasicMaterial({
+      color: Math.random()<.6 ? 0x00ff88 : 0xff3355, transparent:true}));
+    m.position.set(x,y,z);
+    m.userData.v = new THREE.Vector3((Math.random()-.5)*15, Math.random()*11, (Math.random()-.5)*15);
+    m.userData.life = .9 + Math.random()*.4;
+    world.add(m); parts.push(m);
+  }
+}
+function updateParts(dt){
+  for(let i=parts.length-1;i>=0;i--){
+    const p = parts[i], u = p.userData;
+    u.life -= dt;
+    if(u.life<=0){ world.remove(p); p.material.dispose(); parts.splice(i,1); continue; }
+    u.v.y -= 25*dt;
+    p.position.addScaledVector(u.v, dt);
+    p.material.opacity = Math.min(1, u.life*1.6);
+    p.scale.setScalar(Math.max(.05, u.life));
+  }
+}
+
+/* ================= AUDIO ================= */
+let AC = null;
+function beep(f0,f1,dur,type='sawtooth',vol=.22){
+  if(!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(f0, AC.currentTime);
+  o.frequency.exponentialRampToValueAtTime(Math.max(1,f1), AC.currentTime+dur);
+  g.gain.setValueAtTime(vol, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001, AC.currentTime+dur);
+  o.connect(g).connect(AC.destination);
+  o.start(); o.stop(AC.currentTime+dur);
+}
+
+/* ================= STATE / UI ================= */
+let state='menu', speed=6, vx=0, vy=0, falling=false, distance=0, elapsed=0, shake=0;
+let best = +(localStorage.getItem('slopeBest')||0);
+const $ = id => document.getElementById(id);
+$('hudBest').textContent = best;
+
+function startGame(){
+  AC = AC || new (window.AudioContext||window.webkitAudioContext)();
+  chunks.forEach(c=>world.remove(c.g)); chunks=[];
+  parts.forEach(p=>{world.remove(p); p.material.dispose();}); parts=[];
+  hist.length = 0;
+  for(let i=0;i<N_CHUNKS;i++) makeChunk(-i*CHUNK_LEN, i<3);
+  ball.position.set(0, BALL_R, 0); ball.rotation.set(0,0,0);
+  coreMat.emissive.setHex(0x00aa44);
+  vx=vy=0; falling=false; distance=0; elapsed=0; shake=0;
+  state='playing';
+  $('menu').style.display='none'; $('over').style.display='none'; $('hud').style.display='block';
+  $('hudBest').textContent = best;
+  beep(320,660,.14,'square',.12);
+}
+function gameOver(){
+  state='over';
+  const s = Math.floor(distance/2);
+  if(s>best){ best=s; localStorage.setItem('slopeBest', best); }
+  $('final').textContent = s; $('bestEl').textContent = best;
+  $('over').style.display='flex';
+}
+
+/* ================= INPUT ================= */
+const keys = {l:false, r:false};
+const pointer = {active:false, nx:0};
+addEventListener('keydown', e=>{
+  if(e.code==='ArrowLeft'||e.code==='KeyA') keys.l=true;
+  if(e.code==='ArrowRight'||e.code==='KeyD') keys.r=true;
+  if(e.code==='Space'){ e.preventDefault(); if(state!=='playing') startGame(); }
+});
+addEventListener('keyup', e=>{
+  if(e.code==='ArrowLeft'||e.code==='KeyA') keys.l=false;
+  if(e.code==='ArrowRight'||e.code==='KeyD') keys.r=false;
+});
+renderer.domElement.addEventListener('pointerdown', e=>{
+  if(state!=='playing'){ startGame(); return; }
+  pointer.active = true; pointer.nx = (e.clientX/innerWidth)*2-1;
+});
+addEventListener('pointermove', e=>{ if(pointer.active) pointer.nx = (e.clientX/innerWidth)*2-1; });
+addEventListener('pointerup', ()=> pointer.active=false);
+
+/* ================= GAME LOGIC ================= */
+function steer(dt){
+  if(pointer.active){
+    vx += (pointer.nx*MAXV - vx) * Math.min(1, 10*dt);
+  } else {
+    vx += ((keys.r?1:0)-(keys.l?1:0)) * ACC * dt;
+    vx *= Math.exp(-2.2*dt);
+  }
+  vx = clamp(vx, -MAXV, MAXV);
+}
+
+function ballStep(dt){
+  ball.rotation.x -= speed*dt/1.6;
+  ball.rotation.z -= vx*dt/1.6;
+
+  if(falling){
+    vy -= 32*dt;
+    ball.position.y += vy*dt;
+    ball.position.x += vx*dt;
+    if(ball.position.y < -9){ falling=false; beep(200,40,.6,'sawtooth',.3); gameOver(); }
+    return;
+  }
+
+  ball.position.x += vx*dt;
+  const bx = ball.position.x;
+
+  // on-track / hole / edge check
+  let onTrack = false;
+  if(Math.abs(bx) <= TRACK_W/2 - BALL_R*.3){
+    for(const ch of chunks){
+      const lz = -(ch.z - H);
+      if(lz >= 0 && lz < CHUNK_LEN){
+        const col = Math.floor((bx + TRACK_W/2)/TILE);
+        const row = Math.floor(lz/TILE);
+        onTrack = !ch.holes.has(col+','+row);
+        break;
+      }
+    }
+  }
+  if(!onTrack){ falling = true; vy = 1.5; beep(500,70,.7,'triangle',.28); return; }
+
+  // sphere-vs-box collision with obstacles
+  for(const ch of chunks){
+    if(Math.abs(ch.z) > H+2) continue;
+    for(const o of ch.obstacles){
+      const oz = ch.z + o.zLocal;
+      if(Math.abs(oz) > 2.2) continue;
+      const cx = clamp(bx, o.x-.8, o.x+.8);
+      const cy = clamp(ball.position.y, 0, 1.6);
+      const cz = clamp(0, oz-.8, oz+.8);
+      const dx = bx-cx, dy = ball.position.y-cy, dz = -cz;
+      if(dx*dx+dy*dy+dz*dz < BALL_R*BALL_R*.85){
+        shake = 1;
+        coreMat.emissive.setHex(0xaa0033);
+        burst(ball.position.x, ball.position.y, 0);
+        beep(180,40,.5);
+        gameOver();
+        return;
+      }
+    }
+  }
+}
+
+function updateTrail(){
+  hist.unshift(ball.position.clone());
+  if(hist.length > TRAIL_N*2) hist.pop();
+  for(let i=0;i<TRAIL_N;i++){
+    trail[i].position.copy(hist[Math.min(hist.length-1, i*2)]);
+  }
+}
+
+function updateCamera(){
+  const sx = (Math.random()-.5)*shake, sy = (Math.random()-.5)*shake;
+  camera.position.x += (ball.position.x*.45 + sx - camera.position.x)*.15;
+  camera.position.y = 4.6 + sy;
+  camera.position.z = 8;
+  camera.lookAt(ball.position.x*.6, -3.2, -12);
+}
+
+/* ================= LOOP (delta-time) ================= */
+const clock = new THREE.Clock();
+(function tick(){
+  requestAnimationFrame(tick);
+  const dt = Math.min(clock.getDelta(), .05);
+
+  if(state==='playing'){
+    elapsed += dt;
+    speed = Math.min(17 + elapsed*.4, 46);
+    steer(dt);
+    ballStep(dt);
+    moveWorld(dt);
+    if(state==='playing'){
+      distance += speed*dt;
+      $('hudScore').textContent = Math.floor(distance/2);
+    }
+  } else if(state==='menu'){
+    speed = 6;
+    moveWorld(dt);
+    ball.rotation.x -= speed*dt/1.6;
+  } else if(falling){
+    ballStep(dt); // let the fall finish behind the game-over screen
+  }
+
+  updateParts(dt);
+  updateTrail();
+  shake *= Math.exp(-4*dt);
+  updateCamera();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
