@@ -1,9 +1,57 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Neon Descent — Orr Gamz</title><meta name="description" content="Race down a procedurally generated neon track in Neon Descent."><link rel="stylesheet" href="../css/style.css"></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slope — Orr Gamz</title>
+  <meta name="description" content="Play Slope, an endless neon downhill runner from Orr Gamz.">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
 <body class="runner-page">
-<header class="site-header"><a class="logo" href="../index.html"><span>ORR</span> GAMZ</a><nav><a href="../games.html">Games</a><a href="../leaderboards.html">Leaderboards</a></nav></header>
-<div class="ad-slot"><!-- BEGIN AADS AD UNIT 2453581 --><div id="frame" style="width: 100%;margin: auto;position: relative; z-index: 99998;"><iframe data-aa="2453581" src="//acceptable.a-ads.com/2453581/?size=Adaptive" style="border:0;padding:0;width:70%;height:auto;overflow:hidden;display:block;margin:auto" title="Advertisement"></iframe></div><!-- END AADS AD UNIT 2453581 --></div>
-<main class="section runner-game"><p class="eyebrow">PROCEDURAL DOWNHILL RUNNER</p><h1>Neon Descent</h1><p class="lede">Steer the glowing core through an endless futuristic drop. The track accelerates forever.</p>
-<div class="runner-shell"><div class="runner-hud"><span>SCORE <b id="runnerScore">0</b></span><span>BEST <b id="runnerBest">0</b></span><span>SPEED <b id="runnerSpeed">90</b></span><span>DISTANCE <b id="runnerDistance">0</b>m</span><span>COMBO <b id="runnerCombo">x1</b></span></div><canvas id="slopeCanvas" width="960" height="540" aria-label="Neon Descent downhill runner canvas"></canvas><div class="runner-actions"><button class="btn btn-primary" id="runnerPlay">PLAY</button><button class="btn btn-ghost" id="runnerPause">PAUSE</button><button class="btn btn-ghost" id="runnerRestart">RESTART</button><button class="btn btn-ghost" id="runnerSettings">SETTINGS</button></div><div class="touch-steering"><button class="touch-control" id="steerLeft" aria-label="Steer left">◀</button><button class="touch-control" id="steerRight" aria-label="Steer right">▶</button></div></div><p class="hint">A/D or arrow keys steer. On mobile, hold the left or right controls. Avoid red hazards and stay on the neon track.</p><p class="runner-options"><button class="text-link" id="runnerReduce" type="button">Toggle reduced effects</button> · High score: <b id="runnerHigh">0</b></p></main>
-<footer><a class="logo" href="../index.html"><span>ORR</span> GAMZ</a><p>Stay centered. Go faster.</p></footer><script src="../js/slope-runner.js"></script></body></html>
+  <header class="site-header">
+    <a class="logo" href="../index.html"><span>ORR</span> GAMZ</a>
+    <nav aria-label="Primary"><a href="../games.html">Games</a><a href="../leaderboards.html">Leaderboards</a></nav>
+  </header>
+
+  <div class="ad-slot">
+    <!-- BEGIN AADS AD UNIT 2453581 -->
+
+    <div id="frame" style="width: 100%;margin: auto;position: relative; z-index: 99998;">
+              <iframe data-aa='2453581' src='//acceptable.a-ads.com/2453581/?size=Adaptive'
+                                style='border:0; padding:0; width:70%; height:auto; overflow:hidden;display: block;margin: auto'></iframe>
+            </div>
+
+    <!-- END AADS AD UNIT 2453581 -->
+  </div>
+
+  <main class="section runner-game">
+    <p class="eyebrow">ENDLESS / ARCADE RUNNER</p>
+    <h1>Slope</h1>
+    <p class="lede">Roll down the endless neon slope, dodge red obstacles and survive as the track accelerates.</p>
+
+    <div class="runner-shell">
+      <div class="runner-hud" aria-live="polite">
+        <span>SCORE <b id="runnerScore">0</b></span>
+        <span>BEST <b id="runnerBest">0</b></span>
+        <span>SPEED <b id="runnerSpeed">1.0x</b></span>
+        <span>DISTANCE <b id="runnerDistance">0</b>m</span>
+      </div>
+      <canvas id="slopeCanvas" width="960" height="540" aria-label="Slope endless downhill runner"></canvas>
+      <div class="runner-actions">
+        <button class="btn btn-primary" id="runnerPlay" type="button">PLAY</button>
+        <button class="btn btn-ghost" id="runnerPause" type="button">PAUSE</button>
+        <button class="btn btn-ghost" id="runnerRestart" type="button">RESTART</button>
+      </div>
+      <div class="touch-steering" aria-label="Touch steering">
+        <button class="touch-control" id="steerLeft" type="button" aria-label="Steer left">◀</button>
+        <button class="touch-control" id="steerRight" type="button" aria-label="Steer right">▶</button>
+      </div>
+    </div>
+    <p class="hint">Use A/D or the arrow keys to steer. On mobile, hold a steering button. Press Space to start or restart, and P to pause.</p>
+    <p class="runner-options">High score is saved locally in this browser: <b id="runnerHigh">0</b></p>
+  </main>
+
+  <footer><a class="logo" href="../index.html"><span>ORR</span> GAMZ</a><p>Stay centered. Go faster.</p></footer>
+  <script src="../js/slope-runner.js"></script>
+</body>
+</html>

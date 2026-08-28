@@ -1,15 +1,224 @@
-(function(){'use strict';
-var canvas=document.getElementById('slopeCanvas');if(!canvas)return;var ctx=canvas.getContext('2d');if(!ctx)return;
-var W=960,H=540,state='menu',left=false,right=false,last=0,z=0,x=0,vx=0,speed=8,score=0,best=0,dead=false,shake=0,objects=[],particles=[];
-try{best=Number(localStorage.getItem('neon-descent-best')||0)}catch(e){}
-function q(id){return document.getElementById(id)}function save(){try{localStorage.setItem('neon-descent-best',String(best))}catch(e){}}
-function reset(){state='playing';z=0;x=0;vx=0;speed=8;score=0;dead=false;shake=0;objects=[];particles=[];for(var i=0;i<45;i++)objects.push({z:300+i*180+Math.random()*80,x:(Math.random()-.5)*300,type:Math.random()<.2?'gap':'block'});ui()}
-function ui(){q('runnerScore').textContent=Math.floor(score);q('runnerBest').textContent=best;q('runnerSpeed').textContent=Math.floor(speed*12);q('runnerDistance').textContent=Math.floor(z/10);q('runnerCombo').textContent='x'+Math.max(1,Math.floor(speed/8))}
-function crash(){state='over';best=Math.max(best,Math.floor(score));save();shake=12;for(var i=0;i<22;i++)particles.push({x:x,y:0,vx:(Math.random()-.5)*240,vy:(Math.random()-.5)*240,life:1})}
-function project(px,py,pz){var d=pz-z;if(d<20)return null;var scale=650/d;return{x:W/2+(px-x)*scale,y:270+py*scale,s:scale}}
-function update(dt){if(state!=='playing'){particles.forEach(function(p){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt});particles=particles.filter(function(p){return p.life>0});return}var steer=(right?1:0)-(left?1:0);vx+=steer*680*dt;vx*=Math.pow(.002,dt);x+=vx*dt;z+=speed*60*dt;speed=Math.min(26,speed+dt*.18);if(Math.abs(x)>175){crash();return}objects.forEach(function(o){if(o.hit||Math.abs(o.z-z)>35)return;if(Math.abs(o.x-x)<(o.type==='gap'?48:38)){o.hit=true;crash()}});if(z>objects[objects.length-1].z-80)for(var i=0;i<12;i++)objects.push({z:objects[objects.length-1].z+180+i*180+Math.random()*80,x:(Math.random()-.5)*300,type:Math.random()<.22?'gap':'block'});if(Math.random()<dt*speed*.8)particles.push({x:x,y:0,z:z+20,vx:0,vy:0,life:.7});ui()}
-function draw(){var g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#17265c');g.addColorStop(.55,'#080e2b');g.addColorStop(1,'#02030b');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);var horizon=265;ctx.strokeStyle='#42f5d044';for(var i=0;i<12;i++){var yy=horizon+Math.pow(i/11,2)*275;ctx.beginPath();ctx.moveTo(0,yy);ctx.lineTo(W,yy);ctx.stroke()}for(var j=-8;j<=8;j++){ctx.beginPath();ctx.moveTo(W/2+j*18,horizon);ctx.lineTo(W/2+j*100,H);ctx.stroke()}ctx.fillStyle='#111b3a';ctx.beginPath();ctx.moveTo(W/2-210,horizon);ctx.lineTo(W/2+210,horizon);ctx.lineTo(W+160,H);ctx.lineTo(-160,H);ctx.closePath();ctx.fill();ctx.strokeStyle='#42f5d0';ctx.shadowBlur=14;ctx.shadowColor='#42f5d0';ctx.beginPath();ctx.moveTo(W/2-210,horizon);ctx.lineTo(-160,H);ctx.moveTo(W/2+210,horizon);ctx.lineTo(W+160,H);ctx.stroke();ctx.shadowBlur=0;objects.forEach(function(o){var p=project(o.x,0,o.z);if(!p||p.x<-80||p.x>W+80)return;var h=Math.max(8,p.s*45),w=Math.max(8,p.s*(o.type==='gap'?75:48));ctx.save();ctx.translate(p.x,p.y);if(o.type==='gap'){ctx.strokeStyle='#ff4f70';ctx.lineWidth=Math.max(2,p.s*5);ctx.strokeRect(-w/2,-3,w,6)}else{ctx.fillStyle='#ff4f70';ctx.shadowBlur=20;ctx.shadowColor='#ff4f70';ctx.fillRect(-w/2,-h,w,h)}ctx.restore()});var px=W/2,py=H-90;ctx.save();ctx.translate(px,py);ctx.rotate(vx/500);ctx.fillStyle='#65f5ff';ctx.shadowBlur=28;ctx.shadowColor='#65f5ff';ctx.beginPath();ctx.arc(0,0,22,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(-7,-8,6,0,Math.PI*2);ctx.fill();ctx.restore();particles.forEach(function(p){ctx.globalAlpha=p.life;ctx.fillStyle='#65f5ff';ctx.fillRect(W/2+p.x,py-p.y,4,4)});ctx.globalAlpha=1;ctx.fillStyle='#fff';ctx.font='bold 18px monospace';ctx.fillText('NEON DESCENT',24,32);if(state!=='playing'){ctx.fillStyle='#050817dd';ctx.fillRect(0,0,W,H);ctx.textAlign='center';ctx.fillStyle='#65f5ff';ctx.font='bold 44px sans-serif';ctx.fillText(state==='menu'?'NEON DESCENT':state==='over'?'GAME OVER':'PAUSED',W/2,185);ctx.fillStyle='#fff';ctx.font='18px monospace';ctx.fillText(state==='menu'?'Press PLAY or Space to start':state==='over'?'Score '+Math.floor(score)+' · Press RESTART':'Press Pause to resume',W/2,230);ctx.textAlign='left'}}
-function frame(t){var dt=Math.min(.033,(t-last)/1000||0);last=t;update(dt);draw();requestAnimationFrame(frame)}
-function hold(button,prop){var b=q(button);if(!b)return;b.addEventListener('pointerdown',function(e){e.preventDefault();window[prop]=true});['pointerup','pointercancel','pointerleave'].forEach(function(n){b.addEventListener(n,function(){window[prop]=false})})}
-hold('steerLeft','left');hold('steerRight','right');q('runnerPlay').onclick=reset;q('runnerRestart').onclick=reset;q('runnerPause').onclick=function(){if(state==='playing')state='paused';else if(state==='paused')state='playing'};q('runnerSettings').onclick=function(){alert('Controls: A/D or arrow keys. Mobile: hold the steering buttons. Graphics and sound are optimized for browser play.')};q('runnerReduce').onclick=function(){settings.reduced=!settings.reduced;save()};document.addEventListener('keydown',function(e){if(e.code==='ArrowLeft'||e.code==='KeyA')left=true;if(e.code==='ArrowRight'||e.code==='KeyD')right=true;if(e.code==='Space'&&state!=='playing')reset();if(e.code==='KeyP')q('runnerPause').click()});document.addEventListener('keyup',function(e){if(e.code==='ArrowLeft'||e.code==='KeyA')left=false;if(e.code==='ArrowRight'||e.code==='KeyD')right=false});requestAnimationFrame(frame);
-})();
+(function () {
+  'use strict';
+
+  var canvas = document.getElementById('slopeCanvas');
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  var W = canvas.width;
+  var H = canvas.height;
+  var state = 'menu';
+  var left = false;
+  var right = false;
+  var last = 0;
+  var distance = 0;
+  var score = 0;
+  var best = 0;
+  var speed = 9;
+  var playerX = 0;
+  var velocityX = 0;
+  var obstacles = [];
+  var particles = [];
+  var reduced = false;
+  var storageKey = 'orr-slope-save';
+
+  function get(id) { return document.getElementById(id); }
+
+  try {
+    var saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    best = Number(saved.best) || 0;
+  } catch (error) {}
+
+  function save() {
+    try { localStorage.setItem(storageKey, JSON.stringify({ best: best })); } catch (error) {}
+  }
+
+  function updateHud() {
+    get('runnerScore').textContent = Math.floor(score);
+    get('runnerBest').textContent = Math.floor(best);
+    get('runnerHigh').textContent = Math.floor(best);
+    get('runnerSpeed').textContent = (speed / 9).toFixed(1) + 'x';
+    get('runnerDistance').textContent = Math.floor(distance / 10);
+  }
+
+  function makeObstacle(z) {
+    return { z: z, x: (Math.random() - 0.5) * 290, width: 34 + Math.random() * 25, hit: false };
+  }
+
+  function start() {
+    state = 'playing';
+    distance = 0;
+    score = 0;
+    speed = 9;
+    playerX = 0;
+    velocityX = 0;
+    obstacles = [];
+    particles = [];
+    for (var i = 0; i < 32; i++) obstacles.push(makeObstacle(260 + i * 190 + Math.random() * 90));
+    updateHud();
+  }
+
+  function finish() {
+    state = 'over';
+    best = Math.max(best, Math.floor(score));
+    save();
+    for (var i = 0; i < 26; i++) particles.push({ x: playerX, y: H - 102, vx: (Math.random() - 0.5) * 260, vy: -Math.random() * 220, life: 1 });
+    updateHud();
+  }
+
+  function project(obstacle) {
+    var depth = obstacle.z - distance;
+    if (depth < 18) return null;
+    var scale = 650 / depth;
+    return { x: W / 2 + (obstacle.x - playerX * 0.3) * scale, y: 270 + scale * 2, scale: scale };
+  }
+
+  function update(dt) {
+    if (state !== 'playing') {
+      particles.forEach(function (particle) {
+        particle.x += particle.vx * dt;
+        particle.y += particle.vy * dt;
+        particle.vy += 300 * dt;
+        particle.life -= dt * 1.8;
+      });
+      particles = particles.filter(function (particle) { return particle.life > 0; });
+      return;
+    }
+
+    var direction = (right ? 1 : 0) - (left ? 1 : 0);
+    velocityX += direction * 720 * dt;
+    velocityX *= Math.pow(0.001, dt);
+    playerX += velocityX * dt;
+    distance += speed * 60 * dt;
+    speed = Math.min(25, speed + dt * 0.16);
+    score = distance / 8;
+
+    if (Math.abs(playerX) > 172) { finish(); return; }
+
+    obstacles.forEach(function (obstacle) {
+      if (obstacle.hit || Math.abs(obstacle.z - distance) > 32) return;
+      if (Math.abs(obstacle.x - playerX) < obstacle.width / 2 + 18) {
+        obstacle.hit = true;
+        finish();
+      }
+    });
+
+    var lastObstacle = obstacles[obstacles.length - 1];
+    if (lastObstacle && distance > lastObstacle.z - 900) {
+      for (var i = 0; i < 12; i++) obstacles.push(makeObstacle(lastObstacle.z + 190 + i * 190 + Math.random() * 90));
+    }
+    obstacles = obstacles.filter(function (obstacle) { return obstacle.z > distance - 100; });
+    if (!reduced && Math.random() < dt * speed * 0.8) particles.push({ x: playerX, y: H - 100, vx: 0, vy: 30, life: 0.6 });
+    updateHud();
+  }
+
+  function draw() {
+    var gradient = ctx.createLinearGradient(0, 0, 0, H);
+    gradient.addColorStop(0, '#18285c');
+    gradient.addColorStop(0.55, '#080e2b');
+    gradient.addColorStop(1, '#02030b');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, W, H);
+
+    var horizon = 270;
+    ctx.strokeStyle = '#42f5d044';
+    ctx.lineWidth = 1;
+    for (var row = 0; row < 12; row++) {
+      var y = horizon + Math.pow(row / 11, 2) * 275;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    for (var column = -8; column <= 8; column++) {
+      ctx.beginPath(); ctx.moveTo(W / 2 + column * 18, horizon); ctx.lineTo(W / 2 + column * 105, H); ctx.stroke();
+    }
+
+    ctx.fillStyle = '#111b3a';
+    ctx.beginPath(); ctx.moveTo(W / 2 - 210, horizon); ctx.lineTo(W / 2 + 210, horizon); ctx.lineTo(W + 160, H); ctx.lineTo(-160, H); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#42f5d0';
+    ctx.shadowBlur = reduced ? 0 : 14;
+    ctx.shadowColor = '#42f5d0';
+    ctx.beginPath(); ctx.moveTo(W / 2 - 210, horizon); ctx.lineTo(-160, H); ctx.moveTo(W / 2 + 210, horizon); ctx.lineTo(W + 160, H); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    obstacles.forEach(function (obstacle) {
+      var point = project(obstacle);
+      if (!point || point.x < -100 || point.x > W + 100) return;
+      var size = Math.max(8, point.scale * obstacle.width);
+      ctx.fillStyle = '#ff4f70';
+      ctx.shadowBlur = reduced ? 0 : 18;
+      ctx.shadowColor = '#ff4f70';
+      ctx.fillRect(point.x - size / 2, point.y - Math.max(10, point.scale * 48), size, Math.max(10, point.scale * 48));
+      ctx.shadowBlur = 0;
+    });
+
+    var playerY = H - 92;
+    ctx.save();
+    ctx.translate(W / 2, playerY);
+    ctx.rotate(velocityX / 800);
+    ctx.fillStyle = '#65f5ff';
+    ctx.shadowBlur = reduced ? 0 : 28;
+    ctx.shadowColor = '#65f5ff';
+    ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(-7, -8, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    particles.forEach(function (particle) {
+      ctx.globalAlpha = particle.life;
+      ctx.fillStyle = '#65f5ff';
+      ctx.fillRect(W / 2 + particle.x, particle.y, 4, 4);
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('SLOPE', 24, 32);
+    if (state !== 'playing') {
+      ctx.fillStyle = '#050817dd'; ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = 'center'; ctx.fillStyle = '#65f5ff'; ctx.font = 'bold 48px sans-serif';
+      ctx.fillText(state === 'menu' ? 'SLOPE' : state === 'over' ? 'GAME OVER' : 'PAUSED', W / 2, 190);
+      ctx.fillStyle = '#fff'; ctx.font = '18px monospace';
+      ctx.fillText(state === 'menu' ? 'Press PLAY or Space to start' : state === 'over' ? 'Score ' + Math.floor(score) + ' · Press RESTART' : 'Press PAUSE to resume', W / 2, 235);
+      ctx.textAlign = 'left';
+    }
+  }
+
+  function frame(timestamp) {
+    var dt = Math.min(0.033, (timestamp - last) / 1000 || 0);
+    last = timestamp;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function bindHold(id, direction) {
+    var button = get(id);
+    if (!button) return;
+    button.addEventListener('pointerdown', function (event) { event.preventDefault(); window[direction] = true; });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (eventName) {
+      button.addEventListener(eventName, function () { window[direction] = false; });
+    });
+  }
+
+  bindHold('steerLeft', 'left');
+  bindHold('steerRight', 'right');
+  get('runnerPlay').addEventListener('click', start);
+  get('runnerRestart').addEventListener('click', start);
+  get('runnerPause').addEventListener('click', function () {
+    if (state === 'playing') state = 'paused';
+    else if (state === 'paused') state = 'playing';
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.code === 'ArrowLeft' || event.code === 'KeyA') left = true;
+    if (event.code === 'ArrowRight' || event.code === 'KeyD') right = true;
+    if (event.code === 'Space') { event.preventDefault(); if (state !== 'playing') start(); }
+    if (event.code === 'KeyP') get('runnerPause').click();
+  });
+  document.addEventListener('keyup', function (event) {
+    if (event.code === 'ArrowLeft' || event.code === 'KeyA') left = false;
+    if (event.code === 'ArrowRight' || event.code === 'KeyD') right = false;
+  });
+  updateHud();
+  requestAnimationFrame(frame);
+}());
