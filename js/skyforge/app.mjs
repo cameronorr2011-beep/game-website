@@ -1,5 +1,5 @@
 import { createScene } from './scene.mjs';
-import { AIRPORTS, WEATHER, DT, clamp, degrees, createFlight, stepFlight, navigation, surfaceHeight, indicatedAirspeed, flightReport, readSave, writeSave } from './simulation.mjs';
+import { AIRPORTS, AIRCRAFTS, aircraftFor, WEATHER, DT, clamp, degrees, createFlight, stepFlight, navigation, surfaceHeight, indicatedAirspeed, flightReport, readSave, writeSave } from './simulation.mjs';
 const $=id=>document.getElementById(id);
 const saved=readSave();
 let save=saved||{version:1,settings:{sensitivity:1,invert:false,deadzone:.12,quality:'medium',volume:0},config:{},training:[],logs:[]};
@@ -10,10 +10,13 @@ function showMessage(text){nextMessage=text;}
 let nextMessage='';
 const f=n=>Number(n).toFixed(0),kt=v=>v*1.94384,ft=v=>v*3.28084;
 function fillAirports(id){$(id).replaceChildren(...AIRPORTS.map(a=>{const option=document.createElement('option');option.value=a.id;option.textContent=`${a.id} · ${a.name}`;return option;}));}
+$('aircraft').replaceChildren(...AIRCRAFTS.map(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=`${a.name} · ${a.role}`;return o;}));
+function refreshHangar(){const plane=aircraftFor($('aircraft').value);$('aircraftCode').textContent=plane.name.split(' ')[0];$('aircraftName').textContent=plane.name.split(' ').slice(1).join(' ');$('aircraftStats').textContent=`${plane.role} · ${Math.round(plane.maxPower/745.7)} hp · ${plane.fuelCapacity} L · rotate ~${plane.rotateKt} kt`;$('aircraftDescription').textContent=plane.description;const best=save.records?.[`${plane.id}/${$('departure').value}/${$('runway').value}`];$('raceBest').textContent=best?`Race personal best: ${best.toFixed(2)}s · this aircraft / runway`:'Race personal best: no finish yet on this aircraft / runway';}
 ['departure','destination','mapDestination'].forEach(fillAirports);$('destination').value='SF02';
 function runways(){const a=AIRPORTS.find(a=>a.id===$('departure').value);$('runway').replaceChildren(...a.runways.map(r=>{const o=document.createElement('option');o.value=r;o.textContent=`Runway ${r} · ${a.length} m`;return o;}));}
-$('departure').addEventListener('change',runways);runways();
-for(const id of['mode','start','departure','destination','weather','hour'])if(save.config[id]!==undefined)$(id).value=save.config[id];runways();if(save.config.runway)$('runway').value=save.config.runway;
+$('departure').addEventListener('change',()=>{runways();refreshHangar();});runways();
+['aircraft','runway'].forEach(id=>$(id).addEventListener('change',refreshHangar));
+for(const id of['aircraft','mode','start','departure','destination','weather','hour'])if(save.config[id]!==undefined)$(id).value=save.config[id];runways();if(save.config.runway)$('runway').value=save.config.runway;if(!AIRCRAFTS.some(a=>a.id===$('aircraft').value))$('aircraft').value='peregrine';refreshHangar();
 for(const id of['sensitivity','deadzone','quality','volume'])$(id).value=save.settings[id];$('invert').checked=save.settings.invert;
 $('hourLabel').value=`${$('hour').value}:00`;function preset(){const w=WEATHER[$('weather').value];$('wind').value=w.wind;$('windDirection').value=w.direction;$('visibility').value=w.visibility/1000;}preset();
 $('weather').addEventListener('change',preset);$('hour').addEventListener('input',()=>{$('hourLabel').value=`${$('hour').value}:00`;});
@@ -30,15 +33,17 @@ function applySystem(id){if(!active)return;
 }
 function setCamera(mode){visual?.setCamera(mode);keys.clear();document.querySelectorAll('[data-camera]').forEach(b=>b.classList.toggle('active',b.dataset.camera===mode));}
 function startFlight(){
-  config={mode:$('mode').value,start:$('start').value,ready:$('start').value==='ready',departure:$('departure').value,destination:$('destination').value,runway:$('runway').value,weather:$('weather').value,hour:Number($('hour').value),customWeather:{wind:clamp(Number($('wind').value),0,25),direction:clamp(Number($('windDirection').value),0,359),visibility:clamp(Number($('visibility').value),1,40)*1000}};
-  state=createFlight(config);active=true;paused=false;reported=false;accumulator=0;keys.clear();setCamera('cockpit');
+  config={aircraft:$('aircraft').value,mode:$('mode').value,start:$('start').value,ready:$('start').value==='ready',departure:$('departure').value,destination:$('destination').value,runway:$('runway').value,weather:$('weather').value,hour:Number($('hour').value),customWeather:{wind:clamp(Number($('wind').value),0,25),direction:clamp(Number($('windDirection').value),0,359),visibility:clamp(Number($('visibility').value),1,40)*1000}};
+  state=createFlight(config);active=true;paused=false;reported=false;accumulator=0;previous={};keys.clear();setCamera(state.race?'chase':'cockpit');
   ['setup','pause','debrief'].forEach(id=>$(id).hidden=true);['hud','flightInfo','cameraBar'].forEach(id=>$(id).hidden=false);
   $('mapDestination').value=state.destination;persist();updateUI();$('flightCanvas').focus();
 }
 $('flightForm').addEventListener('submit',e=>{e.preventDefault();startFlight();});
 $('pauseToggle').onclick=togglePause;$('resume').onclick=togglePause;$('restart').onclick=startFlight;$('debriefRestart').onclick=startFlight;
-function dispatch(){active=false;paused=false;keys.clear();['pause','debrief','hud','flightInfo','cameraBar','systems','mapPanel','controls'].forEach(id=>$(id).hidden=true);$('setup').hidden=false;state=createFlight({start:'air'});$('saveInfo').textContent=`Local flight log: ${save.logs.length} flights · training stages completed: ${save.training.length}/6.`;}
+function dispatch(){active=false;paused=false;keys.clear();['pause','debrief','hud','flightInfo','cameraBar','systems','mapPanel','controls'].forEach(id=>$(id).hidden=true);$('setup').hidden=false;state=createFlight({start:'air',aircraft:$('aircraft').value});refreshHangar();$('saveInfo').textContent=`Local flight log: ${save.logs.length} flights · training stages completed: ${save.training.length}/6.`;}
 $('dispatch').onclick=dispatch;$('debriefDispatch').onclick=dispatch;
+function hangar(){if(active&&!reported)showReport();dispatch();$('aircraft').focus();}
+['hangarToggle','pauseHangar','debriefHangar'].forEach(id=>$(id).onclick=hangar);
 $('mapToggle').onclick=()=>togglePanel('mapPanel');$('helpToggle').onclick=()=>togglePanel('controls');$('systemsToggle').onclick=()=>togglePanel('systems');
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$(b.dataset.close).hidden=true);
 document.querySelectorAll('[data-camera]').forEach(b=>b.onclick=()=>setCamera(b.dataset.camera));
@@ -46,9 +51,9 @@ document.querySelectorAll('[data-system]').forEach(b=>b.onclick=()=>applySystem(
 document.querySelectorAll('[data-failure]').forEach(b=>b.onclick=()=>{const key=b.dataset.failure;state.failures[key]=!state.failures[key];updateUI();});
 for(const id of['throttle','mixture','trim','flaps'])$(id).addEventListener('input',()=>{state.controls[id]=Number($(id).value);});
 for(const id of['sensitivity','deadzone','quality','invert','volume'])$(id).addEventListener('change',()=>{persist();if(id==='quality'&&visual){visual.renderer.setPixelRatio(Math.min(devicePixelRatio,{low:1,medium:1.25,high:1.75}[$('quality').value]));visual.renderer.shadowMap.enabled=$('quality').value!=='low';visual.resize();}});
-$('mapDestination').onchange=()=>{state.destination=$('mapDestination').value;const a=AIRPORTS.find(a=>a.id===state.destination);state.route=[{id:a.id,name:a.name,x:a.x,z:a.z}];state.waypoint=0;updateRoute();};
-$('addWaypoint').onclick=()=>{const x=Number($('waypointX').value)*1000,z=Number($('waypointZ').value)*1000;if(!Number.isFinite(x)||!Number.isFinite(z)||Math.abs(x)>100000||Math.abs(z)>100000)return;state.route.splice(Math.max(0,state.route.length-1),0,{id:`WP${state.route.length}`,name:`Waypoint ${state.route.length}`,x,z});updateRoute();};
-function updateRoute(){const list=$('routeList');list.replaceChildren();state.route.forEach((p,i)=>{const li=document.createElement('li');li.textContent=`${i===state.waypoint?'→ ':''}${p.name} (${(p.x/1000).toFixed(1)}, ${(p.z/1000).toFixed(1)} km)`;if(state.route.length>1&&i<state.route.length-1){const b=document.createElement('button');b.textContent='Remove';b.onclick=()=>{state.route.splice(i,1);state.waypoint=Math.min(state.waypoint,state.route.length-1);updateRoute();};li.appendChild(b);}list.appendChild(li);});}
+$('mapDestination').onchange=()=>{if(state.race)return;state.destination=$('mapDestination').value;const a=AIRPORTS.find(a=>a.id===state.destination);state.route=[{id:a.id,name:a.name,x:a.x,z:a.z}];state.waypoint=0;updateRoute();};
+$('addWaypoint').onclick=()=>{if(state.race)return;const x=Number($('waypointX').value)*1000,z=Number($('waypointZ').value)*1000;if(!Number.isFinite(x)||!Number.isFinite(z)||Math.abs(x)>100000||Math.abs(z)>100000)return;state.route.splice(Math.max(0,state.route.length-1),0,{id:`WP${state.route.length}`,name:`Waypoint ${state.route.length}`,x,z});updateRoute();};
+function updateRoute(){const list=$('routeList');list.replaceChildren();state.route.forEach((p,i)=>{const li=document.createElement('li');li.textContent=`${i===state.waypoint?'→ ':''}${p.name} (${(p.x/1000).toFixed(1)}, ${(p.z/1000).toFixed(1)} km)`;if(!state.race&&state.route.length>1&&i<state.route.length-1){const b=document.createElement('button');b.textContent='Remove';b.onclick=()=>{state.route.splice(i,1);state.waypoint=Math.min(state.waypoint,state.route.length-1);updateRoute();};li.appendChild(b);}list.appendChild(li);});}
 const flightKeys=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','KeyW','KeyS','KeyA','KeyD','KeyB','KeyE','KeyF','BracketLeft','BracketRight','KeyC','Digit1','Digit2','Digit3','KeyQ','KeyZ'];
 window.addEventListener('keydown',e=>{
   if(['INPUT','SELECT','TEXTAREA','BUTTON'].includes(document.activeElement?.tagName)&&e.code!=='Escape')return;
@@ -88,6 +93,10 @@ function drawMap(canvas,report=false){const ctx=canvas.getContext('2d'),w=canvas
 }
 function updateUI(){if(!active)return;
   const s=state,nav=navigation(s),powered=s.systems.voltage>20;
+  $('aircraftInfo').textContent=`${s.aircraft} · ${aircraftFor(s.aircraftId).role}`;
+  $('raceHUD').hidden=!s.race;
+  if(s.race){const r=s.race;$('raceHUD').textContent=r.countdown>0?`START IN ${Math.ceil(r.countdown)}`:`RINGS ${r.next}/${r.gates.length} · TIME ${r.elapsed.toFixed(2)}s / ${r.limit}s`;}
+  $('mapDestination').disabled=Boolean(s.race);$('addWaypoint').disabled=Boolean(s.race);
   $('ias').textContent=f(kt(indicatedAirspeed(s)));$('alt').textContent=f(ft(s.y));$('hdg').textContent=String(Math.round((degrees(s.heading)+360)%360)).padStart(3,'0');$('vs').textContent=f(ft(s.vy)*60);$('rpm').textContent=f(s.systems.rpm);$('fuel').textContent=`${s.systems.fuel.toFixed(1)} L · ${f(s.systems.voltage)} V`;
   if(nextMessage){$('objective').textContent=nextMessage;nextMessage='';}
   $('warnings').textContent=s.warnings.join(' · ');
@@ -104,8 +113,10 @@ function updateUI(){if(!active)return;
   if(s.status!=='active'&&!reported)showReport();
 }
 function showReport(){if(!active)return;paused=true;keys.clear();$('pause').hidden=true;$('debrief').hidden=false;
-  const report=flightReport(state);if(!reported){save.logs.push(report);save.logs=save.logs.slice(-20);save.training=[...new Set([...save.training,...state.achievements])];persist();reported=true;}
+  const report=flightReport(state);let newBest=false;if(!reported){if(report.race?.outcome==='finished'){save.records||={};const key=`${state.aircraftId}/${report.race.course}`;if(!save.records[key]||report.race.seconds<save.records[key]){save.records[key]=report.race.seconds;newBest=true;}}save.logs.push(report);save.logs=save.logs.slice(-20);save.training=[...new Set([...save.training,...state.achievements])];persist();reported=true;}
   const result=state.touchdown;const content=$('reportContent');content.replaceChildren();
+  if(report.race){const summary=document.createElement('p');summary.className='race-result';summary.textContent=report.race.outcome==='finished'?`RACE FINISHED · ${report.race.seconds.toFixed(2)}s${newBest?' · NEW PERSONAL BEST!':''}`:`RACE ${report.race.outcome?.toUpperCase()||'ENDED'} · ${report.race.checkpoints}/${report.race.total} rings · ${report.race.seconds.toFixed(2)}s`;content.appendChild(summary);}
+  const aircraft=document.createElement('p');aircraft.textContent=state.aircraft;content.appendChild(aircraft);
   const grid=document.createElement('div');grid.className='report-grid';for(const[label,value]of[['Duration',`${(state.time/60).toFixed(1)} min`],['Distance',`${(state.distanceFlown/1000).toFixed(1)} km`],['Fuel',`${state.fuelUsed.toFixed(1)} L`],['Peak altitude',`${f(ft(state.peakAltitude))} ft`],['Landing score',result?`${result.score}/100`:'No touchdown'],['Descent at contact',result?`${result.verticalSpeed.toFixed(1)} m/s`:'—']]){const d=document.createElement('div'),strong=document.createElement('strong'),small=document.createElement('small');strong.textContent=value;small.textContent=label;d.append(strong,small);grid.appendChild(d);}content.appendChild(grid);
   const p=document.createElement('p');p.className='muted';p.textContent=`${state.status.toUpperCase()} · ${report.suggestions.join(' ')}`;content.appendChild(p);drawMap($('reportMap'),true);
 }
@@ -125,7 +136,7 @@ let previous={};
 function loop(time){const elapsed=lastTime?Math.min(.1,(time-lastTime)/1000):0;const raw=lastTime?time-lastTime:0;lastTime=time;
   if(raw>0){slowFrames+=raw>34?1:0;if(slowFrames>60)slowFrames=12;if(raw<=17)slowFrames=Math.max(0,slowFrames-2);}
   if(active&&!paused){accumulator+=elapsed;let steps=0;while(accumulator>=DT&&steps<12){previous={x:state.x,y:state.y,z:state.z,pitch:state.pitch,roll:state.roll,heading:state.heading};inputs(DT);stepFlight(state,DT);accumulator-=DT;steps++;}}
-  if(visual){const freeInput=visual.mode==='free'?{x:Number(keys.has('KeyD'))-Number(keys.has('KeyA')),z:Number(keys.has('KeyW'))-Number(keys.has('KeyS')),y:Number(keys.has('KeyQ'))-Number(keys.has('KeyZ'))}:{};
+  if(visual){const freeInput=active&&!paused&&visual.mode==='free'?{x:Number(keys.has('KeyD'))-Number(keys.has('KeyA')),z:Number(keys.has('KeyW'))-Number(keys.has('KeyS')),y:Number(keys.has('KeyQ'))-Number(keys.has('KeyZ'))}:{};
     let renderState=state;if(active&&!paused&&previous.x!==undefined){const a=accumulator/DT;renderState={...state};for(const k of['x','y','z','pitch','roll','heading'])renderState[k]=previous[k]+(state[k]-previous[k])*a;}
     stats=visual.render(renderState,time/1000,freeInput);}
     if(active&&!paused&&raw>0){frames.push(raw);if(frames.length>300)frames.shift();

@@ -2,7 +2,7 @@ import * as T from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { AIRPORTS, terrainHeight, radians, indicatedAirspeed } from './simulation.mjs';
+import { AIRPORTS, aircraftFor, terrainHeight, radians, indicatedAirspeed } from './simulation.mjs';
 const clampTexture = value => Math.max(0,Math.min(255,Math.round(value)));
 const daylight = hour => Math.max(0,Math.sin((hour-6)/12*Math.PI));
 const mat = (color, extra = {}) => new T.MeshStandardMaterial({ color, roughness: .65, ...extra });
@@ -89,14 +89,14 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   mesh(aircraft,new T.BoxGeometry(1.65,.24,2),white,0,.45,.1);
   mesh(aircraft,new T.BoxGeometry(1.65,1.35,2),glass,0,1.7,.1);
   function airfoil(span,chord){const shape=new T.Shape();shape.moveTo(-chord*.5,0);shape.bezierCurveTo(-chord*.55,.08,-chord*.2,.16,chord*.5,.015);shape.bezierCurveTo(chord*.1,-.035,-chord*.35,-.045,-chord*.5,0);const geometry=new T.ExtrudeGeometry(shape,{depth:span,steps:1,bevelEnabled:false,curveSegments:16});geometry.translate(0,0,-span/2);geometry.rotateY(Math.PI/2);geometry.computeVertexNormals();return geometry;}
-  mesh(aircraft,airfoil(10.8,1.55),white,0,2.55,-.25);
-  for(const side of[-1,1]){mesh(aircraft,new T.BoxGeometry(.04,.22,1.6),red,side*5.35,2.5,-.25);mesh(aircraft,new T.BoxGeometry(.025,.15,4),red,side*.73,.9,-.8);}
+  const wing=mesh(aircraft,airfoil(10.8,1.55),white,0,2.55,-.25),wingTips=[],wingStruts=[];
+  for(const side of[-1,1]){wingTips.push(mesh(aircraft,new T.BoxGeometry(.04,.22,1.6),red,side*5.35,2.5,-.25));mesh(aircraft,new T.BoxGeometry(.025,.15,4),red,side*.73,.9,-.8);}
   const rivets=new T.InstancedMesh(new T.SphereGeometry(.012,5,4),mat(0x98a4a9,{metalness:.8,roughness:.25}),80),rivetObject=new T.Object3D();
   for(let i=0;i<80;i++){rivetObject.position.set((i%2?1:-1)*.72,.57+(Math.floor(i/2)%2)*.5,-2.6+Math.floor(i/4)*.24);rivetObject.updateMatrix();rivets.setMatrixAt(i,rivetObject.matrix);}aircraft.add(rivets);
   mesh(aircraft,new T.BoxGeometry(4,.12,1.15),white,0,1,-3.1);
   mesh(aircraft,new T.BoxGeometry(.14,1.7,1.25),white,0,1.7,-3.2);
   const ailerons=[],flapMeshes=[];
-  for(const side of[-1,1]){mesh(aircraft,new T.BoxGeometry(.08,.08,3),dark,side*1.8,1.65,-.1).rotation.z=side*.9;
+  for(const side of[-1,1]){const strut=mesh(aircraft,new T.BoxGeometry(.08,.08,3),dark,side*1.8,1.65,-.1);strut.rotation.z=side*.9;wingStruts.push(strut);
     const aileron=mesh(aircraft,new T.BoxGeometry(2.3,.1,.35),red,side*4.1,2.53,-1.15);ailerons.push(aileron);
     const flap=mesh(aircraft,new T.BoxGeometry(2.1,.1,.4),white,side*1.65,2.53,-1.18);flapMeshes.push(flap);
     mesh(aircraft,new T.BoxGeometry(.05,1.4,.06),dark,side*.84,1.55,.92).rotation.z=side*.08;
@@ -150,9 +150,24 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   function setCamera(next){mode=next;lookYaw=0;lookPitch=0;if(next==='free')freePosition.copy(camera.position);}
   function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
   window.addEventListener('resize',resize);resize();
+  const raceGroup=new T.Group();scene.add(raceGroup);
+  const ringGeometry=new T.TorusGeometry(90,2,6,48),ringMaterials=[new T.MeshBasicMaterial({color:0xebbf78}),new T.MeshBasicMaterial({color:0x8de1e6})];
+  let displayedGates=null,displayedPlane=null;
+  function updateAircraftAndRace(s){
+    if(s.aircraftId!==displayedPlane){displayedPlane=s.aircraftId;const plane=aircraftFor(s.aircraftId),ratio=plane.span/11;red.color.setHex(plane.color);wing.scale.x=ratio;wing.position.y=plane.wingHeight;
+      wingTips.forEach((tip,i)=>{tip.position.x=(i?1:-1)*5.35*ratio;tip.position.y=plane.wingHeight-.05;});
+      ailerons.forEach((part,i)=>{part.position.x=(i?1:-1)*4.1*ratio;part.position.y=plane.wingHeight-.02;});flapMeshes.forEach(part=>part.position.y=plane.wingHeight-.02);
+      wingStruts.forEach(part=>part.visible=plane.wingHeight>2);strobes.forEach((part,i)=>{part.position.x=(i?1:-1)*5.45*ratio;part.position.y=plane.wingHeight;});navLights.forEach((part,i)=>{if(i<2){part.position.x=(i?1:-1)*5.4*ratio;part.position.y=plane.wingHeight;}});
+    }
+    if(displayedGates!==s.race?.gates){displayedGates=s.race?.gates;raceGroup.clear();
+      for(const gate of displayedGates||[]){const ring=new T.Mesh(ringGeometry,ringMaterials[1]);ring.position.set(gate.x,gate.y,gate.z);ring.rotation.y=gate.heading;raceGroup.add(ring);}
+    }
+    raceGroup.children.forEach((ring,i)=>{ring.visible=i>=s.race.next;ring.material=ringMaterials[i===s.race.next?0:1];});
+  }
   const position=new T.Vector3(),bodyQ=new T.Quaternion(),local=new T.Vector3(),target=new T.Vector3();
   function render(s,realTime,freeInput={}) {
     const renderDt=Math.min(.1,lastRenderTime?realTime-lastRenderTime:1/60);lastRenderTime=realTime;
+    updateAircraftAndRace(s);
     stream(s.x,s.z);position.set(s.x,s.y,s.z);aircraft.position.copy(position);
     aircraft.rotation.set(-s.pitch,s.heading,-s.roll,'YXZ');bodyQ.copy(aircraft.quaternion);
     prop.rotation.z+=s.systems.rpm/60*Math.PI*2*renderDt;ailerons.forEach((a,i)=>a.rotation.x=(i?1:-1)*s.controls.aileron*.35);flapMeshes.forEach(a=>a.rotation.x=s.controls.flaps*.5);elevator.rotation.x=-s.controls.elevator*.35;rudder.rotation.y=s.controls.rudder*.35;yoke.rotation.z=Math.PI*.25-s.controls.aileron*.5;yoke.position.z=.68-s.controls.elevator*.07;

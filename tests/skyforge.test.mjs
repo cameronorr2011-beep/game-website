@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { AIRPORTS, AIRCRAFT, DT, createFlight, stepFlight, navigation, terrainHeight, flightReport, readSave, writeSave, indicatedAirspeed, aerodynamicCoefficients } from '../js/skyforge/simulation.mjs';
+import { AIRPORTS, AIRCRAFT, AIRCRAFTS, aircraftFor, DT, createFlight, stepFlight, navigation, terrainHeight, flightReport, readSave, writeSave, indicatedAirspeed, aerodynamicCoefficients } from '../js/skyforge/simulation.mjs';
 const run = (s, seconds, control) => { for (let i = 0; i < Math.round(seconds / DT); i++) { control?.(s); stepFlight(s); assert.ok([s.x,s.y,s.z,s.pitch,s.roll,s.heading,s.airspeed].every(Number.isFinite)); } return s; };
 const start = performance.now();
 const seaLevel = { airspeed: 50, density: 1.225 }, highAltitude = { airspeed: 50, density: .7 };
@@ -55,4 +55,42 @@ assert.equal(readSave(storage), null); storage.data = '{bad'; assert.equal(readS
 writeSave({settings:{quality:'high',sensitivity:1,volume:.3},config:{departure:'SF02'},training:['training-1'],logs:[flightReport(landing)]}, storage);
 assert.equal(readSave(storage).config.departure,'SF02'); assert.equal(readSave(storage).logs[0].touchdown.airport,'SF01');
 assert.equal(AIRCRAFT.name,'SF-172 Peregrine');
+assert.equal(aircraftFor('invalid').id, 'peregrine');
+for (const plane of AIRCRAFTS) {
+  const s = createFlight({ aircraft: plane.id, ready: true });
+  assert.equal(s.aircraft, plane.name); assert.equal(s.systems.fuel, plane.fuelCapacity);
+  s.controls.throttle = 1;
+  run(s, 45, s => { s.controls.elevator = s.airspeed * 1.94384 > plane.rotateKt ? .38 : 0; });
+  assert.equal(s.status, 'active', `${plane.name} survives takeoff`);
+  assert.equal(s.grounded, false, `${plane.name} takes off`);
+}
+const trainerRoll = createFlight({ start: 'air' }), swiftRoll = createFlight({ start: 'air', aircraft: 'swift' });
+trainerRoll.controls.aileron = swiftRoll.controls.aileron = .25;
+run(trainerRoll, 2); run(swiftRoll, 2); assert.ok(swiftRoll.roll > trainerRoll.roll * 1.3, 'sport racer has different handling');
+const race = createFlight({ mode: 'race', departure: 'SF02', runway: '21', aircraft: 'swift' });
+assert.equal(race.weather.wind, 0); assert.equal(race.hour, 14);
+const stormRace = createFlight({ mode: 'race', weather: 'overcast', hour: 0, customWeather: { wind: 25 } });
+assert.equal(stormRace.weather.wind, 0); assert.equal(stormRace.hour, 14, 'race conditions fixed for comparable records');
+const initialPosition = [race.x, race.y, race.z];
+run(race, 3); assert.deepEqual([race.x,race.y,race.z], initialPosition, 'countdown freezes flight');
+// Cross the actual checkpoint planes; wrong order and outside-radius crossings do not score.
+race.race.countdown = 0;
+function crossGate(s, gate, across = 0) {
+  s.x = gate.x - Math.sin(gate.heading) * .1 + Math.cos(gate.heading) * across;
+  s.z = gate.z - Math.cos(gate.heading) * .1 - Math.sin(gate.heading) * across;
+  s.y = gate.y; s.heading = gate.heading; s.roll = 0; s.pitch = .02;
+  s.vx = Math.sin(gate.heading) * 43; s.vz = Math.cos(gate.heading) * 43; s.vy = 0;
+  stepFlight(s);
+}
+crossGate(race, race.race.gates[1]); assert.equal(race.race.next, 0, 'out of order gate rejected');
+crossGate(race, race.race.gates[0], 100); assert.equal(race.race.next, 0, 'outside ring rejected');
+for (const gate of race.race.gates) crossGate(race, gate);
+assert.equal(race.status, 'complete'); assert.equal(race.race.next, 7);
+assert.match(flightReport(race).suggestions[0], /Race finished/);
+assert.equal(flightReport(race).race.outcome, 'finished'); assert.equal(flightReport(race).aircraftId, 'swift');
+const expired = createFlight({ mode: 'race' }); expired.race.countdown = 0; expired.race.elapsed = 120; stepFlight(expired); assert.equal(expired.status, 'failed');
+const wreckedRace = createFlight({ mode: 'race' }); wreckedRace.race.countdown = 0; wreckedRace.damage = 1; stepFlight(wreckedRace); assert.equal(wreckedRace.race.outcome, 'crashed');
+const localLanding = createFlight({ mode: 'landing', departure: 'SF03', destination: 'SF02' }); assert.equal(localLanding.destination, 'SF03', 'landing challenge targets departure airport');
+writeSave({ settings: {}, config: { aircraft: 'swift', mode: 'race' }, training: [], logs: [], records: { 'swift/SF01/36': 63.2, broken: -1 } }, storage);
+assert.equal(readSave(storage).config.aircraft, 'swift'); assert.deepEqual(readSave(storage).records, { 'swift/SF01/36': 63.2 });
 console.log(`SKYFORGE: startup/shutdown, taxi/brakes, takeoff/climb, roll/yaw/flaps, wind/stall, touchdown/crash, systems, navigation, determinism and saves passed (${(performance.now()-start).toFixed(1)} ms).`);

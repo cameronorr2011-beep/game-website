@@ -2,6 +2,12 @@
 export const DT = 1 / 120;
 export const G = 9.80665;
 export const AIRCRAFT = Object.freeze({ name: 'SF-172 Peregrine', dryMass: 820, fuelDensity: .72, wingArea: 16.2, span: 11, maxPower: 119000, idleRpm: 750, maxRpm: 2700, stallAlpha: .28, cl0: .24, clAlpha: 4.6, cd0: .032, induced: .058 });
+export const AIRCRAFTS = Object.freeze([
+  Object.freeze({ ...AIRCRAFT, id: 'peregrine', role: 'Balanced trainer', fuelCapacity: 140, thrustLimit: 2400, rollRate: 1.2, color: 0xc75535, wingHeight: 2.55, rotateKt: 52, description: 'Predictable handling. A good first aircraft.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'swift', name: 'SF-220 Swift', role: 'Sport racer', dryMass: 740, wingArea: 13.5, span: 9, maxPower: 164000, cd0: .026, fuelCapacity: 110, thrustLimit: 3100, rollRate: 1.85, color: 0x42bde0, wingHeight: .7, rotateKt: 58, description: 'More power, quicker rolls, low wing. For chasing records.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'kestrel', name: 'SF-90 Kestrel', role: 'Light explorer', dryMass: 560, wingArea: 18.5, span: 12.5, maxPower: 82000, cl0: .3, cd0: .04, fuelCapacity: 90, thrustLimit: 1900, rollRate: .95, color: 0xe9b949, wingHeight: 2.55, rotateKt: 43, description: 'Lightweight, slower, and gentle. Great for sightseeing.' }),
+]);
+export const aircraftFor = id => AIRCRAFTS.find(a => a.id === id) || AIRCRAFTS[0];
 export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const radians = d => d * Math.PI / 180;
 export const degrees = r => r * 180 / Math.PI;
@@ -60,21 +66,22 @@ export function windAt(s) {
   return { x: Math.sin(dir) * speed, z: Math.cos(dir) * speed, y: w.turbulence * (.55 * Math.sin(s.time * 1.7) + .3 * Math.sin(s.time * 3.1)) };
 }
 export function createFlight(config = {}) {
+  const plane = aircraftFor(config.aircraft);
   const a = AIRPORTS.find(a => a.id === config.departure) || AIRPORTS[0];
   const reverse = config.runway === a.runways[1];
   const heading = a.heading + (reverse ? Math.PI : 0);
-  const airborne = config.start === 'air' || ['landing', 'emergency'].includes(config.mode);
+  const airborne = config.start === 'air' || ['landing', 'emergency', 'race'].includes(config.mode);
   const offset = airborne ? -3000 : -a.length / 2 + 80;
   const x = a.x + Math.sin(heading) * offset, z = a.z + Math.cos(heading) * offset;
   const altitude = airborne ? a.elevation + (config.mode === 'landing' ? 160 : 750) : a.elevation + 1.25;
   const startEngine = airborne || config.ready;
   const s = {
-    version: 1, aircraft: AIRCRAFT.name, departure: a.id, destination: config.destination || (config.mode === 'landing' ? a.id : 'SF02'),
+    version: 1, aircraft: plane.name, aircraftId: plane.id, departure: a.id, destination: config.mode === 'landing' ? a.id : config.destination || 'SF02',
     mode: config.mode || 'free', runway: config.runway || a.runways[0], route: [], waypoint: 0,
     x, y: altitude, z, vx: Math.sin(heading) * (airborne ? 43 : 0), vy: airborne && config.mode === 'landing' ? -2 : 0, vz: Math.cos(heading) * (airborne ? 43 : 0),
     heading, pitch: airborne ? .02 : 0, roll: 0, p: 0, q: 0, r: 0,
     controls: { elevator: 0, aileron: 0, rudder: 0, throttle: startEngine ? (config.mode === 'landing' ? .35 : .7) : 0, mixture: 1, trim: 0, flaps: config.mode === 'landing' ? .5 : 0, brake: 0 },
-    systems: { battery: Boolean(startEngine), ignition: Boolean(startEngine), starter: false, engine: Boolean(startEngine), rpm: startEngine ? 1900 : 0, batteryAh: 24, voltage: startEngine ? 28 : 0, alternator: true, fuel: 140, oilTemp: 20, oilPressure: 0, navLights: true, landingLights: false, beacon: true, strobe: false, panelLights: false },
+    systems: { battery: Boolean(startEngine), ignition: Boolean(startEngine), starter: false, engine: Boolean(startEngine), rpm: startEngine ? 1900 : 0, batteryAh: 24, voltage: startEngine ? 28 : 0, alternator: true, fuel: plane.fuelCapacity, oilTemp: 20, oilPressure: 0, navLights: true, landingLights: false, beacon: true, strobe: false, panelLights: false },
     failures: { engine: false, electrical: false }, weather: { ...(WEATHER[config.weather] || WEATHER.clear), ...(config.customWeather || {}) },
     hour: config.hour ?? 14, dayCycle: true, damage: 0, time: 0, grounded: !airborne, wasAirborne: airborne, airspeed: airborne ? 43 : 0,
     alpha: 0, sideslip: 0, lift: 0, drag: 0, thrust: 0, density: 1.225, gLoad: 1, warnings: [],
@@ -86,35 +93,47 @@ export function createFlight(config = {}) {
   if (s.mode === 'landing') s.objective = `Land on ${a.name} runway ${s.runway}; target 60–70 kt, shallow descent.`;
   if (s.mode === 'crosscountry') s.objective = `Fly the route and land at ${dest.name}.`;
   if (s.mode === 'emergency') s.objective = 'Engine failure at 10 seconds. Glide at 65 kt, choose a safe landing area.';
+  if (s.mode === 'race') {
+    // Identical conditions keep per-aircraft/runway personal bests comparable.
+    s.weather = { ...WEATHER.clear }; s.hour = 14; s.dayCycle = false;
+    const gates = Array.from({ length: 7 }, (_, i) => {
+      const along = 350 + i * 450, across = i < 2 ? 0 : Math.sin((i - 1) * .65) * 180;
+      return { id: `GATE${i + 1}`, name: `Checkpoint ${i + 1}`, x: x + Math.sin(heading) * along + Math.cos(heading) * across, y: altitude, z: z + Math.cos(heading) * along - Math.sin(heading) * across, heading, radius: 90 };
+    });
+    s.race = { gates, next: 0, countdown: 3, elapsed: 0, limit: 120, outcome: null };
+    s.route = gates.map(g => ({ ...g }));
+    s.controls.throttle = .85;
+    s.objective = 'RACE — get ready! Fly through the glowing rings in order.';
+  }
   return s;
 }
 function updateSystems(s, dt) {
-  const sys = s.systems, c = s.controls;
+  const sys = s.systems, c = s.controls, plane = aircraftFor(s.aircraftId);
   const powered = sys.battery && sys.batteryAh > 0 && !s.failures.electrical;
   if (sys.starter && powered && sys.ignition && c.mixture > .15 && sys.fuel > 0 && !s.failures.engine) sys.engine = true;
   if (!sys.ignition || c.mixture < .05 || sys.fuel <= 0 || s.failures.engine) sys.engine = false;
-  const targetRpm = sys.engine ? AIRCRAFT.idleRpm + c.throttle * (AIRCRAFT.maxRpm - AIRCRAFT.idleRpm) : 0;
+  const targetRpm = sys.engine ? plane.idleRpm + c.throttle * (plane.maxRpm - plane.idleRpm) : 0;
   sys.rpm += (targetRpm - sys.rpm) * Math.min(1, dt * 2);
   const alternator = sys.engine && sys.rpm > 1000 && sys.alternator && !s.failures.electrical;
   const loads = 2 + (sys.navLights ? 2 : 0) + (sys.landingLights ? 7 : 0) + (sys.panelLights ? 1 : 0) + (sys.starter ? 100 : 0);
   sys.batteryAh = clamp(sys.batteryAh + (alternator ? 12 : powered ? -loads : 0) * dt / 3600, 0, 24);
   sys.voltage = powered ? alternator ? 28 : 22 + sys.batteryAh / 12 : 0;
-  const use = sys.engine ? (.0007 + c.throttle * .008) * dt : 0;
+  const use = sys.engine ? (.0007 + c.throttle * .008) * (plane.maxPower / AIRCRAFT.maxPower) * dt : 0;
   sys.fuel = Math.max(0, sys.fuel - use); s.fuelUsed += use;
   sys.oilTemp += ((sys.engine ? 70 + c.throttle * 35 : s.weather.temperature) - sys.oilTemp) * dt * .006;
   sys.oilPressure += ((sys.engine ? 20 + sys.rpm / 60 : 0) - sys.oilPressure) * dt * 2;
 }
 // Equivalent indicated speed follows dynamic pressure, not true/ground speed.
 export function indicatedAirspeed(s) { return s.airspeed * Math.sqrt(s.density / 1.225); }
-export function aerodynamicCoefficients(alpha, flaps, sideslip, agl) {
-  const stallAngle = AIRCRAFT.stallAlpha + flaps * .035;
+export function aerodynamicCoefficients(alpha, flaps, sideslip, agl, plane = AIRCRAFT) {
+  const stallAngle = plane.stallAlpha + flaps * .035;
   const stalled = Math.abs(alpha) > stallAngle;
-  let cl = clamp(AIRCRAFT.cl0 + AIRCRAFT.clAlpha * alpha + flaps * .65, -1.2, 1.65 + flaps * .4);
+  let cl = clamp(plane.cl0 + plane.clAlpha * alpha + flaps * .65, -1.2, 1.65 + flaps * .4);
   if (stalled) cl *= clamp(1 - (Math.abs(alpha) - stallAngle) * 2.4, .22, 1);
   // Standard approximate induced-drag reduction near a surface; no extra lift.
-  const heightRatio = 16 * Math.max(0, agl) / AIRCRAFT.span;
+  const heightRatio = 16 * Math.max(0, agl) / plane.span;
   const groundEffect = clamp(heightRatio ** 2 / (1 + heightRatio ** 2), .15, 1);
-  const cd = AIRCRAFT.cd0 + AIRCRAFT.induced * cl ** 2 * groundEffect + flaps * .065 +
+  const cd = plane.cd0 + plane.induced * cl ** 2 * groundEffect + flaps * .065 +
     (stalled ? .18 : 0) + .1 * Math.abs(sideslip);
   return { cl, cd, stalled, groundEffect };
 }
@@ -122,7 +141,13 @@ export function aerodynamicCoefficients(alpha, flaps, sideslip, agl) {
 export function stepFlight(s, dt = DT) {
   if (s.status !== 'active') return;
   dt = clamp(dt, 0, .025);
-  const c = s.controls;
+  const c = s.controls, plane = aircraftFor(s.aircraftId);
+  if (s.race?.countdown > 0) {
+    s.race.countdown = Math.max(0, s.race.countdown - dt);
+    s.objective = `RACE — ${Math.ceil(s.race.countdown) || 'GO'} · fly through the gold ring, then follow the cyan rings.`;
+    return;
+  }
+  const previousPosition = { x: s.x, y: s.y, z: s.z };
   for (const k of ['throttle', 'mixture', 'flaps', 'brake']) c[k] = clamp(c[k], 0, 1);
   for (const k of ['elevator', 'aileron', 'rudder', 'trim']) c[k] = clamp(c[k], -1, 1);
   s.time += dt;
@@ -137,14 +162,14 @@ export function stepFlight(s, dt = DT) {
   s.alpha = wrap(s.pitch - gamma);
   s.sideslip = wrap(airHeading - s.heading);
   s.density = 1.225 * Math.exp(-Math.max(0, s.y) / 8500) * 288.15 / (273.15 + s.weather.temperature);
-  const mass = AIRCRAFT.dryMass + s.systems.fuel * AIRCRAFT.fuelDensity;
+  const mass = plane.dryMass + s.systems.fuel * plane.fuelDensity;
   const pressure = .5 * s.density * airspeed ** 2;
   const effectiveness = clamp(pressure / 900, 0, 2);
   const turbulence = s.weather.turbulence;
   // Damped angular moments, static longitudinal stability, and coordinated yaw.
   const desiredQ = (c.elevator * .45 + c.trim * .15 - (s.alpha - .035 - c.flaps * .045) * 1.3) * effectiveness;
   s.q += (desiredQ - s.q) * dt * 3;
-  s.p += (c.aileron * 1.2 * effectiveness - s.p * 2.8) * dt;
+  s.p += (c.aileron * plane.rollRate * effectiveness - s.p * 2.8) * dt;
   const turn = G * Math.tan(clamp(s.roll, -1.2, 1.2)) / Math.max(25, horizontalAir);
   const rudderGround = clamp(airspeed / 22, .15, 1.3);
   s.r += ((s.grounded ? c.rudder * rudderGround * .48 : turn + c.rudder * .22 * effectiveness + s.sideslip * .8) - s.r) * dt * 2;
@@ -152,16 +177,16 @@ export function stepFlight(s, dt = DT) {
   s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * .015);
   s.heading = wrap(s.heading + s.r * dt);
   if (s.grounded) { s.pitch = clamp(s.pitch, 0, airspeed > 20 ? .2 : .015); s.roll *= Math.exp(-dt * 8); }
-  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z));
-  s.lift = pressure * AIRCRAFT.wingArea * cl;
-  s.drag = pressure * AIRCRAFT.wingArea * cd;
+  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z), plane);
+  s.lift = pressure * plane.wingArea * cl;
+  s.drag = pressure * plane.wingArea * cd;
   const altitudePower = Math.exp(-Math.max(0, s.y) / 11000);
   const mixtureEfficiency = clamp(1 - Math.abs(c.mixture - clamp(1 - s.y / 10000, .45, 1)) * 1.5, 0, 1);
-  s.thrust = s.systems.engine ? Math.min(2400, AIRCRAFT.maxPower * c.throttle * .75 / Math.max(22, airspeed)) * altitudePower * mixtureEfficiency * clamp(s.systems.rpm / 2200, 0, 1) : 0;
+  s.thrust = s.systems.engine ? Math.min(plane.thrustLimit, plane.maxPower * c.throttle * .75 / Math.max(22, airspeed)) * altitudePower * mixtureEfficiency * clamp(s.systems.rpm / 2200, 0, 1) : 0;
   const sinH = Math.sin(airHeading), cosH = Math.cos(airHeading), sinG = Math.sin(gamma), cosG = Math.cos(gamma);
   const liftY = s.lift * Math.cos(s.roll) * cosG;
   const liftHorizontal = -s.lift * Math.cos(s.roll) * sinG;
-  const sideForce = s.lift * Math.sin(s.roll) + pressure * AIRCRAFT.wingArea * (c.rudder * .08 - s.sideslip * .35);
+  const sideForce = s.lift * Math.sin(s.roll) + pressure * plane.wingArea * (c.rudder * .08 - s.sideslip * .35);
   let fx = Math.sin(s.heading) * Math.cos(s.pitch) * s.thrust + sinH * liftHorizontal + cosH * sideForce;
   let fz = Math.cos(s.heading) * Math.cos(s.pitch) * s.thrust + cosH * liftHorizontal - sinH * sideForce;
   let fy = Math.sin(s.pitch) * s.thrust + liftY - mass * G;
@@ -214,8 +239,30 @@ export function stepFlight(s, dt = DT) {
     s.lastPathTime = s.time;
   }
   const nav = navigation(s);
-  if (nav.distance < 600 && s.waypoint < s.route.length - 1) s.waypoint++;
-  updateMission(s, dt);
+  if (!s.race && nav.distance < 600 && s.waypoint < s.route.length - 1) s.waypoint++;
+  if (s.race) updateRace(s, previousPosition, dt);
+  else updateMission(s, dt);
+}
+function updateRace(s, previous, dt) {
+  const race = s.race;
+  race.elapsed += dt;
+  if (s.status === 'crashed') { race.outcome = 'crashed'; s.objective = 'Race ended — aircraft lost. Try again or change planes in the hangar.'; return; }
+  if (race.elapsed >= race.limit) { s.status = 'failed'; race.outcome = 'timeout'; s.objective = 'Time expired — try again and follow the rings in order.'; return; }
+  const gate = race.gates[race.next];
+  const signed = p => (p.x - gate.x) * Math.sin(gate.heading) + (p.z - gate.z) * Math.cos(gate.heading);
+  const before = signed(previous), after = signed(s);
+  if (before < 0 && after >= 0) {
+    const t = -before / (after - before), x = previous.x + (s.x - previous.x) * t, y = previous.y + (s.y - previous.y) * t, z = previous.z + (s.z - previous.z) * t;
+    const across = (x - gate.x) * Math.cos(gate.heading) - (z - gate.z) * Math.sin(gate.heading);
+    if (Math.hypot(across, y - gate.y) <= gate.radius) { race.next++; s.waypoint = Math.min(race.next, race.gates.length - 1); }
+  }
+  if (race.next === race.gates.length) {
+    s.status = 'complete'; race.outcome = 'finished'; s.achievements.push('race-finish');
+    s.objective = `RACE COMPLETE — ${race.elapsed.toFixed(2)} seconds!`;
+  } else {
+    const target = race.gates[race.next], distance = Math.hypot(s.x - target.x, s.y - target.y, s.z - target.z);
+    s.objective = `RACE · ${race.next}/${race.gates.length} rings · ${(race.limit - race.elapsed).toFixed(1)}s left · next ${Math.round(distance)}m · ${s.y < target.y - 25 ? 'climb toward ring' : s.y > target.y + 25 ? 'descend toward ring' : 'hold altitude'}${signed(s) > 0 && race.next === race.gates.indexOf(gate) ? ' · missed ring: turn around and approach from the front' : ''}`;
+  }
 }
 function updateMission(s, dt) {
   if (s.status === 'crashed') { s.objective = 'Flight ended: impact / structural limits exceeded. Restart or review debrief.'; return; }
@@ -227,7 +274,7 @@ function updateMission(s, dt) {
     const passed = [s.systems.engine, s.grounded && Math.hypot(s.vx, s.vz) > 2.6, !s.grounded && agl > 30,
       !s.grounded && Math.abs(s.roll) < .087 && Math.abs(s.vy) < 2 && s.airspeed > 41 && s.airspeed < 57,
       !s.grounded && Math.abs(s.roll) > .26 && Math.abs(s.roll) < .61,
-      s.touchdown?.airport && s.grounded && Math.hypot(s.vx, s.vz) < 2];
+      Boolean(s.touchdown?.airport) && s.grounded && Math.hypot(s.vx, s.vz) < 2];
     if (step === 3) s.levelTime = passed[3] ? (s.levelTime || 0) + dt : 0;
     if (passed[step] && (step !== 3 || s.levelTime > 10)) { s.trainingStep++; s.achievements.push(`training-${step + 1}`); }
     if (s.trainingStep >= 6) { s.status = 'complete'; s.objective = 'Training complete — review your flight report.'; }
@@ -239,10 +286,10 @@ function updateMission(s, dt) {
   }
 }
 export function flightReport(s) {
-  return { format: 'skyforge-flight-report', version: 1, aircraft: s.aircraft, fictionalWorld: true, mode: s.mode, status: s.status,
+  return { format: 'skyforge-flight-report', version: 1, aircraft: s.aircraft, aircraftId: s.aircraftId, race: s.race ? { course: `${s.departure}/${s.runway}`, checkpoints: s.race.next, total: s.race.gates.length, seconds: s.race.elapsed, outcome: s.race.outcome } : null, fictionalWorld: true, mode: s.mode, status: s.status,
     durationSeconds: s.time, distanceMeters: s.distanceFlown, fuelUsedLiters: s.fuelUsed, peakAltitudeMeters: s.peakAltitude,
     maxG: s.maxG, touchdown: s.touchdown, controlVariation: s.smoothness, path: s.flightPath,
-    suggestions: s.touchdown ? [s.touchdown.verticalSpeed > 2 ? 'Reduce descent rate before touchdown; flare progressively.' : 'Controlled vertical speed at touchdown.',
+    suggestions: s.race ? [s.race.outcome === 'finished' ? 'Race finished! Try another aircraft or beat your personal best.' : 'Fly through every ring in order; keep gentle bank and pitch corrections.'] : s.touchdown ? [s.touchdown.verticalSpeed > 2 ? 'Reduce descent rate before touchdown; flare progressively.' : 'Controlled vertical speed at touchdown.',
       s.touchdown.alignment > 10 ? 'Align with the runway before the flare.' : 'Good runway alignment.'] : ['Practice a stabilized approach at 60–70 kt.', 'Keep an airport within gliding range.'] };
 }
 export function readSave(storage = globalThis.localStorage) {
@@ -251,7 +298,7 @@ export function readSave(storage = globalThis.localStorage) {
     if (value?.version !== 1 || !Array.isArray(value.logs) || !Array.isArray(value.training)) return null;
     const settings = value.settings || {};
     const valid = { sensitivity: clamp(Number(settings.sensitivity) || 1, .3, 2), invert: Boolean(settings.invert), deadzone: clamp(Number(settings.deadzone) || .12, .02, .5), quality: ['low', 'medium', 'high'].includes(settings.quality) ? settings.quality : 'medium', volume: clamp(Number(settings.volume) || 0, 0, 1) };
-    return { version: 1, settings: valid, config: value.config || {}, training: value.training.filter(v => typeof v === 'string'), logs: value.logs.slice(-20), aircraft: AIRCRAFT.name };
+    return { version: 1, settings: valid, config: value.config || {}, training: value.training.filter(v => typeof v === 'string'), logs: value.logs.slice(-20), records: Object.fromEntries(Object.entries(value.records || {}).filter(([key, seconds]) => /^[-a-z0-9/]+$/i.test(key) && typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0)), aircraft: AIRCRAFT.name };
   } catch { return null; }
 }
 export function writeSave(save, storage = globalThis.localStorage) {
