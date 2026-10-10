@@ -1,0 +1,10 @@
+{
+  "name": "orr-gamz",
+  "private": true,
+  "scripts": {
+    "build": "node tools/build-skyforge.mjs",
+    "test": "node smoke-test.mjs && node tests/skyforge.test.mjs"
+  },
+  "dependencies": { "three": "0.180.0" },
+  "devDependencies": { "esbuild": "0.25.10" }
+}
