@@ -90,7 +90,8 @@ function updateUI(){if(!active)return;
   const s=state,nav=navigation(s),powered=s.systems.voltage>20;
   $('ias').textContent=f(kt(indicatedAirspeed(s)));$('alt').textContent=f(ft(s.y));$('hdg').textContent=String(Math.round((degrees(s.heading)+360)%360)).padStart(3,'0');$('vs').textContent=f(ft(s.vy)*60);$('rpm').textContent=f(s.systems.rpm);$('fuel').textContent=`${s.systems.fuel.toFixed(1)} L · ${f(s.systems.voltage)} V`;
   if(nextMessage){$('objective').textContent=nextMessage;nextMessage='';}
-  $('warnings').textContent=s.warnings.join(' · ');$('objective').textContent=s.objective;
+  $('warnings').textContent=s.warnings.join(' · ');
+  $('objective').textContent=s.objective+(s.grounded&&!s.systems.engine?' — There is no engine power yet: open Aircraft systems, then toggle Battery, Ignition and Start engine, or leave the dispatch screen set to Engine running / runway.':'');
   $('navInfo').textContent=`${nav.target.name} · ${(nav.distance/1000).toFixed(1)} km · BRG ${f(nav.bearing)}° · course error ${f(nav.error)}° · AGL ${f(ft(s.y-surfaceHeight(s.x,s.z)))} ft`;
   $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · RUDDER ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED-DOWN · ${s.grounded?'ON GROUND — hold B to brake':'AIRBORNE'}`;
   const sorted=[...frames].sort((a,b)=>a-b),mean=frames.reduce((a,b)=>a+b,0)/Math.max(1,frames.length);
@@ -113,7 +114,10 @@ $('exportReport').onclick=()=>{const blob=new Blob([JSON.stringify(flightReport(
 function initAudio(){if(audio)return;const context=new AudioContext(),master=context.createGain(),engine=context.createGain(),env=context.createGain(),osc=context.createOscillator();master.connect(context.destination);engine.connect(master);env.connect(master);osc.type='sawtooth';osc.connect(engine);osc.start();
   const buffer=context.createBuffer(1,context.sampleRate*2,context.sampleRate),data=buffer.getChannelData(0);for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;const noise=context.createBufferSource(),filter=context.createBiquadFilter();noise.buffer=buffer;noise.loop=true;filter.type='lowpass';filter.frequency.value=550;noise.connect(filter);filter.connect(env);noise.start();audio={context,master,engine,env,osc};}
 function clickSound(){if(!audio||Number($('volume').value)===0)return;const osc=audio.context.createOscillator(),gain=audio.context.createGain();osc.frequency.value=700;gain.gain.value=Number($('interfaceVolume').value)*.08;osc.connect(gain);gain.connect(audio.master);osc.start();gain.gain.exponentialRampToValueAtTime(.0001,audio.context.currentTime+.05);osc.stop(audio.context.currentTime+.06);}
-$('audioToggle').onclick=()=>{initAudio();audio.context.resume();$('volume').value=Number($('volume').value)>0?0:.35;persist();$('audioToggle').textContent=Number($('volume').value)>0?'Audio on':'Audio off';};
+function refreshAudioToggle(){$('audioToggle').textContent=audio&&Number($('volume').value)>0?'Audio on':'Audio off';}
+$('audioToggle').onclick=()=>{initAudio();audio.context.resume();$('volume').value=Number($('volume').value)>0?0:.35;persist();refreshAudioToggle();};
+// Browsers block autoplay until user interaction; resume then, not on a timer.
+['pointerdown','keydown'].forEach(type=>document.addEventListener(type,()=>{if(audio&&audio.context.state==='suspended')audio.context.resume();},{capture:true}));
 function updateAudio(){if(!audio)return;const now=audio.context.currentTime;audio.master.gain.setTargetAtTime(Number($('volume').value),now,.05);audio.engine.gain.setTargetAtTime(state.systems.rpm/2700*Number($('engineVolume').value)*.025,now,.1);audio.osc.frequency.setTargetAtTime(25+state.systems.rpm/30,now,.1);audio.env.gain.setTargetAtTime((state.airspeed/100+state.weather.rain)*Number($('environmentVolume').value)*.035,now,.1);}
 $('flightCanvas').addEventListener('webglcontextlost',e=>{e.preventDefault();paused=true;$('bootError').textContent='Graphics context lost. Flight paused; reload to recover. Preferences and completed logs are saved.';$('setup').hidden=false;});
 let previous={};
@@ -129,7 +133,7 @@ function loop(time){const elapsed=lastTime?Math.min(.1,(time-lastTime)/1000):0;c
   if(time-lastUI>150){lastUI=time;updateUI();updateAudio();}
   requestAnimationFrame(loop);
 }
-try{visual=createScene($('flightCanvas'),save.settings.quality,applySystem);document.body.dataset.boot='ready';requestAnimationFrame(loop);
+try{visual=createScene($('flightCanvas'),save.settings.quality,applySystem);document.body.dataset.boot='ready';document.body.dataset.skyforge='surface';requestAnimationFrame(loop);
   // State-only automation surface; UI tests still use visible controls.
   window.__skyforge={getState:()=>structuredClone(state),performance:()=>({samples:frames.length,meanMs:frames.reduce((a,b)=>a+b,0)/Math.max(1,frames.length),p95Ms:[...frames].sort((a,b)=>a-b)[Math.floor(frames.length*.95)],...stats}),scene:()=>({meshes:visual.scene.children.length,webgl:visual.renderer.capabilities.isWebGL2,aircraftMeshes:visual.aircraft.children.length}),testAdvance:seconds=>{for(let i=0;i<seconds/DT;i++)stepFlight(state);updateUI();}};
 }catch(error){document.body.dataset.boot='error';$('bootError').textContent=`Unable to initialize WebGL: ${error.message}. Enable hardware acceleration and use a modern desktop browser.`;$('launch').disabled=true;console.error(error);}

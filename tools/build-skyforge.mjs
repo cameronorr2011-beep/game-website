@@ -10,7 +10,7 @@ await mkdir('public', { recursive: true });
 for (const entry of await readdir('.', { withFileTypes: true })) {
   if (entry.isFile() && entry.name.endsWith('.html')) await cp(entry.name, `public/${entry.name}`);
 }
-for (const directory of ['css', 'js', 'games', 'dist']) {
+for (const directory of ['css', 'js', 'games', 'dist', 'demo']) {
   await cp(directory, `public/${directory}`, { recursive: true });
 }
 console.log('Built self-hosted dist/skyforge.js and Vercel public/ static website.');

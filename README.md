@@ -37,6 +37,19 @@ For Hostinger, deploy the committed `dist/` bundle alongside the repository-root
 site; no hosting build command is needed. Architecture, implemented systems, browser QA, measured performance,
 and explicit limitations: [docs/SKYFORGE.md](docs/SKYFORGE.md).
 
+## PHYCOFRONTIER algae discovery expedition
+
+Play the original 2D exploration game at `/demo/`. It uses a deterministic
+Canvas world with twelve connected habitats, keyboard/touch movement, scanning,
+sample collection, functional microfluidic processing devices, a specimen
+archive, technology unlocks, a world map, outposts, and schema-versioned local
+progress. All organism names and traits are fictional game data; the game does
+not claim validated biological results or cloud accounts.
+
+```bash
+node demo/test_logic.mjs
+```
+
 ## Local smoke test
 
 ```bash

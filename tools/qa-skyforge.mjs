@@ -1,22 +1,23 @@
 import assert from 'node:assert/strict';
 export default async function run(page){
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.waitForSelector('[data-boot="ready"]');
+  await page.waitForSelector('[data-boot="ready"][data-skyforge="surface"]');
   await page.locator('#quality').selectOption('low');
   await page.locator('#mode').selectOption('training');
+  await page.locator('#start').selectOption('cold');
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   await page.getByRole('button',{name:'Aircraft systems',exact:true}).click();
   await page.locator('[data-system="battery"]').click();
   await page.locator('[data-system="ignition"]').click();
   await page.locator('[data-system="starter"]').click();
-  await page.waitForFunction(()=>document.querySelector('#systemReadouts').textContent.includes('ENGINE RUNNING'));
+  await page.waitForFunction(()=>document.querySelector('#systemReadouts').textContent.includes('ENGINE RUNNING'),{},20000);
   await page.locator('#throttle').fill('1');
   await page.locator('[data-close="systems"]').click();
   await page.locator('#flightCanvas').focus();
   await page.keyboard.press('2');
-  await page.waitForFunction(()=>Number(document.querySelector('#ias').textContent)>45,{timeout:45000});
+  await page.waitForFunction(()=>Number(document.querySelector('#ias').textContent)>45,{},45000);
   await page.keyboard.down('ArrowDown');
-  await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('AIRBORNE'),{timeout:15000});
+  await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('AIRBORNE'),{polling:200,timeout:15000});
   await page.keyboard.up('ArrowDown');
   await page.keyboard.press('f');
   await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('FLAPS 10°'));
