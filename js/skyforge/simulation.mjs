@@ -104,6 +104,21 @@ function updateSystems(s, dt) {
   sys.oilTemp += ((sys.engine ? 70 + c.throttle * 35 : s.weather.temperature) - sys.oilTemp) * dt * .006;
   sys.oilPressure += ((sys.engine ? 20 + sys.rpm / 60 : 0) - sys.oilPressure) * dt * 2;
 }
+// Equivalent indicated speed follows dynamic pressure, not true/ground speed.
+export function indicatedAirspeed(s) { return s.airspeed * Math.sqrt(s.density / 1.225); }
+export function aerodynamicCoefficients(alpha, flaps, sideslip, agl) {
+  const stallAngle = AIRCRAFT.stallAlpha + flaps * .035;
+  const stalled = Math.abs(alpha) > stallAngle;
+  let cl = clamp(AIRCRAFT.cl0 + AIRCRAFT.clAlpha * alpha + flaps * .65, -1.2, 1.65 + flaps * .4);
+  if (stalled) cl *= clamp(1 - (Math.abs(alpha) - stallAngle) * 2.4, .22, 1);
+  // Standard approximate induced-drag reduction near a surface; no extra lift.
+  const heightRatio = 16 * Math.max(0, agl) / AIRCRAFT.span;
+  const groundEffect = clamp(heightRatio ** 2 / (1 + heightRatio ** 2), .15, 1);
+  const cd = AIRCRAFT.cd0 + AIRCRAFT.induced * cl ** 2 * groundEffect + flaps * .065 +
+    (stalled ? .18 : 0) + .1 * Math.abs(sideslip);
+  return { cl, cd, stalled, groundEffect };
+}
+
 export function stepFlight(s, dt = DT) {
   if (s.status !== 'active') return;
   dt = clamp(dt, 0, .025);
@@ -136,11 +151,7 @@ export function stepFlight(s, dt = DT) {
   s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * .015);
   s.heading = wrap(s.heading + s.r * dt);
   if (s.grounded) { s.pitch = clamp(s.pitch, 0, airspeed > 20 ? .2 : .015); s.roll *= Math.exp(-dt * 8); }
-  const stall = Math.abs(s.alpha) > AIRCRAFT.stallAlpha + c.flaps * .035;
-  let cl = AIRCRAFT.cl0 + AIRCRAFT.clAlpha * s.alpha + c.flaps * .65;
-  cl = clamp(cl, -1.2, 1.65 + c.flaps * .4);
-  if (stall) cl *= clamp(1 - (Math.abs(s.alpha) - AIRCRAFT.stallAlpha) * 2.4, .22, 1);
-  const cd = AIRCRAFT.cd0 + AIRCRAFT.induced * cl ** 2 + c.flaps * .065 + (stall ? .18 : 0) + .1 * Math.abs(s.sideslip);
+  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z));
   s.lift = pressure * AIRCRAFT.wingArea * cl;
   s.drag = pressure * AIRCRAFT.wingArea * cd;
   const altitudePower = Math.exp(-Math.max(0, s.y) / 11000);
@@ -154,7 +165,8 @@ export function stepFlight(s, dt = DT) {
   let fz = Math.cos(s.heading) * Math.cos(s.pitch) * s.thrust + cosH * liftHorizontal - sinH * sideForce;
   let fy = Math.sin(s.pitch) * s.thrust + liftY - mass * G;
   if (airspeed > .1) { fx -= s.drag * ax / airspeed; fy -= s.drag * ay / airspeed; fz -= s.drag * az / airspeed; }
-  s.gLoad = liftY / (mass * G); s.maxG = Math.max(s.maxG, Math.abs(s.gLoad));
+  // Normal airframe load is lift magnitude, not its world-vertical component.
+  s.gLoad = s.lift / (mass * G); s.maxG = Math.max(s.maxG, Math.abs(s.gLoad));
   const floor = surfaceHeight(s.x, s.z) + 1.25;
   if (s.grounded && s.y <= floor + .2 && fy <= 0) {
     fy = 0; s.vy = 0; s.y = floor;
@@ -202,9 +214,9 @@ export function stepFlight(s, dt = DT) {
   }
   const nav = navigation(s);
   if (nav.distance < 600 && s.waypoint < s.route.length - 1) s.waypoint++;
-  updateMission(s);
+  updateMission(s, dt);
 }
-function updateMission(s) {
+function updateMission(s, dt) {
   if (s.status === 'crashed') { s.objective = 'Flight ended: impact / structural limits exceeded. Restart or review debrief.'; return; }
   if (s.mode === 'training') {
     const descriptions = ['Battery ON, ignition ON, mixture rich, then START.', 'Taxi: throttle 15–25%, rudder steering, brakes. Reach 5 kt.', 'Takeoff: full power, rotate above 50 kt, climb past 100 ft AGL.', 'Straight and level: fly 80–110 kt, within ±5° bank and ±2 m/s vertical speed for 10 seconds.', 'Turn: bank between 15° and 35° while airborne.', 'Return to an airport, land and brake to a stop.'];
@@ -215,7 +227,7 @@ function updateMission(s) {
       !s.grounded && Math.abs(s.roll) < .087 && Math.abs(s.vy) < 2 && s.airspeed > 41 && s.airspeed < 57,
       !s.grounded && Math.abs(s.roll) > .26 && Math.abs(s.roll) < .61,
       s.touchdown?.airport && s.grounded && Math.hypot(s.vx, s.vz) < 2];
-    if (step === 3) s.levelTime = passed[3] ? (s.levelTime || 0) + DT : 0;
+    if (step === 3) s.levelTime = passed[3] ? (s.levelTime || 0) + dt : 0;
     if (passed[step] && (step !== 3 || s.levelTime > 10)) { s.trainingStep++; s.achievements.push(`training-${step + 1}`); }
     if (s.trainingStep >= 6) { s.status = 'complete'; s.objective = 'Training complete — review your flight report.'; }
   } else if (s.touchdown && s.grounded && Math.hypot(s.vx, s.vz) < 2) {

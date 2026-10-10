@@ -1,6 +1,10 @@
 import * as T from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
-import { AIRPORTS, terrainHeight, radians } from './simulation.mjs';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { AIRPORTS, terrainHeight, radians, indicatedAirspeed } from './simulation.mjs';
+const clampTexture = value => Math.max(0,Math.min(255,Math.round(value)));
+const daylight = hour => Math.max(0,Math.sin((hour-6)/12*Math.PI));
 const mat = (color, extra = {}) => new T.MeshStandardMaterial({ color, roughness: .65, ...extra });
 export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const renderer = new T.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
@@ -8,6 +12,9 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   renderer.shadowMap.enabled = quality !== 'low'; renderer.shadowMap.type = T.PCFSoftShadowMap;
   renderer.outputColorSpace = T.SRGBColorSpace; renderer.toneMapping = T.ACESFilmicToneMapping;
   const scene = new T.Scene(); scene.fog = new T.FogExp2(0xa7bcc6, .00008);
+  const pmrem=new T.PMREMGenerator(renderer), room=new RoomEnvironment();
+  const environment=pmrem.fromScene(room,.04);scene.environment=environment.texture;scene.environmentIntensity=.45;
+  room.dispose();pmrem.dispose();
   const camera = new T.PerspectiveCamera(64, 1, .08, 28000);
   const hemi = new T.HemisphereLight(0xbddfff, 0x38432a, 2); scene.add(hemi);
   const sun = new T.DirectionalLight(0xffedd2, 3); sun.castShadow = true;
@@ -16,7 +23,12 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const uniforms = sky.material.uniforms; uniforms.turbidity.value=4; uniforms.rayleigh.value=1.6; uniforms.mieCoefficient.value=.006; uniforms.mieDirectionalG.value=.8;
   const waterMaterial = new T.ShaderMaterial({ uniforms:{ time:{value:0},color:{value:new T.Color(0x14728a)},light:{value:1} }, vertexShader:`uniform float time; varying vec3 wp; varying float wave; void main(){vec3 p=position;p.z+=sin(p.x*.009+time)*.65+cos(p.y*.006+time*.7)*.5;wave=p.z;wp=p;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);}`, fragmentShader:`uniform vec3 color;uniform float light;varying vec3 wp;varying float wave;void main(){float glint=pow(max(0.,sin(wp.x*.01+wp.y*.015)),25.);gl_FragColor=vec4((color*(.75+wave*.06)+vec3(glint*.18))*light,1.);}` });
   const ocean = new T.Mesh(new T.PlaneGeometry(70000,70000,150,150),waterMaterial); ocean.rotation.x=-Math.PI/2; scene.add(ocean);
-  const terrainMaterial = new T.MeshStandardMaterial({ vertexColors:true,roughness:1 });
+  const terrainCanvas=document.createElement('canvas');terrainCanvas.width=256;terrainCanvas.height=256;
+  const terrainCtx=terrainCanvas.getContext('2d'),terrainPixels=terrainCtx.createImageData(256,256);
+  for(let i=0;i<256*256;i++){const x=i%256,y=Math.floor(i/256),noise=(Math.sin(x*12.9898+y*78.233)*43758.5453)%1;
+    const value=clampTexture(165+noise*38+12*Math.sin(x*.16)*Math.cos(y*.11));terrainPixels.data.set([value,value,value,255],i*4);}
+  terrainCtx.putImageData(terrainPixels,0,0);const terrainTexture=new T.CanvasTexture(terrainCanvas);terrainTexture.wrapS=terrainTexture.wrapT=T.RepeatWrapping;terrainTexture.repeat.set(60,60);terrainTexture.colorSpace=T.SRGBColorSpace;
+  const terrainMaterial = new T.MeshStandardMaterial({ vertexColors:true,roughness:1,map:terrainTexture,bumpMap:terrainTexture,bumpScale:.4 });
   const chunks=new Map(), chunkSize=2000, radius=quality==='low'?2:3;
   const treeMat=mat(0x294f37), trunkMat=mat(0x72533a), buildingMat=mat(0xabb2ae);
   const treeGeo=new T.ConeGeometry(6,24,5), buildingGeo=new T.BoxGeometry(1,1,1);
@@ -45,7 +57,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   }
   let lastX=0,lastZ=0,lastChunk='';
   function stream(x,z){lastX=x;lastZ=z;const cx=Math.floor(x/chunkSize),cz=Math.floor(z/chunkSize),key=`${cx},${cz}`;if(key===lastChunk)return;lastChunk=key;
-    for(const[k,c]of chunks){const[a,b]=k.split(',').map(Number);if(Math.abs(a-cx)>radius||Math.abs(b-cz)>radius){scene.remove(c.group);c.geo.dispose();chunks.delete(k);}}
+    for(const[k,c]of chunks){const[a,b]=k.split(',').map(Number);if(Math.abs(a-cx)>radius||Math.abs(b-cz)>radius){scene.remove(c.group);c.geo.dispose();c.group.traverse(object=>{if(object.isInstancedMesh)object.dispose();});chunks.delete(k);}}
     for(let dx=-radius;dx<=radius;dx++)for(let dz=-radius;dz<=radius;dz++)chunk(cx+dx,cz+dz);
   }
   function mesh(parent,geometry,material,x=0,y=0,z=0){const m=new T.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
@@ -62,13 +74,25 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     for(let i=0;i<5;i++)mesh(g,new T.BoxGeometry(22,.08,1),lampMat,0,.2,-a.length/2-30-i*35);
     const labelCanvas=document.createElement('canvas');labelCanvas.width=512;labelCanvas.height=96;const ctx=labelCanvas.getContext('2d');ctx.fillStyle='#def5ff';ctx.font='bold 38px sans-serif';ctx.fillText(`${a.id} · ${a.name}`,8,62);const tex=new T.CanvasTexture(labelCanvas);const label=new T.Sprite(new T.SpriteMaterial({map:tex,transparent:true,depthTest:false}));label.position.set(0,80,0);label.scale.set(230,43,1);g.add(label);
   }
+  // Merge static airport geometry by material to reduce individual draw calls.
+  scene.updateMatrixWorld(true);
+  for(const group of scene.children.filter(object=>object.isGroup)){
+    const batches=new Map();group.traverse(object=>{if(object.isMesh){const list=batches.get(object.material)||[];list.push(object);batches.set(object.material,list);}});
+    for(const[material,objects]of batches){if(objects.length<3)continue;const geometries=objects.map(object=>{const geometry=object.geometry.clone();geometry.applyMatrix4(object.matrix);return geometry;});
+      const merged=mergeGeometries(geometries);geometries.forEach(geometry=>geometry.dispose());if(!merged)continue;
+      objects.forEach(object=>{group.remove(object);object.geometry.dispose();});const combined=mesh(group,merged,material);combined.castShadow=false;}
+  }
   const aircraft=new T.Group();scene.add(aircraft);
-  const white=mat(0xe8e5d8,{metalness:.18}),dark=mat(0x242c30),red=mat(0xc75535),rubber=mat(0x151b1e),glass=mat(0x9bd6e3,{transparent:true,opacity:.14,metalness:.25,roughness:.12,depthWrite:false});
+  const white=new T.MeshPhysicalMaterial({color:0xe8e5d8,metalness:.18,roughness:.3,clearcoat:.7,clearcoatRoughness:.2}),dark=mat(0x39454c,{roughness:.8}),red=mat(0xc75535),rubber=mat(0x151b1e),glass=mat(0x9bd6e3,{transparent:true,opacity:.14,metalness:.25,roughness:.12,depthWrite:false});
   const nose=mesh(aircraft,new T.CylinderGeometry(.55,.7,2.2,20),white,0,.8,2.2);nose.rotation.x=Math.PI/2;
   const tail=mesh(aircraft,new T.CylinderGeometry(.7,.2,3.3,20),white,0,1,-2.35);tail.rotation.x=Math.PI/2;
   mesh(aircraft,new T.BoxGeometry(1.65,.24,2),white,0,.45,.1);
   mesh(aircraft,new T.BoxGeometry(1.65,1.35,2),glass,0,1.7,.1);
-  mesh(aircraft,new T.BoxGeometry(10.8,.14,1.55),white,0,2.55,-.25);
+  function airfoil(span,chord){const shape=new T.Shape();shape.moveTo(-chord*.5,0);shape.bezierCurveTo(-chord*.55,.08,-chord*.2,.16,chord*.5,.015);shape.bezierCurveTo(chord*.1,-.035,-chord*.35,-.045,-chord*.5,0);const geometry=new T.ExtrudeGeometry(shape,{depth:span,steps:1,bevelEnabled:false,curveSegments:16});geometry.translate(0,0,-span/2);geometry.rotateY(Math.PI/2);geometry.computeVertexNormals();return geometry;}
+  mesh(aircraft,airfoil(10.8,1.55),white,0,2.55,-.25);
+  for(const side of[-1,1]){mesh(aircraft,new T.BoxGeometry(.04,.22,1.6),red,side*5.35,2.5,-.25);mesh(aircraft,new T.BoxGeometry(.025,.15,4),red,side*.73,.9,-.8);}
+  const rivets=new T.InstancedMesh(new T.SphereGeometry(.012,5,4),mat(0x98a4a9,{metalness:.8,roughness:.25}),80),rivetObject=new T.Object3D();
+  for(let i=0;i<80;i++){rivetObject.position.set((i%2?1:-1)*.72,.57+(Math.floor(i/2)%2)*.5,-2.6+Math.floor(i/4)*.24);rivetObject.updateMatrix();rivets.setMatrixAt(i,rivetObject.matrix);}aircraft.add(rivets);
   mesh(aircraft,new T.BoxGeometry(4,.12,1.15),white,0,1,-3.1);
   mesh(aircraft,new T.BoxGeometry(.14,1.7,1.25),white,0,1.7,-3.2);
   const ailerons=[],flapMeshes=[];
@@ -88,6 +112,8 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const prop=new T.Group();prop.position.set(0,1,3.37);aircraft.add(prop);mesh(prop,new T.BoxGeometry(.15,2.4,.08),dark);mesh(prop,new T.SphereGeometry(.22,12,8),white,0,0,.1);
   mesh(aircraft,new T.BoxGeometry(1.62,.74,.16),dark,0,1.15,1.04);
   mesh(aircraft,new T.BoxGeometry(1.65,.12,.7),dark,0,1.55,1.25);
+  const cockpitFill=new T.PointLight(0xd5e6f5,7,4,2);cockpitFill.position.set(0,1.75,-.4);aircraft.add(cockpitFill);
+  const propBlur=mesh(prop,new T.CircleGeometry(1.2,40),new T.MeshBasicMaterial({color:0x697580,transparent:true,opacity:.1,side:T.DoubleSide,depthWrite:false}),0,0,.04);
   const yoke=mesh(aircraft,new T.TorusGeometry(.2,.027,8,16,Math.PI*1.5),dark,-.43,1.02,.68);yoke.rotation.z=Math.PI*.25;
   mesh(aircraft,new T.CylinderGeometry(.028,.028,.38,8),dark,-.43,1.02,.86).rotation.x=Math.PI/2;
   const clickable=[],gauges=[],gaugeFaces=[];
@@ -131,6 +157,8 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     aircraft.rotation.set(-s.pitch,s.heading,-s.roll,'YXZ');bodyQ.copy(aircraft.quaternion);
     prop.rotation.z+=s.systems.rpm/60*Math.PI*2*renderDt;ailerons.forEach((a,i)=>a.rotation.x=(i?1:-1)*s.controls.aileron*.35);flapMeshes.forEach(a=>a.rotation.x=s.controls.flaps*.5);elevator.rotation.x=-s.controls.elevator*.35;rudder.rotation.y=s.controls.rudder*.35;yoke.rotation.z=Math.PI*.25-s.controls.aileron*.5;yoke.position.z=.68-s.controls.elevator*.07;
     beacon.visible=s.systems.voltage>20&&s.systems.beacon&&Math.sin(realTime*5)>0;strobes.forEach(l=>l.visible=s.systems.voltage>20&&s.systems.strobe&&realTime%1<.12);
+    propBlur.visible=s.systems.rpm>1000;
+    cockpitFill.intensity=daylight(s.hour)*7+.15;
     pointLight.intensity=s.systems.voltage>20&&s.systems.panelLights?3:0;landingLight.intensity=s.systems.voltage>20&&s.systems.landingLights?500:0;navLights.forEach(l=>l.visible=s.systems.voltage>20&&s.systems.navLights);
     const elevation=Math.sin((s.hour-6)/12*Math.PI),day=Math.max(.025,elevation);const sunDirection=new T.Vector3(.35,elevation,.5).normalize();uniforms.sunPosition.value.copy(sunDirection);sky.visible=day>.05;
     scene.background=new T.Color().setRGB(.025+day*.16,.035+day*.3,.07+day*.48);hemi.intensity=.15+day*1.9;sun.intensity=day*3;sun.position.copy(position).addScaledVector(sunDirection,180);sun.target.position.copy(position);
@@ -144,9 +172,9 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     else if(mode==='chase'){local.set(Math.sin(orbit)*13,5,-Math.cos(orbit)*15).applyQuaternion(bodyQ);target.copy(position).add(local);camera.position.lerp(target,1-Math.exp(-renderDt*8));camera.lookAt(position.clone().add(new T.Vector3(0,1,0)));}
     else {freePosition.x+=(freeInput.x||0)*120*renderDt;freePosition.y+=(freeInput.y||0)*120*renderDt;freePosition.z+=(freeInput.z||0)*120*renderDt;camera.position.copy(freePosition);camera.rotation.set(lookPitch,lookYaw+Math.PI,0,'YXZ');}
     camera.fov=zoom;camera.updateProjectionMatrix();
-    const power=s.systems.voltage>20;gauges[0].rotation.z=power?-s.airspeed/80*Math.PI*1.7:0;gauges[1].rotation.z=power?s.roll:0;gauges[2].rotation.z=power?-s.y/304.8*Math.PI*2:0;gauges[3].rotation.z=power?-s.r*4:0;gauges[4].rotation.z=power?s.heading:0;gauges[5].rotation.z=power?-s.vy/10*Math.PI*.8:0;
+    const power=s.systems.voltage>20;gauges[0].rotation.z=power?-indicatedAirspeed(s)/80*Math.PI*1.7:0;gauges[1].rotation.z=power?s.roll:0;gauges[2].rotation.z=power?-s.y/304.8*Math.PI*2:0;gauges[3].rotation.z=power?-s.r*4:0;gauges[4].rotation.z=power?s.heading:0;gauges[5].rotation.z=power?-s.vy/10*Math.PI*.8:0;
     if(realTime-lastDisplay>.2){lastDisplay=realTime;
-      const values=[`${Math.round(s.airspeed*1.94384)} KT`,`${Math.round(s.pitch*180/Math.PI)} DEG`,`${Math.round(s.y*3.28084)} FT`,`${(s.r*180/Math.PI).toFixed(1)} DEG/S`,`${Math.round((s.heading*180/Math.PI+360)%360)} DEG`,`${Math.round(s.vy*196.85)} FPM`];
+      const values=[`${Math.round(indicatedAirspeed(s)*1.94384)} KT`,`${Math.round(s.pitch*180/Math.PI)} DEG`,`${Math.round(s.y*3.28084)} FT`,`${(s.r*180/Math.PI).toFixed(1)} DEG/S`,`${Math.round((s.heading*180/Math.PI+360)%360)} DEG`,`${Math.round(s.vy*196.85)} FPM`];
       gaugeFaces.forEach(({canvas,texture},i)=>{const ctx=canvas.getContext('2d');ctx.fillStyle='#101c23';ctx.fillRect(0,0,256,256);
         if(power&&i===1){ctx.save();ctx.translate(128,128);ctx.rotate(s.roll);ctx.translate(0,s.pitch*150);ctx.fillStyle='#5b92ad';ctx.fillRect(-220,-350,440,350);ctx.fillStyle='#8b6b45';ctx.fillRect(-220,0,440,350);ctx.strokeStyle='#f6e5af';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-180,0);ctx.lineTo(180,0);ctx.stroke();ctx.restore();}
         ctx.fillStyle=power?'#cde1d8':'#34464e';ctx.textAlign='center';ctx.font='bold 26px monospace';ctx.fillText(gaugeLabels[i],128,75);ctx.font='22px monospace';ctx.fillText(power?values[i]:'OFF',128,195);texture.needsUpdate=true;});

@@ -15,6 +15,12 @@ python -m http.server 8891 --bind 127.0.0.1
 # Open http://127.0.0.1:8891/games/skyforge.html
 ```
 
+Vercel uses `vercel.json`: `npm run build` → `public/`. The build copies only
+runtime HTML, CSS, JS, games and bundled assets into that output. Preview the
+actual deployment artifact with `python -m http.server 8892 --directory public`.
+Production entry: `https://game-website-m7ep.vercel.app/games/skyforge.html`
+(subject to the project's domain assignment/access settings).
+
 Commit `dist/skyforge.js` and its linked license file. Hostinger deploys the
 repository root with no server-side Node runtime. Three.js and Sky are bundled
 locally. Fonts have a system fallback if Google Fonts is unreachable.
@@ -64,6 +70,10 @@ to thrust with a low-speed cap and density/mixture efficiency. Atmospheric densi
 uses an exponential altitude approximation. Body angular response is a damped
 coefficient-based approximation, not a full six-degree-of-freedom inertia tensor
 solver. Ground friction is load-based with simplified lateral tire damping.
+Indicated airspeed is corrected for dynamic-pressure density; true airspeed
+remains the aerodynamic velocity relative to wind. Ground effect reduces induced
+drag using a height/span approximation without adding lift. Load factor uses
+normal aerodynamic lift rather than its world-vertical projection.
 Center of gravity/inertia are implicit fixed tuning rather than adjustable models.
 These coefficients have **not** been validated against flight-test data.
 
@@ -85,6 +95,9 @@ Browser scripts (Playwright Page interface):
 
 Initial local headless Chrome medium-renderer measurement: 57 FPS, p95 25.2 ms,
 476 draw calls, 83k triangles, 49 tiles during a short runway/takeoff flight.
+After airport material batching and visual improvements: 63 FPS, p95 25.0 ms,
+189 calls, 86k triangles, 49 tiles in the same browser QA workflow. This is a
+single-run comparison, not a controlled cross-hardware benchmark.
 Selecting Low after boot currently changes resolution/shadows immediately;
 terrain tile count applies on the next reload. Results are host/headless-specific,
 not a claim of validated performance on typical desktop hardware. Startup and
@@ -96,8 +109,10 @@ This is a playable procedural **core**, not the requested completed AAA/high-fid
 simulator. Full scope still needs further implementation and validation:
 
 - Aircraft/cockpit are visibly modular, not photorealistic; no sourced textures,
-  ambient occlusion, water reflections, damage geometry, prop blur or detailed
-  rivets/interior furnishings. Glass uses inexpensive transparency.
+  ambient occlusion, water reflections, damage geometry or detailed
+  complete interior furnishings. Procedural rivets, shaped wing sections,
+  environment reflections, clearcoat, terrain bump detail, cockpit fill lighting,
+  and an RPM-gated prop blur disk are implemented. Glass uses inexpensive transparency.
 - No real geography/elevation datasets, rivers/lakes/bridges/roads/industrial
   network, global terrain, or floating-origin system. Airports are simplified.
 - Clouds are instanced ellipsoids, not volumetric; no in-flight custom weather
@@ -117,7 +132,8 @@ simulator. Full scope still needs further implementation and validation:
   reconstructing live GPU resources. Quality changes do not rebuild tile radius.
 - Engine/wind audio is synthesized; no sampled prop/startup/warning sound library.
 - Loading tile geometry is synchronous; a worker/incremental queue and airport
-  instancing would improve streaming spikes and draw-call count.
+  instancing would improve streaming spikes further; static airport geometry is
+  now batched by material. Evicted instance buffers are explicitly disposed.
 
 Before calling this high fidelity: validate aerodynamics/handling against suitable
 reference data, expand systems, create quality original cockpit/exterior assets,

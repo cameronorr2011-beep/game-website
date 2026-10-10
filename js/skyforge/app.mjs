@@ -1,5 +1,5 @@
 import { createScene } from './scene.mjs';
-import { AIRPORTS, WEATHER, DT, clamp, degrees, createFlight, stepFlight, navigation, surfaceHeight, flightReport, readSave, writeSave } from './simulation.mjs';
+import { AIRPORTS, WEATHER, DT, clamp, degrees, createFlight, stepFlight, navigation, surfaceHeight, indicatedAirspeed, flightReport, readSave, writeSave } from './simulation.mjs';
 const $=id=>document.getElementById(id);
 const saved=readSave();
 let save=saved||{version:1,settings:{sensitivity:1,invert:false,deadzone:.12,quality:'medium',volume:0},config:{},training:[],logs:[]};
@@ -86,7 +86,7 @@ function drawMap(canvas,report=false){const ctx=canvas.getContext('2d'),w=canvas
 }
 function updateUI(){if(!active)return;
   const s=state,nav=navigation(s),powered=s.systems.voltage>20;
-  $('ias').textContent=f(kt(s.airspeed));$('alt').textContent=f(ft(s.y));$('hdg').textContent=String(Math.round((degrees(s.heading)+360)%360)).padStart(3,'0');$('vs').textContent=f(ft(s.vy)*60);$('rpm').textContent=f(s.systems.rpm);$('fuel').textContent=`${s.systems.fuel.toFixed(1)} L · ${f(s.systems.voltage)} V`;
+  $('ias').textContent=f(kt(indicatedAirspeed(s)));$('alt').textContent=f(ft(s.y));$('hdg').textContent=String(Math.round((degrees(s.heading)+360)%360)).padStart(3,'0');$('vs').textContent=f(ft(s.vy)*60);$('rpm').textContent=f(s.systems.rpm);$('fuel').textContent=`${s.systems.fuel.toFixed(1)} L · ${f(s.systems.voltage)} V`;
   $('warnings').textContent=s.warnings.join(' · ');$('objective').textContent=s.objective;
   $('navInfo').textContent=`${nav.target.name} · ${(nav.distance/1000).toFixed(1)} km · BRG ${f(nav.bearing)}° · course error ${f(nav.error)}° · AGL ${f(ft(s.y-surfaceHeight(s.x,s.z)))} ft`;
   $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · RUD ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED · ${s.grounded?'GROUND':'AIRBORNE'}`;

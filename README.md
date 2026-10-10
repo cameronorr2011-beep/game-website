@@ -31,8 +31,10 @@ npm run build
 python -m http.server 8891 --bind 127.0.0.1
 ```
 
-Deploy the committed `dist/` bundle alongside the site; no hosting build command
-is needed. Architecture, implemented systems, browser QA, measured performance,
+Vercel: `vercel.json` runs `npm run build` and publishes the generated `public/`
+directory. Open `/games/skyforge.html` on the project's assigned domain.
+For Hostinger, deploy the committed `dist/` bundle alongside the repository-root
+site; no hosting build command is needed. Architecture, implemented systems, browser QA, measured performance,
 and explicit limitations: [docs/SKYFORGE.md](docs/SKYFORGE.md).
 
 ## Local smoke test
