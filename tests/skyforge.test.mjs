@@ -1,26 +1,37 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
+import { wrap } from '../js/skyforge/simulation.mjs';
+const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
+const wrapDegrees = a => wrapAngle(a) * 180 / Math.PI;
 import { WORLDS, worldProps } from '../js/skyforge/worlds.mjs';
 import { keyboardFlightInput, sceneryCollision, AIRPORTS, AIRCRAFT, AIRCRAFTS, aircraftFor, DT, createFlight, stepFlight, navigation, terrainHeight, flightReport, readSave, writeSave, indicatedAirspeed, aerodynamicCoefficients } from '../js/skyforge/simulation.mjs';
 const run = (s, seconds, control) => { for (let i = 0; i < Math.round(seconds / DT); i++) { control?.(s); stepFlight(s); assert.ok([s.x,s.y,s.z,s.pitch,s.roll,s.heading,s.airspeed].every(Number.isFinite)); } return s; };
 const start = performance.now();
-assert.equal(keyboardFlightInput(new Set(['KeyW'])).pitch,1);
-assert.equal(keyboardFlightInput(new Set(['KeyS'])).pitch,-1);
+assert.equal(keyboardFlightInput(new Set(['KeyW'])).throttleUp,1);
+assert.equal(keyboardFlightInput(new Set(['KeyS'])).brake,1);
 assert.equal(keyboardFlightInput(new Set(['KeyA'])).turn,-1);
 assert.equal(keyboardFlightInput(new Set(['KeyD'])).turn,1);
-assert.equal(keyboardFlightInput(new Set(['ShiftLeft'])).power,1);
+assert.equal(keyboardFlightInput(new Set(['ShiftLeft'])).throttleUp,1);
+assert.equal(keyboardFlightInput(new Set(['ArrowUp'])).pitch,1,'manual pitch on arrows only');
 for(const world of WORLDS)for(const plane of AIRCRAFTS){
-  const s=createFlight({world:world.id,aircraft:plane.id,start:'air'}),altitude=s.y;
-  s.easyInput={pitch:1,turn:0};run(s,3);assert.ok(s.y>altitude+5,`${world.id}/${plane.id}: W climbs`);
-  const peak=s.y;s.easyInput={pitch:-1,turn:0};run(s,4);assert.ok(s.y<peak,`${world.id}/${plane.id}: S dives`);
-  const heading=s.heading;s.easyInput={pitch:0,turn:1};run(s,2);assert.ok(s.heading>heading+.1,'D turns right');
-  s.easyInput={pitch:0,turn:0};run(s,5);assert.ok(Math.abs(s.roll)<.01,'release levels wings');assert.ok(Math.abs(s.vy)<.2,'release holds level flight');assert.equal(s.status,'active');
+  // W adds power; level flight keeps accelerating until climb covers altitude.
+  const s=createFlight({world:world.id,aircraft:plane.id,start:'air'});s.controls.throttle=.75;
+  s.easyInput={pitch:0,turn:0,brake:0};run(s,4);assert.ok(s.airspeed>35,`${world.id}/${plane.id}: W powers forward`);
+  s.easyInput={pitch:1,turn:0,brake:0};const climbFrom=s.y;run(s,5);assert.ok(Math.abs(wrapDegrees(s.pitch))>10,`${world.id}/${plane.id}: pitches up and holds climb attitude`);
+  const peak=s.y;s.easyInput={pitch:-.8,turn:0,brake:0};run(s,5);assert.ok(s.y<peak,`${world.id}/${plane.id}: arrows pitch down`);
+  const flatheading=s.heading;s.easyInput={pitch:0,turn:-1,brake:0};run(s,3);assert.ok(s.roll<-.2,'A banks left');assert.ok(Math.abs(wrapDegrees(s.heading-flatheading))>20,'A turns left');
+  s.easyInput={pitch:0,turn:0,brake:0};run(s,5);assert.ok(Math.abs(s.roll)<.01,'release levels wings');assert.ok(Math.abs(s.vy)<.2,'release holds level flight');assert.equal(s.status,'active');
+  const glideSpeed=s.airspeed;s.easyInput={pitch:0,turn:0,brake:1};run(s,4);assert.ok(s.airspeed<glideSpeed-4,'S air-brakes');
   assert.equal(flightReport(s).world,world.id);assert.equal(flightReport(s).controlMode,'easy');
   for(const airport of AIRPORTS)assert.equal(terrainHeight(airport.x,airport.z,world.id),airport.elevation);
 }
 const easyTaxi=createFlight({world:'city',ready:true});easyTaxi.controls.throttle=0;run(easyTaxi,2);assert.ok(Math.hypot(easyTaxi.vx,easyTaxi.vz)<.1,'easy idle does not drive aircraft');
-easyTaxi.controls.throttle=1;run(easyTaxi,5);assert.ok(easyTaxi.airspeed>10,'easy taxi accelerates');easyTaxi.controls.throttle=0;easyTaxi.controls.brake=1;run(easyTaxi,5);assert.ok(easyTaxi.airspeed<1,'easy brakes stop aircraft');
+easyTaxi.controls.throttle=1;run(easyTaxi,5);assert.ok(easyTaxi.airspeed>10,'easy taxi accelerates');easyTaxi.controls.throttle=0;easyTaxi.easyInput={pitch:0,turn:0,brake:1};easyTaxi.controls.brake=1;run(easyTaxi,5);assert.ok(easyTaxi.airspeed<1,'easy brakes stop aircraft');
 assert.notEqual(terrainHeight(3000,3000,'beach'),terrainHeight(3000,3000,'apocalypse'));
+assert.ok(Math.abs(terrainHeight(9000,30000,'beach')-terrainHeight(9000,28000,'beach'))>40,"beach has real hills");
+assert.ok(Math.abs(terrainHeight(-5000,18000,'city')-terrainHeight(-5000,12000,'city'))>120,'city has hills');
+assert.ok(Math.abs(terrainHeight(15000,5000,'cyberpunk')-terrainHeight(9000,9000,'cyberpunk'))>50,'cyberpunk has hills');
+assert.ok(Math.abs(terrainHeight(9000,30000,'apocalypse')-terrainHeight(11000,30000,'apocalypse'))>40,'apocalypse has hills');
 const props=worldProps(1,1,'city',terrainHeight,AIRPORTS),building=props.find(p=>p.type==='building');assert.ok(building);
 const collision=createFlight({world:'city',start:'air'});Object.assign(collision,{x:building.x,z:building.z,y:building.y+building.height/2});assert.ok(sceneryCollision(collision));stepFlight(collision);assert.equal(collision.status,'crashed','buildings have collision');
 

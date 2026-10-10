@@ -19,9 +19,9 @@ export default async function run(page){
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   assert.match(await page.locator('#raceHUD').innerText(),/START IN/);
   await page.locator('#flightCanvas').focus();
-  await page.keyboard.down('ShiftLeft');
+  await page.keyboard.down('KeyW');
   await page.waitForFunction(()=>document.querySelector('#raceHUD').textContent.includes('RINGS 1/7'),null,{timeout:20000});
-  await page.keyboard.up('ShiftLeft');
+  await page.keyboard.up('KeyW');
   const raceHUD=await page.locator('#raceHUD').innerText();
   assert.match(raceHUD,/RINGS [1-7]\/7.*TIME/);
   await page.getByRole('button',{name:'Pause Esc',exact:true}).click();
@@ -47,7 +47,7 @@ export default async function run(page){
     if(Date.now()-lastTrace>10000){lastTrace=Date.now();trace.push({hud,objective:await page.locator('#objective').innerText()});}
     const bank=Number(hud.control.match(/BANK (-?\d+)/)?.[1]||0),pitch=Number(hud.control.match(/PITCH (-?\d+)/)?.[1]||0),error=Number(hud.nav.match(/course error (-?\d+)/)?.[1]||0);
     const wantedBank=Math.max(-20,Math.min(20,error)),wantedPitch=Math.max(-8,Math.min(8,(targetAltitude-hud.alt)*.03-hud.vs*.003));
-    const wanted=new Set();if(bank<wantedBank-2)wanted.add('ArrowRight');if(bank>wantedBank+2)wanted.add('ArrowLeft');if(pitch<wantedPitch-1)wanted.add('KeyW');if(pitch>wantedPitch+1)wanted.add('KeyS');
+    const wanted=new Set();if(bank<wantedBank-2)wanted.add('KeyD');if(bank>wantedBank+2)wanted.add('KeyA');if(pitch<wantedPitch-1)wanted.add('ArrowUp');if(pitch>wantedPitch+1)wanted.add('ArrowDown');
     for(const key of held)if(!wanted.has(key)){await page.keyboard.up(key);held.delete(key);}for(const key of wanted)if(!held.has(key)){await page.keyboard.down(key);held.add(key);}
     // Short key taps avoid overcorrecting against the HUD's 150ms refresh interval.
     await page.waitForTimeout(45);

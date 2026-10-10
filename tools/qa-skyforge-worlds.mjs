@@ -10,14 +10,20 @@ export default async function run(page){
   await page.locator('#world').selectOption(world);await page.locator('#aircraft').selectOption(plane);await page.locator('#mode').selectOption('free');
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   await page.waitForFunction(({world,plane})=>document.querySelector('#flightCanvas').dataset.world===world&&document.querySelector('#flightCanvas').dataset.aircraft===plane,{world,plane});
-  const initial=Number(await page.locator('#alt').innerText());
-  // No explicit canvas focus: flight keys must work immediately after launching.
-  await page.keyboard.down('KeyW');await page.waitForFunction(initial=>Number(document.querySelector('#alt').textContent)>initial+25,initial,{timeout:6000});await page.keyboard.up('KeyW');
-  await page.waitForTimeout(800);const peak=Number(await page.locator('#alt').innerText());
-  await page.keyboard.down('KeyS');await page.waitForFunction(peak=>Number(document.querySelector('#alt').textContent)<peak-25,peak,{timeout:6000});await page.keyboard.up('KeyS');
-  await page.keyboard.down('KeyD');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])>15,null,{timeout:4000});await page.keyboard.up('KeyD');
-  await page.waitForTimeout(1200);await page.keyboard.down('KeyA');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])< -15,null,{timeout:4000});await page.keyboard.up('KeyA');
-  await page.waitForFunction(()=>Math.abs(Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1]))<3,null,{timeout:4000});
+  // W = forward power. Motion verified by actual position change (nav distance shrinks), not just speed.
+  const initial=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),alt:Number(document.querySelector('#alt').textContent),ias:Number(document.querySelector('#ias').textContent)}));
+  await page.keyboard.down('KeyW');
+  await page.waitForFunction(initial=>Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1])<initial.dist-0.1,initial,{timeout:15000});
+  await page.keyboard.up('KeyW');
+  const moved=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),ias:Number(document.querySelector('#ias').textContent)}));
+  assert.ok(moved.ias>initial.ias,'W raises speed');assert.ok(moved.dist<initial.dist-.1,'W moves the plane forward');
+  // A banks left, D banks right back, release auto-levels.
+  await page.keyboard.down('KeyA');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])<-15,null,{timeout:5000});await page.keyboard.up('KeyA');
+  await page.waitForTimeout(1500);await page.keyboard.down('KeyD');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])>15,null,{timeout:5000});await page.keyboard.up('KeyD');
+  await page.waitForFunction(()=>Math.abs(Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1]))<3,null,{timeout:5000});
+  await page.keyboard.down('KeyS');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.includes('THR 0'))||Number(document.querySelector('#controlInfo').textContent.match(/THR (\d+)%/)[1])<40,null,{timeout:6000});
+  await page.keyboard.up('KeyS');
+  // Map: zoom in/out, fit, center, drag, click waypoint.
   await page.getByRole('button',{name:'Map M',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#mapCanvas').dataset.world===document.querySelector('#world').value);
   const span=Number(await page.locator('#mapCanvas').getAttribute('data-span'));await page.locator('#mapZoomIn').click();assert.ok(Number(await page.locator('#mapCanvas').getAttribute('data-span'))<span);
   await page.locator('#mapFit').click();assert.equal(await page.locator('#mapCanvas').getAttribute('data-span'),'70000');
@@ -26,13 +32,13 @@ export default async function run(page){
   await page.locator('#mapCanvas').click({position:{x:box.width*.45,y:box.height*.45}});await page.locator('#addWaypoint').click();await page.waitForFunction(()=>document.querySelectorAll('#routeList li').length===2,null,{timeout:3000});assert.equal(await page.locator('#routeList li').count(),2);
   await page.screenshot({path:`.qa/skyforge-${world}-map.png`});
   await page.locator('[data-close="mapPanel"]').click();await page.screenshot({path:`.qa/skyforge-${world}.png`});
-  results.push({world,plane,controls:true,map:true});await page.locator('#hangarToggle').click();
+  results.push({world,plane,forwardMotion:true,banking:true,brake:true,map:true});await page.locator('#hangarToggle').click();
  }
  await page.reload();await page.waitForSelector('[data-boot="ready"]');assert.equal(await page.locator('#world').inputValue(),'apocalypse');assert.equal(await page.locator('#aircraft').inputValue(),'peregrine');
  await page.getByRole('button',{name:'Enter cockpit'}).click();await page.locator('#debriefToggle').click();
  const event=page.waitForEvent('download');await page.locator('#exportReport').click();const download=await event;assert.equal(download.suggestedFilename(),'skyforge-flight-report.json');let text='';for await(const c of await download.createReadStream())text+=c;const report=JSON.parse(text);assert.equal(report.world,'apocalypse');assert.equal(report.controlMode,'easy');
  await page.locator('#debriefDispatch').click();
- // Existing saves must not preserve the confusing old first-run controls/start.
+ // Old saves must not preserve the confusing old controls/start.
  await page.evaluate(()=>{const value=JSON.parse(localStorage.getItem('skyforge-save-v1'));delete value.config.controlsVersion;value.config.start='cold';value.settings.invert=true;localStorage.setItem('skyforge-save-v1',JSON.stringify(value));});
  await page.reload();await page.waitForSelector('[data-boot="ready"]');assert.equal(await page.locator('#start').inputValue(),'air');assert.equal(await page.locator('#invert').isChecked(),false);
  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'dispatch fits mobile width');

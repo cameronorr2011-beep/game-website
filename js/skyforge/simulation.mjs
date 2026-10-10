@@ -47,7 +47,7 @@ export function terrainHeight(x, z, world) {
 export const surfaceHeight = (x, z, world) => Math.max(0, terrainHeight(x, z, world));
 export function keyboardFlightInput(keys) {
   const has=k=>Number(keys.has(k));
-  return { pitch:has('KeyW')+has('ArrowUp')-has('KeyS')-has('ArrowDown'), turn:has('KeyD')+has('ArrowRight')-has('KeyA')-has('ArrowLeft'), rudder:has('KeyE')-has('KeyQ'), power:has('ShiftLeft')+has('ShiftRight')-has('ControlLeft')-has('ControlRight'), brake:has('Space')+has('KeyB') };
+  return { throttleUp:has('KeyW')+has('ShiftLeft')+has('ShiftRight'), throttleDown:has('ControlLeft')+has('ControlRight'), brake:has('KeyS')+has('Space')+has('KeyB'), throttleDownKeyS:has('KeyS'), turn:has('KeyD')+has('ArrowRight')-has('KeyA')-has('ArrowLeft'), pitch:has('ArrowUp')-has('ArrowDown'), rudder:has('KeyE')-has('KeyQ') };
 }
 export function sceneryCollision(s){
   const cx=Math.floor(s.x/2000),cz=Math.floor(s.z/2000);
@@ -215,15 +215,26 @@ export function stepFlight(s, dt = DT) {
   } else { s.grounded = false; s.wasAirborne = true; }
   if(s.assist){
     // Game-style assisted flight: bounded pitch/bank, coordinated turns, no trim wrestling.
-    const input=s.easyInput||{pitch:0,turn:0}, speed=Math.hypot(s.vx,s.vz), responsive=plane.rollRate/1.2;
-    const targetPitch=clamp(input.pitch,-1,1)*.28,targetBank=clamp(input.turn,-1,1)*.5;
+    const input=s.easyInput||{pitch:0,turn:0,brake:0}, speed=Math.hypot(s.vx,s.vz), responsive=plane.rollRate/1.2;
+    const targetPitch=clamp(input.pitch,-1,1)*.32+(input.brake&&!s.grounded?-.22:0),targetBank=clamp(input.turn,-1,1)*.5;
+    // Attitude coordinates the target vertical speed; energy comes from throttle.
     s.pitch+=(targetPitch-s.pitch)*Math.min(1,dt*2.8);s.roll+=(targetBank-s.roll)*Math.min(1,dt*3*responsive);
     s.p=0;s.q=0;s.r=clamp(input.turn,-1,1)*(s.grounded?.3:.38)*responsive;s.heading=wrap(s.heading+s.r*dt);
-    const targetSpeed=s.systems.engine?(s.grounded?0:18)+c.throttle*(plane.maxPower/119000)*45:28;
-    const nextSpeed=Math.max(0,speed+(s.systems.engine?(targetSpeed-speed)*.45:-.8)*dt-(s.grounded?c.brake*18*dt:0));
-    const canLift=!s.grounded||(nextSpeed*1.94384>plane.rotateKt&&input.pitch>0);
-    s.vx=Math.sin(s.heading)*nextSpeed;s.vz=Math.cos(s.heading)*nextSpeed;
-    const targetVy=canLift?(s.systems.engine?Math.sin(s.pitch)*nextSpeed:-3):0;
+    const targetSpeed=s.systems.engine?(s.grounded?0:20)+c.throttle*(plane.maxPower/119000)*62:28;
+    const climbPenalty=Math.max(0,Math.sin(Math.max(0,s.pitch)))*speed*.55;
+    // Cap the climb energy cost: pitch-up should trade some speed, not collapse thrust (arcade feel).
+    // Keep a healthy floor while climbing: pitch-up climbs on power, speed never sinks below ~45 kt.
+    // Keep a healthy floor while climbing: pitch-up climbs on power, speed never sinks below ~45 kt. Braking still slows normally.
+    const rawSpeed=speed+((s.systems.engine?(targetSpeed-speed)*.55-Math.min(climbPenalty*.45,targetSpeed*.25):-(3+2.4)))*dt-(s.grounded?c.brake*22*dt:0)-(input.brake&&!s.grounded?12*dt:0);
+    const nextSpeed=s.grounded||input.brake>0?Math.max(0,rawSpeed):Math.max(45,rawSpeed);
+    const canLift=!s.grounded||(nextSpeed*1.94384>plane.rotateKt&&input.pitch>=0);
+    // On the ground the wheels carry the speed; airborne, pitch directs speed into a climb (vy covers the vertical part, so horizontal speed keeps cos only when canLift).
+    const horizScale=(s.grounded||canLift)?1:Math.cos(s.pitch);
+    s.vx=horizScale*Math.sin(s.heading)*nextSpeed;s.vz=horizScale*Math.cos(s.heading)*nextSpeed;
+    if(s.grounded&&canLift&&Math.sin(s.pitch)>0.08){s.vy=Math.sin(s.pitch)*nextSpeed;} // rotate: commit to the climb instead of ping-ponging on the runway
+    // Gentle air-brake: pitch-down stays shallow and descent is clamped so S never slams into terrain.
+    const targetVyRaw=canLift?(s.systems.engine?Math.sin(s.pitch)*nextSpeed+clamp((targetSpeed-Math.max(40,nextSpeed))*.05,0,14):-3):0;
+    const targetVy=s.assist&&(input.brake&&!s.grounded||targetVyRaw<0)&&targetVyRaw<-3.5?-3.5:targetVyRaw;
     s.vy+=(targetVy-s.vy)*Math.min(1,dt*3);
     if(canLift){s.grounded=false;s.wasAirborne=true;}
     s.airspeed=nextSpeed;s.gLoad=1;s.alpha=.04;s.damage=Math.max(0,s.damage);

@@ -10,11 +10,12 @@ export default async function run(page){
   const objective=await page.locator('#objective').innerText();
   assert.doesNotMatch(objective,/Engine stopped/,'engine-running start must not nag about startup');
   // Only keyboard: hold W through takeoff without opening any panel.
-  await page.keyboard.down('ShiftLeft');await page.keyboard.down('KeyW');
+  await page.keyboard.down('KeyW');
   await page.waitForFunction(()=>Number(document.querySelector('#ias').textContent)>45,{timeout:60000});
-  // W requests climb once rotation speed is reached.
+  // ArrowUp requests climb once rotation speed is reached (manual pitch keys).
+  await page.keyboard.down('ArrowUp');
   await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('AIRBORNE'),{timeout:20000});
-  await page.keyboard.up('KeyW');await page.keyboard.up('ShiftLeft');
+  await page.keyboard.up('ArrowUp');await page.keyboard.up('KeyW');
   const throttleText=await page.locator('#controlInfo').innerText();
   assert.match(throttleText,/THR [1-9]/,'throttle should show meaningful power during climb');
   await page.screenshot({path:'.qa/skyforge-firstflight.png'});

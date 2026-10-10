@@ -33,16 +33,15 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   let currentWorld='beach';
   const chunks=new Map(), chunkSize=2000, radius=quality==='low'?2:3;
   const treeMat=mat(0x294f37), trunkMat=mat(0x72533a), buildingMat=mat(0xabb2ae);
-  const neonMat=new T.MeshBasicMaterial({color:0xff4edf}),roadMat=mat(0x272c38);
-  const treeGeo=new T.ConeGeometry(6,24,5), buildingGeo=new T.BoxGeometry(1,1,1);
+  const neonMat=new T.MeshBasicMaterial({color:0xff4edf}),roadMat=mat(0x272c38);    const treeGeo=new T.ConeGeometry(7,30,6),buildingGeo=new T.BoxGeometry(1,1,1);
   function chunk(cx,cz) {
     const key=`${cx},${cz}`; if(chunks.has(key))return;
     const distance=Math.max(Math.abs(cx-Math.floor(lastX/chunkSize)),Math.abs(cz-Math.floor(lastZ/chunkSize)));
-    const n=distance<=1?32:16;
+    const n=distance<=1?(quality==='low'?36:44):16;
     const geo=new T.PlaneGeometry(chunkSize,chunkSize,n,n); geo.rotateX(-Math.PI/2);
     const p=geo.attributes.position, colors=new Float32Array(p.count*3), color=new T.Color();
     for(let i=0;i<p.count;i++){const x=p.getX(i)+cx*chunkSize+chunkSize/2,z=p.getZ(i)+cz*chunkSize+chunkSize/2,h=terrainHeight(x,z,currentWorld);p.setY(i,h);
-      color.set(h<4?worldFor(currentWorld).sand:worldFor(currentWorld).ground);color.multiplyScalar(.88+.12*Math.sin(x*.01)*Math.sin(z*.009));color.toArray(colors,i*3);}
+      color.set(h<4?worldFor(currentWorld).sand:worldFor(currentWorld).ground);color.lerp(new T.Color(0xffffff),clamp(h/1400,0,.6));color.multiplyScalar(.88+.12*Math.sin(x*.01)*Math.sin(z*.009));color.toArray(colors,i*3);}
     geo.setAttribute('color',new T.BufferAttribute(colors,3));geo.computeVertexNormals();
     const group=new T.Group();const mesh=new T.Mesh(geo,terrainMaterial);mesh.receiveShadow=true;group.add(mesh);group.position.set(cx*chunkSize+chunkSize/2,0,cz*chunkSize+chunkSize/2);
     const props=worldProps(cx,cz,currentWorld,terrainHeight,AIRPORTS),dummy=new T.Object3D();
@@ -53,7 +52,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
       group.add(towers);if(currentWorld==='cyberpunk')group.add(bands);else bands.dispose();
       const streets=new T.InstancedMesh(buildingGeo,roadMat,16);for(let i=0;i<16;i++){const horizontal=i<8;dummy.position.set(horizontal?0:-860+(i-8)*235,terrainHeight(group.position.x,group.position.z,currentWorld)+.4,horizontal?-860+i*235:0);dummy.scale.set(horizontal?2000:16,.6,horizontal?16:2000);dummy.updateMatrix();streets.setMatrixAt(i,dummy.matrix);}group.add(streets);
     }
-    if(palms.length){const trunks=new T.InstancedMesh(buildingGeo,trunkMat,palms.length),crowns=new T.InstancedMesh(treeGeo,treeMat,palms.length);
+    if(palms.length){const trunks=new T.InstancedMesh(buildingGeo,trunkMat,palms.length),crowns=new T.InstancedMesh(new T.ConeGeometry(9,7,7),treeMat,palms.length);
       palms.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(1.4,p.height,1.4);dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);dummy.position.y=p.y+p.height;dummy.scale.set(1.8,.25,1.8);dummy.updateMatrix();crowns.setMatrixAt(i,dummy.matrix);});group.add(trunks,crowns);
     }
     scene.add(group);chunks.set(key,{group,geo});

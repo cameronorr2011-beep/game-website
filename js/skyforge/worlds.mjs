@@ -8,12 +8,23 @@ export const WORLDS = Object.freeze([
 export const worldFor = id => WORLDS.find(w=>w.id===id)||WORLDS[0];
 export const WORLD_EXTENT = { minX:-15000,maxX:35000,minZ:-10000,maxZ:40000 };
 export function landscape(x,z,id='beach') {
-  if(id==='city'||id==='cyberpunk') return 35+z*.003+24*Math.sin(x/6000)*Math.cos(z/7000);
+  if(id==='city'||id==='cyberpunk'){
+    const hills=420*Math.exp(-((x+5000)**2+(z-18000)**2)/26000000)+320*Math.exp(-((x-18000)**2+(z+3000)**2)/20000000)+dunes(x,z,.35);
+    return 35+z*.004+hills;
+  }
   if(id==='apocalypse'){
     const crater=-160*Math.exp(-((x-3500)**2+(z-2500)**2)/1400000);
-    return 130+70*Math.sin(x/2100)*Math.cos(z/2400)+35*Math.sin(z/700)+crater;
+    return 150+120*Math.sin(x/2100)*Math.cos(z/2400)+55*Math.sin(z/700)+90*Math.sin(x/730)*Math.cos(z/680)+crater+mountains(x,z,.65);
   }
-  return 25+z*.004+65*Math.sin(x/4500)+65*Math.sin(z/3900)+35*Math.sin(x/1700)*Math.sin(z/2200);
+  return 40+z*.006+90*Math.sin(x/4500)+95*Math.sin(z/3900)+60*Math.sin(x/1700)*Math.sin(z/2200)+dunes(x,z,.5)+mountains(x,z,.8);
+}
+function mountains(x,z,amount){
+  const clusters=[[9000,30000,3800,900],[28000,10000,3200,720],[-8000,27000,3600,850],[22000,30000,3000,650]];
+  return clusters.reduce((sum,[mx,mz,scale,height])=>sum+height*amount*Math.exp(-((x-mx)**2+(z-mz)**2)/(scale*T_SCALE)),0);
+}
+const T_SCALE=4500000*.001;
+function dunes(x,z,amount){
+  return amount*(140*Math.sin(x/620)*Math.cos(z/560)+90*Math.sin(x/340+z/410)+55*Math.sin(z/290-x/370));
 }
 const seeded=(x,z,i)=>{const n=Math.sin(x*67.13+z*131.71+i*19.19)*43758.5453;return n-Math.floor(n);};
 export function worldProps(cx,cz,id,terrain,airports){
