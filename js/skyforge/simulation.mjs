@@ -146,7 +146,8 @@ export function stepFlight(s, dt = DT) {
   s.q += (desiredQ - s.q) * dt * 3;
   s.p += (c.aileron * 1.2 * effectiveness - s.p * 2.8) * dt;
   const turn = G * Math.tan(clamp(s.roll, -1.2, 1.2)) / Math.max(25, horizontalAir);
-  s.r += ((s.grounded ? c.rudder * clamp(airspeed / 12, 0, 1) * .4 : turn + c.rudder * .22 * effectiveness + s.sideslip * .8) - s.r) * dt * 2;
+  const rudderGround = clamp(airspeed / 22, .15, 1.3);
+  s.r += ((s.grounded ? c.rudder * rudderGround * .48 : turn + c.rudder * .22 * effectiveness + s.sideslip * .8) - s.r) * dt * 2;
   s.pitch = clamp(s.pitch + s.q * dt + turbulence * Math.sin(s.time * 2.9) * dt * .008, -.9, .9);
   s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * .015);
   s.heading = wrap(s.heading + s.r * dt);
@@ -201,10 +202,10 @@ export function stepFlight(s, dt = DT) {
   s.smoothness += controlValues.reduce((sum, v, i) => sum + Math.abs(v - s.previousControls[i]), 0);
   s.previousControls = controlValues;
   s.warnings = [];
-  if (stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — lower the nose');
+    if (stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — release pull, lower the nose slightly, add full power');
   if (airspeed > 75) s.warnings.push('OVERSPEED');
   if (s.systems.fuel < 15) s.warnings.push('LOW FUEL');
-  if (!s.systems.engine && !s.grounded) s.warnings.push('ENGINE OFF — glide 65 kt');
+  if (!s.systems.engine && !s.grounded) s.warnings.push('ENGINE OFF — best glide 65 kt, pick a landing area now');
   if (s.systems.voltage < 20) s.warnings.push('ELECTRICAL BUS OFF');
   if (s.damage > 0) s.warnings.push('AIRFRAME DAMAGE');
   if (s.time - s.lastPathTime >= 1) {

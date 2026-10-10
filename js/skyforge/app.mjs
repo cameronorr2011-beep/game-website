@@ -3,9 +3,11 @@ import { AIRPORTS, WEATHER, DT, clamp, degrees, createFlight, stepFlight, naviga
 const $=id=>document.getElementById(id);
 const saved=readSave();
 let save=saved||{version:1,settings:{sensitivity:1,invert:false,deadzone:.12,quality:'medium',volume:0},config:{},training:[],logs:[]};
-let state=createFlight({start:'air'}),visual=null,active=false,paused=false,accumulator=0,lastTime=0,lastUI=0,frames=[],stats={},reported=false,config={};
+let state=createFlight({start:'air'}),visual=null,active=false,paused=false,accumulator=0,lastTime=0,lastUI=0,frames=[],stats={},reported=false,config={},slowFrames=0,qualityAdapted=0;
 const keys=new Set();
 let audio=null;
+function showMessage(text){nextMessage=text;}
+let nextMessage='';
 const f=n=>Number(n).toFixed(0),kt=v=>v*1.94384,ft=v=>v*3.28084;
 function fillAirports(id){$(id).replaceChildren(...AIRPORTS.map(a=>{const option=document.createElement('option');option.value=a.id;option.textContent=`${a.id} · ${a.name}`;return option;}));}
 ['departure','destination','mapDestination'].forEach(fillAirports);$('destination').value='SF02';
@@ -87,9 +89,10 @@ function drawMap(canvas,report=false){const ctx=canvas.getContext('2d'),w=canvas
 function updateUI(){if(!active)return;
   const s=state,nav=navigation(s),powered=s.systems.voltage>20;
   $('ias').textContent=f(kt(indicatedAirspeed(s)));$('alt').textContent=f(ft(s.y));$('hdg').textContent=String(Math.round((degrees(s.heading)+360)%360)).padStart(3,'0');$('vs').textContent=f(ft(s.vy)*60);$('rpm').textContent=f(s.systems.rpm);$('fuel').textContent=`${s.systems.fuel.toFixed(1)} L · ${f(s.systems.voltage)} V`;
+  if(nextMessage){$('objective').textContent=nextMessage;nextMessage='';}
   $('warnings').textContent=s.warnings.join(' · ');$('objective').textContent=s.objective;
   $('navInfo').textContent=`${nav.target.name} · ${(nav.distance/1000).toFixed(1)} km · BRG ${f(nav.bearing)}° · course error ${f(nav.error)}° · AGL ${f(ft(s.y-surfaceHeight(s.x,s.z)))} ft`;
-  $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · RUD ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED · ${s.grounded?'GROUND':'AIRBORNE'}`;
+  $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · RUDDER ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED-DOWN · ${s.grounded?'ON GROUND — hold B to brake':'AIRBORNE'}`;
   const sorted=[...frames].sort((a,b)=>a-b),mean=frames.reduce((a,b)=>a+b,0)/Math.max(1,frames.length);
   $('perf').textContent=`${mean?(1000/mean).toFixed(0):'—'} FPS · p95 ${sorted[Math.floor(sorted.length*.95)]?.toFixed(1)||'—'} ms · ${stats.drawCalls||0} calls · ${((stats.triangles||0)/1000).toFixed(0)}k triangles · ${stats.chunks||0} terrain tiles`;
   document.querySelectorAll('[data-system]').forEach(b=>{const k=b.dataset.system;const value=s.systems[k];b.classList.toggle('on',value);b.textContent=k==='starter'?'Start engine':`${k.replace(/([A-Z])/g,' $1')} ${value?'ON':'OFF'}`;});
@@ -114,12 +117,15 @@ $('audioToggle').onclick=()=>{initAudio();audio.context.resume();$('volume').val
 function updateAudio(){if(!audio)return;const now=audio.context.currentTime;audio.master.gain.setTargetAtTime(Number($('volume').value),now,.05);audio.engine.gain.setTargetAtTime(state.systems.rpm/2700*Number($('engineVolume').value)*.025,now,.1);audio.osc.frequency.setTargetAtTime(25+state.systems.rpm/30,now,.1);audio.env.gain.setTargetAtTime((state.airspeed/100+state.weather.rain)*Number($('environmentVolume').value)*.035,now,.1);}
 $('flightCanvas').addEventListener('webglcontextlost',e=>{e.preventDefault();paused=true;$('bootError').textContent='Graphics context lost. Flight paused; reload to recover. Preferences and completed logs are saved.';$('setup').hidden=false;});
 let previous={};
+// Unique device-consensus render metrics: recent slow frames trigger adaptation.
 function loop(time){const elapsed=lastTime?Math.min(.1,(time-lastTime)/1000):0;const raw=lastTime?time-lastTime:0;lastTime=time;
+  if(raw>0){slowFrames+=raw>34?1:0;if(slowFrames>60)slowFrames=12;if(raw<=17)slowFrames=Math.max(0,slowFrames-2);}
   if(active&&!paused){accumulator+=elapsed;let steps=0;while(accumulator>=DT&&steps<12){previous={x:state.x,y:state.y,z:state.z,pitch:state.pitch,roll:state.roll,heading:state.heading};inputs(DT);stepFlight(state,DT);accumulator-=DT;steps++;}}
   if(visual){const freeInput=visual.mode==='free'?{x:Number(keys.has('KeyD'))-Number(keys.has('KeyA')),z:Number(keys.has('KeyW'))-Number(keys.has('KeyS')),y:Number(keys.has('KeyQ'))-Number(keys.has('KeyZ'))}:{};
     let renderState=state;if(active&&!paused&&previous.x!==undefined){const a=accumulator/DT;renderState={...state};for(const k of['x','y','z','pitch','roll','heading'])renderState[k]=previous[k]+(state[k]-previous[k])*a;}
     stats=visual.render(renderState,time/1000,freeInput);}
-  if(active&&!paused&&raw>0){frames.push(raw);if(frames.length>300)frames.shift();}
+    if(active&&!paused&&raw>0){frames.push(raw);if(frames.length>300)frames.shift();
+    if(slowFrames>=15&&qualityAdapted<2&&visual){qualityAdapted++;slowFrames=0;const next=qualityAdapted===1?'low':'low',current=$('quality');visual.renderer.setPixelRatio(qualityAdapted===2?Math.max(1,devicePixelRatio*.75):1);visual.renderer.shadowMap.enabled=qualityAdapted<2;current.value='low';current.selected=true;persist();showMessage(`Graphics auto-reduced for smoothness (level ${qualityAdapted}).`);}}
   if(time-lastUI>150){lastUI=time;updateUI();updateAudio();}
   requestAnimationFrame(loop);
 }

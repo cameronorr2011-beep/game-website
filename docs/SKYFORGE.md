@@ -52,6 +52,9 @@ No TypeScript typecheck is configured; source is JavaScript ES modules.
   logic uses actual flight state and touchdown/stop at the selected airport.
 - Keyboard, optional Gamepad API inputs, sensitivity/invert/deadzone controls,
   systems sliders, control reference and pause on focus/visibility loss.
+- Automatic render-quality fallback that reduces resolution/shadows after
+  sustained slow frames, with an in-flight notification. Vehicle-frame p95
+  is a full-frame cost estimate; individual tiles/streaming can still spike.
 - Hard impact/overspeed/load consequences, stall/low-fuel/bus warnings,
   touchdown quality score, bounded path recording, post-flight report and JSON
   export (`skyforge-flight-report`, version 1).
@@ -122,6 +125,8 @@ simulator. Full scope still needs further implementation and validation:
   frequencies are explicitly decorative fictional labels, not functional controls.
 - No configurable key bindings, multi-axis joystick calibration, or touch flight
   controls. Keyboard/gamepad are the intended flight interface.
+- Ground steering gain scales smoothly with speed; stall/engine-off warnings name
+  the recovery action rather than a bare condition label.
 - Only one aircraft. Training conditions exist, but every lesson and full
   cross-country/emergency completion has not been flown end-to-end by a human.
 - Landing quality is calculated; route completion is a mission condition.
