@@ -1,3 +1,4 @@
+import { landscape, worldFor, worldProps } from './worlds.mjs';
 // SKYFORGE: educational, fictional trainer. SI units internally; not flight training.
 export const DT = 1 / 120;
 export const G = 9.80665;
@@ -31,8 +32,8 @@ export function naturalTerrain(x, z) {
   const detail = 18 * Math.sin(x / 110) * Math.sin(z / 150);
   return coast + mountain + ridge + detail;
 }
-export function terrainHeight(x, z) {
-  let h = naturalTerrain(x, z);
+export function terrainHeight(x, z, world) {
+  let h = world ? landscape(x,z,world) : naturalTerrain(x, z);
   for (const a of AIRPORTS) {
     const dx = x - a.x, dz = z - a.z;
     const along = dx * Math.sin(a.heading) + dz * Math.cos(a.heading);
@@ -43,7 +44,15 @@ export function terrainHeight(x, z) {
   }
   return h;
 }
-export const surfaceHeight = (x, z) => Math.max(0, terrainHeight(x, z));
+export const surfaceHeight = (x, z, world) => Math.max(0, terrainHeight(x, z, world));
+export function keyboardFlightInput(keys) {
+  const has=k=>Number(keys.has(k));
+  return { pitch:has('KeyW')+has('ArrowUp')-has('KeyS')-has('ArrowDown'), turn:has('KeyD')+has('ArrowRight')-has('KeyA')-has('ArrowLeft'), rudder:has('KeyE')-has('KeyQ'), power:has('ShiftLeft')+has('ShiftRight')-has('ControlLeft')-has('ControlRight'), brake:has('Space')+has('KeyB') };
+}
+export function sceneryCollision(s){
+  const cx=Math.floor(s.x/2000),cz=Math.floor(s.z/2000);
+  return worldProps(cx,cz,s.world,terrainHeight,AIRPORTS).some(p=>p.type==='building'&&Math.abs(s.x-p.x)<p.width/2+2&&Math.abs(s.z-p.z)<p.depth/2+2&&s.y<p.y+p.height+1);
+}
 export function runwayPosition(a, x, z) {
   const dx = x - a.x, dz = z - a.z;
   return { along: dx * Math.sin(a.heading) + dz * Math.cos(a.heading), across: dx * Math.cos(a.heading) - dz * Math.sin(a.heading) };
@@ -73,23 +82,24 @@ export function createFlight(config = {}) {
   const airborne = config.start === 'air' || ['landing', 'emergency', 'race'].includes(config.mode);
   const offset = airborne ? -3000 : -a.length / 2 + 80;
   const x = a.x + Math.sin(heading) * offset, z = a.z + Math.cos(heading) * offset;
-  const altitude = airborne ? a.elevation + (config.mode === 'landing' ? 160 : 750) : a.elevation + 1.25;
+  const altitude = airborne ? Math.max(a.elevation + (config.mode === 'landing' ? 160 : 750), surfaceHeight(x,z,config.world)+200) : a.elevation + 1.25;
   const startEngine = airborne || config.ready;
   const s = {
-    version: 1, aircraft: plane.name, aircraftId: plane.id, departure: a.id, destination: config.mode === 'landing' ? a.id : config.destination || 'SF02',
+    version: 1, world: config.world ? worldFor(config.world).id : undefined, assist: config.assist !== false && Boolean(config.world), aircraft: plane.name, aircraftId: plane.id, departure: a.id, destination: config.mode === 'landing' ? a.id : config.destination || 'SF02',
     mode: config.mode || 'free', runway: config.runway || a.runways[0], route: [], waypoint: 0,
     x, y: altitude, z, vx: Math.sin(heading) * (airborne ? 43 : 0), vy: airborne && config.mode === 'landing' ? -2 : 0, vz: Math.cos(heading) * (airborne ? 43 : 0),
     heading, pitch: airborne ? .02 : 0, roll: 0, p: 0, q: 0, r: 0,
     controls: { elevator: 0, aileron: 0, rudder: 0, throttle: startEngine ? (config.mode === 'landing' ? .35 : .7) : 0, mixture: 1, trim: 0, flaps: config.mode === 'landing' ? .5 : 0, brake: 0 },
     systems: { battery: Boolean(startEngine), ignition: Boolean(startEngine), starter: false, engine: Boolean(startEngine), rpm: startEngine ? 1900 : 0, batteryAh: 24, voltage: startEngine ? 28 : 0, alternator: true, fuel: plane.fuelCapacity, oilTemp: 20, oilPressure: 0, navLights: true, landingLights: false, beacon: true, strobe: false, panelLights: false },
     failures: { engine: false, electrical: false }, weather: { ...(WEATHER[config.weather] || WEATHER.clear), ...(config.customWeather || {}) },
-    hour: config.hour ?? 14, dayCycle: true, damage: 0, time: 0, grounded: !airborne, wasAirborne: airborne, airspeed: airborne ? 43 : 0,
+    hour: config.hour ?? worldFor(config.world).hour, dayCycle: true, damage: 0, time: 0, grounded: !airborne, wasAirborne: airborne, airspeed: airborne ? 43 : 0,
     alpha: 0, sideslip: 0, lift: 0, drag: 0, thrust: 0, density: 1.225, gLoad: 1, warnings: [],
     flightPath: [], lastPathTime: -1, distanceFlown: 0, fuelUsed: 0, peakAltitude: altitude, maxG: 1, smoothness: 0, previousControls: [0, 0, 0],
     touchdown: null, status: 'active', objective: 'Start the engine, taxi, and explore the fictional archipelago.', trainingStep: 0, achievements: [], emergencyTriggered: false,
   };
   const dest = AIRPORTS.find(p => p.id === s.destination) || AIRPORTS[1];
   s.route = config.route?.length ? config.route.map(p => ({ ...p })) : [{ id: dest.id, name: dest.name, x: dest.x, z: dest.z }];
+  if(s.mode==='free'&&s.systems.engine)s.objective=`Explore ${worldFor(s.world).name} — W climbs, S dives, A/D turn. M opens the full map; Hangar changes world or plane.`;
   if (s.mode === 'landing') s.objective = `Land on ${a.name} runway ${s.runway}; target 60–70 kt, shallow descent.`;
   if (s.mode === 'crosscountry') s.objective = `Fly the route and land at ${dest.name}.`;
   if (s.mode === 'emergency') s.objective = 'Engine failure at 10 seconds. Glide at 65 kt, choose a safe landing area.';
@@ -177,7 +187,7 @@ export function stepFlight(s, dt = DT) {
   s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * .015);
   s.heading = wrap(s.heading + s.r * dt);
   if (s.grounded) { s.pitch = clamp(s.pitch, 0, airspeed > 20 ? .2 : .015); s.roll *= Math.exp(-dt * 8); }
-  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z), plane);
+  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z, s.world), plane);
   s.lift = pressure * plane.wingArea * cl;
   s.drag = pressure * plane.wingArea * cd;
   const altitudePower = Math.exp(-Math.max(0, s.y) / 11000);
@@ -193,7 +203,7 @@ export function stepFlight(s, dt = DT) {
   if (airspeed > .1) { fx -= s.drag * ax / airspeed; fy -= s.drag * ay / airspeed; fz -= s.drag * az / airspeed; }
   // Normal airframe load is lift magnitude, not its world-vertical component.
   s.gLoad = s.lift / (mass * G); s.maxG = Math.max(s.maxG, Math.abs(s.gLoad));
-  const floor = surfaceHeight(s.x, s.z) + 1.25;
+  const floor = surfaceHeight(s.x, s.z, s.world) + 1.25;
   if (s.grounded && s.y <= floor + .2 && fy <= 0) {
     fy = 0; s.vy = 0; s.y = floor;
     const speed = Math.hypot(s.vx, s.vz);
@@ -203,31 +213,46 @@ export function stepFlight(s, dt = DT) {
     const lateral = s.vx * Math.cos(s.heading) - s.vz * Math.sin(s.heading);
     fx -= lateral * mass * 5 * Math.cos(s.heading); fz += lateral * mass * 5 * Math.sin(s.heading);
   } else { s.grounded = false; s.wasAirborne = true; }
-  s.vx += fx / mass * dt; s.vy += fy / mass * dt; s.vz += fz / mass * dt;
+  if(s.assist){
+    // Game-style assisted flight: bounded pitch/bank, coordinated turns, no trim wrestling.
+    const input=s.easyInput||{pitch:0,turn:0}, speed=Math.hypot(s.vx,s.vz), responsive=plane.rollRate/1.2;
+    const targetPitch=clamp(input.pitch,-1,1)*.28,targetBank=clamp(input.turn,-1,1)*.5;
+    s.pitch+=(targetPitch-s.pitch)*Math.min(1,dt*2.8);s.roll+=(targetBank-s.roll)*Math.min(1,dt*3*responsive);
+    s.p=0;s.q=0;s.r=clamp(input.turn,-1,1)*(s.grounded?.3:.38)*responsive;s.heading=wrap(s.heading+s.r*dt);
+    const targetSpeed=s.systems.engine?(s.grounded?0:18)+c.throttle*(plane.maxPower/119000)*45:28;
+    const nextSpeed=Math.max(0,speed+(s.systems.engine?(targetSpeed-speed)*.45:-.8)*dt-(s.grounded?c.brake*18*dt:0));
+    const canLift=!s.grounded||(nextSpeed*1.94384>plane.rotateKt&&input.pitch>0);
+    s.vx=Math.sin(s.heading)*nextSpeed;s.vz=Math.cos(s.heading)*nextSpeed;
+    const targetVy=canLift?(s.systems.engine?Math.sin(s.pitch)*nextSpeed:-3):0;
+    s.vy+=(targetVy-s.vy)*Math.min(1,dt*3);
+    if(canLift){s.grounded=false;s.wasAirborne=true;}
+    s.airspeed=nextSpeed;s.gLoad=1;s.alpha=.04;s.damage=Math.max(0,s.damage);
+  }else{s.vx += fx / mass * dt; s.vy += fy / mass * dt; s.vz += fz / mass * dt;}
   const oldX = s.x, oldZ = s.z;
   s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
   s.distanceFlown += Math.hypot(s.x - oldX, s.z - oldZ);
-  const newFloor = surfaceHeight(s.x, s.z) + 1.25;
+  const newFloor = surfaceHeight(s.x, s.z, s.world) + 1.25;
   if (s.y <= newFloor) {
     if (!s.grounded && s.wasAirborne) {
       const airport = airportAt(s.x, s.z);
       const verticalSpeed = Math.max(0, -s.vy);
       const alignment = airport ? Math.min(Math.abs(degrees(wrap(s.heading - airport.heading))), Math.abs(degrees(wrap(s.heading - airport.heading - Math.PI)))) : 90;
       s.touchdown = { time: s.time, verticalSpeed, airspeed, airport: airport?.id || null, alignment, score: Math.round(clamp(100 - verticalSpeed * 12 - alignment * .8 - Math.max(0, airspeed - 38) * 2 - (airport ? 0 : 25), 0, 100)) };
-      if (verticalSpeed > 6 || Math.abs(s.roll) > .45 || s.pitch < -.25 || terrainHeight(s.x, s.z) < 0) s.damage = 1;
+      if (verticalSpeed > 6 || Math.abs(s.roll) > .45 || s.pitch < -.25 || terrainHeight(s.x, s.z, s.world) < 0) s.damage = 1;
       else if (verticalSpeed > 3) s.damage = Math.max(s.damage, .25);
     }
     s.y = newFloor; s.vy = 0; s.grounded = true;
     if (s.damage >= 1) s.status = 'crashed';
   }
-  if (airspeed > 88 || Math.abs(s.gLoad) > 4.4) s.damage = clamp(s.damage + dt * .05, 0, 1);
+  if(s.world&&sceneryCollision(s)){s.damage=1;s.status='crashed';}
+  if (!s.assist && (airspeed > 88 || Math.abs(s.gLoad) > 4.4)) s.damage = clamp(s.damage + dt * .05, 0, 1);
   if (s.damage >= 1) s.status = 'crashed';
   s.peakAltitude = Math.max(s.peakAltitude, s.y);
   const controlValues = [c.elevator, c.aileron, c.rudder];
   s.smoothness += controlValues.reduce((sum, v, i) => sum + Math.abs(v - s.previousControls[i]), 0);
   s.previousControls = controlValues;
   s.warnings = [];
-    if (stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — release pull, lower the nose slightly, add full power');
+    if (!s.assist && stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — release pull, lower the nose slightly, add full power');
   if (airspeed > 75) s.warnings.push('OVERSPEED');
   if (s.systems.fuel < 15) s.warnings.push('LOW FUEL');
   if (!s.systems.engine && !s.grounded) s.warnings.push('ENGINE OFF — best glide 65 kt, pick a landing area now');
@@ -270,7 +295,7 @@ function updateMission(s, dt) {
     const descriptions = ['Battery ON, ignition ON, mixture rich, then START.', 'Taxi: throttle 15–25%, rudder steering, brakes. Reach 5 kt.', 'Takeoff: full power, rotate above 50 kt, climb past 100 ft AGL.', 'Straight and level: fly 80–110 kt, within ±5° bank and ±2 m/s vertical speed for 10 seconds.', 'Turn: bank between 15° and 35° while airborne.', 'Return to an airport, land and brake to a stop.'];
     const step = s.trainingStep;
     s.objective = `TRAINING ${Math.min(step + 1, 6)}/6 — ${descriptions[step] || 'Training complete.'}`;
-    const agl = s.y - surfaceHeight(s.x, s.z);
+    const agl = s.y - surfaceHeight(s.x, s.z, s.world);
     const passed = [s.systems.engine, s.grounded && Math.hypot(s.vx, s.vz) > 2.6, !s.grounded && agl > 30,
       !s.grounded && Math.abs(s.roll) < .087 && Math.abs(s.vy) < 2 && s.airspeed > 41 && s.airspeed < 57,
       !s.grounded && Math.abs(s.roll) > .26 && Math.abs(s.roll) < .61,
@@ -286,7 +311,7 @@ function updateMission(s, dt) {
   }
 }
 export function flightReport(s) {
-  return { format: 'skyforge-flight-report', version: 1, aircraft: s.aircraft, aircraftId: s.aircraftId, race: s.race ? { course: `${s.departure}/${s.runway}`, checkpoints: s.race.next, total: s.race.gates.length, seconds: s.race.elapsed, outcome: s.race.outcome } : null, fictionalWorld: true, mode: s.mode, status: s.status,
+  return { format: 'skyforge-flight-report', version: 1, aircraft: s.aircraft, aircraftId: s.aircraftId, world: s.world || 'legacy', controlMode: s.assist ? 'easy' : 'simulation', race: s.race ? { course: `${s.world||'legacy'}/${s.assist?'easy':'simulation'}/${s.departure}/${s.runway}`, checkpoints: s.race.next, total: s.race.gates.length, seconds: s.race.elapsed, outcome: s.race.outcome } : null, fictionalWorld: true, mode: s.mode, status: s.status,
     durationSeconds: s.time, distanceMeters: s.distanceFlown, fuelUsedLiters: s.fuelUsed, peakAltitudeMeters: s.peakAltitude,
     maxG: s.maxG, touchdown: s.touchdown, controlVariation: s.smoothness, path: s.flightPath,
     suggestions: s.race ? [s.race.outcome === 'finished' ? 'Race finished! Try another aircraft or beat your personal best.' : 'Fly through every ring in order; keep gentle bank and pitch corrections.'] : s.touchdown ? [s.touchdown.verticalSpeed > 2 ? 'Reduce descent rate before touchdown; flare progressively.' : 'Controlled vertical speed at touchdown.',

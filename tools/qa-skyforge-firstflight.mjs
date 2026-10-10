@@ -3,17 +3,18 @@ export default async function run(page){
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
   await page.waitForSelector('[data-boot="ready"][data-skyforge="surface"]');
-  assert.equal(await page.locator('#start').inputValue(),'ready','engine running must be the first-run default');
+  assert.equal(await page.locator('#start').inputValue(),'air','already flying must be the first-run default');
+  await page.locator('#start').selectOption('ready');
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   await page.locator('#flightCanvas').focus();
   const objective=await page.locator('#objective').innerText();
   assert.doesNotMatch(objective,/Engine stopped/,'engine-running start must not nag about startup');
   // Only keyboard: hold W through takeoff without opening any panel.
-  await page.keyboard.down('KeyW');
+  await page.keyboard.down('ShiftLeft');await page.keyboard.down('KeyW');
   await page.waitForFunction(()=>Number(document.querySelector('#ias').textContent)>45,{timeout:60000});
-  await page.keyboard.press('ArrowDown');
+  // W requests climb once rotation speed is reached.
   await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('AIRBORNE'),{timeout:20000});
-  await page.keyboard.up('KeyW');
+  await page.keyboard.up('KeyW');await page.keyboard.up('ShiftLeft');
   const throttleText=await page.locator('#controlInfo').innerText();
   assert.match(throttleText,/THR [1-9]/,'throttle should show meaningful power during climb');
   await page.screenshot({path:'.qa/skyforge-firstflight.png'});

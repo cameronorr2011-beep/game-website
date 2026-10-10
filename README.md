@@ -19,16 +19,30 @@ The site uses root-relative asset paths (`/css/style.css` and `/js/game.js`) so 
 ## SKYFORGE flight simulator
 
 Play at `/games/skyforge.html` (linked from the homepage and games catalog).
+Default controls are **W climb, S dive, A/D turn**, **Shift/Ctrl power**, and
+**Space brakes**. Easy flight auto-levels when keys are released and starts
+already airborne in chase view. Optional manual flight retains stall/trim
+behavior; invert only applies there. Old control preferences migrate to the
+new non-inverted airborne start.
+
+Select **Beach**, **City**, **Cyberpunk**, or **Apocalypse** before launch.
+Worlds have different terrain and scenery (palms/coasts, city grids, neon towers,
+craters/ruins). Buildings have collision footprints shared with rendering.
+Press **M** for the full terrain map: zoom, drag-pan, find aircraft, view airports,
+race checkpoints and recorded path, and click coordinates to add waypoints.
+**Change world / plane** returns to the hangar and ends the current flight.
+
 Three selectable fictional aircraft (Peregrine trainer, Swift sport racer, and
 Kestrel light explorer) with different power, mass, wings, liveries, and handling.
 Use **Hangar / switch plane** to end the current flight and choose another.
 Choose **Air race** for a 3-second airborne countdown and seven visible checkpoint
 rings: gold is next, cyan is upcoming. Cross in order within 120 seconds; missed
 rings must be approached again from the front. Races use clear midday weather;
-best times are stored locally per aircraft and departure runway (not an online
+best times are stored locally per world, flight-control mode, aircraft and departure runway (not an online
 leaderboard). Race results are included in `skyforge-flight-report.json`.
 Browser QA: `tools/qa-skyforge-race.mjs` checks switching, countdown, keyboard-only
-checkpoint flight, full race completion, best-time persistence, and export.
+checkpoint flight, full race completion, best-time persistence, and export. `tools/qa-skyforge-worlds.mjs` verifies WASD directions, all four
+worlds, three planes, map navigation, export, persistence, and old-save migration.
 
 True 3D procedural scenery, a working cockpit,
 flight forces, aircraft systems, airports, route planning, weather, missions,

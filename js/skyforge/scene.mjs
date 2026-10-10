@@ -2,6 +2,7 @@ import * as T from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { worldFor, worldProps } from './worlds.mjs';
 import { AIRPORTS, aircraftFor, terrainHeight, radians, indicatedAirspeed } from './simulation.mjs';
 const clampTexture = value => Math.max(0,Math.min(255,Math.round(value)));
 const daylight = hour => Math.max(0,Math.sin((hour-6)/12*Math.PI));
@@ -29,8 +30,10 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     const value=clampTexture(165+noise*38+12*Math.sin(x*.16)*Math.cos(y*.11));terrainPixels.data.set([value,value,value,255],i*4);}
   terrainCtx.putImageData(terrainPixels,0,0);const terrainTexture=new T.CanvasTexture(terrainCanvas);terrainTexture.wrapS=terrainTexture.wrapT=T.RepeatWrapping;terrainTexture.repeat.set(60,60);terrainTexture.colorSpace=T.SRGBColorSpace;
   const terrainMaterial = new T.MeshStandardMaterial({ vertexColors:true,roughness:1,map:terrainTexture,bumpMap:terrainTexture,bumpScale:.4 });
+  let currentWorld='beach';
   const chunks=new Map(), chunkSize=2000, radius=quality==='low'?2:3;
   const treeMat=mat(0x294f37), trunkMat=mat(0x72533a), buildingMat=mat(0xabb2ae);
+  const neonMat=new T.MeshBasicMaterial({color:0xff4edf}),roadMat=mat(0x272c38);
   const treeGeo=new T.ConeGeometry(6,24,5), buildingGeo=new T.BoxGeometry(1,1,1);
   function chunk(cx,cz) {
     const key=`${cx},${cz}`; if(chunks.has(key))return;
@@ -38,22 +41,22 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     const n=distance<=1?32:16;
     const geo=new T.PlaneGeometry(chunkSize,chunkSize,n,n); geo.rotateX(-Math.PI/2);
     const p=geo.attributes.position, colors=new Float32Array(p.count*3), color=new T.Color();
-    for(let i=0;i<p.count;i++){const x=p.getX(i)+cx*chunkSize+chunkSize/2,z=p.getZ(i)+cz*chunkSize+chunkSize/2,h=terrainHeight(x,z);p.setY(i,h);
-      color.set(h<4?0xbca679:h>1050?0xc0c2b9:h>550?0x73765b:0x52734b);color.multiplyScalar(.88+.12*Math.sin(x*.01)*Math.sin(z*.009));color.toArray(colors,i*3);}
+    for(let i=0;i<p.count;i++){const x=p.getX(i)+cx*chunkSize+chunkSize/2,z=p.getZ(i)+cz*chunkSize+chunkSize/2,h=terrainHeight(x,z,currentWorld);p.setY(i,h);
+      color.set(h<4?worldFor(currentWorld).sand:worldFor(currentWorld).ground);color.multiplyScalar(.88+.12*Math.sin(x*.01)*Math.sin(z*.009));color.toArray(colors,i*3);}
     geo.setAttribute('color',new T.BufferAttribute(colors,3));geo.computeVertexNormals();
     const group=new T.Group();const mesh=new T.Mesh(geo,terrainMaterial);mesh.receiveShadow=true;group.add(mesh);group.position.set(cx*chunkSize+chunkSize/2,0,cz*chunkSize+chunkSize/2);
-    const count=quality==='low'?25:70, trees=new T.InstancedMesh(treeGeo,treeMat,count), buildings=new T.InstancedMesh(buildingGeo,buildingMat,14);
-    const dummy=new T.Object3D();
-    for(let i=0;i<count;i++){const x=((Math.sin((cx*67+cz*131+i)*12.9898)*43758.5453)%1+1)%1*chunkSize-chunkSize/2;
-      const z=((Math.sin((cx*29+cz*93+i)*7.178)*14583.1)%1+1)%1*chunkSize-chunkSize/2;
-      const worldX=x+group.position.x,worldZ=z+group.position.z,h=terrainHeight(worldX,worldZ);
-      const safe=h>8&&h<750&&!AIRPORTS.some(a=>Math.hypot(a.x-worldX,a.z-worldZ)<1100);
-      dummy.position.set(x,h+12,z);dummy.scale.setScalar(safe?1:0);dummy.updateMatrix();trees.setMatrixAt(i,dummy.matrix);}
-    group.add(trees);
-    for(let i=0;i<14;i++){const x=-400+(i%5)*85,z=-280+Math.floor(i/5)*90,h=terrainHeight(x+group.position.x,z+group.position.z);
-      const safe=h>8&&!AIRPORTS.some(a=>Math.hypot(a.x-x-group.position.x,a.z-z-group.position.z)<1000);
-      dummy.position.set(x,h+15,z);dummy.scale.set(safe?40:0,safe?30+(i%4)*12:0,safe?35:0);dummy.updateMatrix();buildings.setMatrixAt(i,dummy.matrix);}
-    group.add(buildings);scene.add(group);chunks.set(key,{group,geo});
+    const props=worldProps(cx,cz,currentWorld,terrainHeight,AIRPORTS),dummy=new T.Object3D();
+    const buildings=props.filter(p=>p.type==='building'),palms=props.filter(p=>p.type==='palm');
+    if(buildings.length){const towers=new T.InstancedMesh(buildingGeo,buildingMat,buildings.length),bands=new T.InstancedMesh(buildingGeo,neonMat,buildings.length*3);
+      buildings.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(p.width,p.height,p.depth);dummy.updateMatrix();towers.setMatrixAt(i,dummy.matrix);
+        for(let j=0;j<3;j++){dummy.position.y=p.y+p.height*(.25+j*.3);dummy.scale.set(p.width+1,2,p.depth+1);dummy.updateMatrix();bands.setMatrixAt(i*3+j,dummy.matrix);}});
+      group.add(towers);if(currentWorld==='cyberpunk')group.add(bands);else bands.dispose();
+      const streets=new T.InstancedMesh(buildingGeo,roadMat,16);for(let i=0;i<16;i++){const horizontal=i<8;dummy.position.set(horizontal?0:-860+(i-8)*235,terrainHeight(group.position.x,group.position.z,currentWorld)+.4,horizontal?-860+i*235:0);dummy.scale.set(horizontal?2000:16,.6,horizontal?16:2000);dummy.updateMatrix();streets.setMatrixAt(i,dummy.matrix);}group.add(streets);
+    }
+    if(palms.length){const trunks=new T.InstancedMesh(buildingGeo,trunkMat,palms.length),crowns=new T.InstancedMesh(treeGeo,treeMat,palms.length);
+      palms.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(1.4,p.height,1.4);dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);dummy.position.y=p.y+p.height;dummy.scale.set(1.8,.25,1.8);dummy.updateMatrix();crowns.setMatrixAt(i,dummy.matrix);});group.add(trunks,crowns);
+    }
+    scene.add(group);chunks.set(key,{group,geo});
   }
   let lastX=0,lastZ=0,lastChunk='';
   function stream(x,z){lastX=x;lastZ=z;const cx=Math.floor(x/chunkSize),cz=Math.floor(z/chunkSize),key=`${cx},${cz}`;if(key===lastChunk)return;lastChunk=key;
@@ -142,7 +145,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const cloudMat=new T.MeshLambertMaterial({color:0xf0f0eb,transparent:true,opacity:.7,depthWrite:false});const clouds=new T.InstancedMesh(new T.SphereGeometry(1,8,5),cloudMat,90);scene.add(clouds);
   const dummy=new T.Object3D();
   const rainGeo=new T.BufferGeometry();const rainPositions=new Float32Array(1200*3);for(let i=0;i<1200;i++){rainPositions[i*3]=(i*71%200)-100;rainPositions[i*3+1]=(i*37%150);rainPositions[i*3+2]=(i*47%200)-100;}rainGeo.setAttribute('position',new T.BufferAttribute(rainPositions,3));const rain=new T.Points(rainGeo,new T.PointsMaterial({color:0xaac8dd,size:.2,transparent:true,opacity:.65}));scene.add(rain);
-  let mode='cockpit',lookYaw=0,lookPitch=0,zoom=64,orbit=.55,freePosition=new T.Vector3(0,100,0),lastDisplay=0,lastRenderTime=0;
+  let mode='cockpit',lookYaw=0,lookPitch=0,zoom=64,orbit=0,freePosition=new T.Vector3(0,100,0),lastDisplay=0,lastRenderTime=0;
   const raycaster=new T.Raycaster();canvas.addEventListener('click',e=>{if(mode!=='cockpit')return;const rect=canvas.getBoundingClientRect();raycaster.setFromCamera(new T.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);const hit=raycaster.intersectObjects(clickable)[0];if(hit)onInteract(hit.object.userData.control);});
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
   canvas.addEventListener('pointermove',e=>{if(e.buttons===2){lookYaw-=e.movementX*.003;lookPitch=Math.max(-1,Math.min(.75,lookPitch-e.movementY*.003));orbit+=e.movementX*.003;}});
@@ -167,6 +170,10 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const position=new T.Vector3(),bodyQ=new T.Quaternion(),local=new T.Vector3(),target=new T.Vector3();
   function render(s,realTime,freeInput={}) {
     const renderDt=Math.min(.1,lastRenderTime?realTime-lastRenderTime:1/60);lastRenderTime=realTime;
+    const world=worldFor(s.world);
+    if(currentWorld!==world.id){currentWorld=world.id;for(const c of chunks.values()){scene.remove(c.group);c.geo.dispose();c.group.traverse(o=>{if(o.isInstancedMesh)o.dispose();});}chunks.clear();lastChunk='';}
+    canvas.dataset.world=currentWorld;canvas.dataset.aircraft=s.aircraftId;
+    buildingMat.color.setHex(world.building);waterMaterial.uniforms.color.value.setHex(world.water);neonMat.color.setHex(world.accent);
     updateAircraftAndRace(s);
     stream(s.x,s.z);position.set(s.x,s.y,s.z);aircraft.position.copy(position);
     aircraft.rotation.set(-s.pitch,s.heading,-s.roll,'YXZ');bodyQ.copy(aircraft.quaternion);
@@ -176,8 +183,8 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     cockpitFill.intensity=daylight(s.hour)*7+.15;
     pointLight.intensity=s.systems.voltage>20&&s.systems.panelLights?3:0;landingLight.intensity=s.systems.voltage>20&&s.systems.landingLights?500:0;navLights.forEach(l=>l.visible=s.systems.voltage>20&&s.systems.navLights);
     const elevation=Math.sin((s.hour-6)/12*Math.PI),day=Math.max(.025,elevation);const sunDirection=new T.Vector3(.35,elevation,.5).normalize();uniforms.sunPosition.value.copy(sunDirection);sky.visible=day>.05;
-    scene.background=new T.Color().setRGB(.025+day*.16,.035+day*.3,.07+day*.48);hemi.intensity=.15+day*1.9;sun.intensity=day*3;sun.position.copy(position).addScaledVector(sunDirection,180);sun.target.position.copy(position);
-    const fogColor=new T.Color().setRGB(.035+day*.6,.05+day*.65,.075+day*.66);scene.fog.color.copy(fogColor);scene.fog.density=2.2/s.weather.visibility;renderer.setClearColor(fogColor);waterMaterial.uniforms.time.value=realTime;waterMaterial.uniforms.light.value=.12+day;
+    scene.background=new T.Color().setRGB(.025+day*.16,.035+day*.3,.07+day*.48);hemi.intensity=(world.id==='cyberpunk'?.8:.15)+day*1.9;sun.intensity=day*3;sun.position.copy(position).addScaledVector(sunDirection,180);sun.target.position.copy(position);
+    const fogColor=new T.Color().setRGB(.035+day*.6,.05+day*.65,.075+day*.66);fogColor.lerp(new T.Color(world.fog),world.id==='cyberpunk'?.7:.35);scene.fog.color.copy(fogColor);scene.fog.density=2.2/s.weather.visibility;renderer.setClearColor(fogColor);waterMaterial.uniforms.time.value=realTime;waterMaterial.uniforms.light.value=.12+day;
     ocean.position.set(s.x,0,s.z);
     cloudMat.opacity=.25+s.weather.cloud*.6;cloudMat.color.setScalar(.15+day*.85);
     for(let i=0;i<90;i++){dummy.position.set(s.x+((i*1747+realTime*9)%15000)-7500,1200+(i%4)*230,s.z+((i*2377)%15000)-7500);dummy.scale.set(130+(i%5)*35,45+(i%4)*18,90+(i%7)*25);dummy.updateMatrix();clouds.setMatrixAt(i,dummy.matrix);}clouds.instanceMatrix.needsUpdate=true;clouds.count=Math.floor(s.weather.cloud*90);

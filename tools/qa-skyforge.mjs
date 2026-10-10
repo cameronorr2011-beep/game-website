@@ -16,9 +16,9 @@ export default async function run(page){
   await page.locator('#flightCanvas').focus();
   await page.keyboard.press('2');
   await page.waitForFunction(()=>Number(document.querySelector('#ias').textContent)>45,{},45000);
-  await page.keyboard.down('ArrowDown');
+  await page.keyboard.down('KeyW');
   await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('AIRBORNE'),{polling:200,timeout:15000});
-  await page.keyboard.up('ArrowDown');
+  await page.keyboard.up('KeyW');
   await page.keyboard.press('f');
   await page.waitForFunction(()=>document.querySelector('#controlInfo').textContent.includes('FLAPS 10°'));
   await page.getByRole('button',{name:'Map M',exact:true}).click();
@@ -29,7 +29,8 @@ export default async function run(page){
   await page.locator('[data-close="mapPanel"]').click();
   await page.getByRole('button',{name:'01 Cockpit',exact:true}).click();
   await page.screenshot({path:'.qa/skyforge-cockpit.png'});
-  await page.waitForTimeout(5000);
+  // Easy flight takes off sooner; still record enough actual flight samples for export.
+  await page.waitForTimeout(12000);
   const performanceText=await page.locator('#perf').innerText();
   assert.match(performanceText,/FPS.*p95.*triangles/);
   await page.getByRole('button',{name:'End / debrief',exact:true}).click();
