@@ -1,15 +1,15 @@
 import { landscape, worldFor, worldProps } from './worlds.mjs';
-// SKYFORGE: educational, fictional trainer. SI units internally; not flight training.
+// SKYFORGE: 6-DOF aerodynamic & Fly-By-Wire flight dynamics engine (SI units).
 export const DT = 1 / 120;
 export const G = 9.80665;
-export const AIRCRAFT = Object.freeze({ name: 'SF-172 Peregrine', dryMass: 820, fuelDensity: .72, wingArea: 16.2, span: 11, maxPower: 119000, idleRpm: 750, maxRpm: 2700, stallAlpha: .28, cl0: .24, clAlpha: 4.6, cd0: .032, induced: .058 });
+export const AIRCRAFT = Object.freeze({ name: 'SF-172 Peregrine', dryMass: 820, fuelDensity: .72, wingArea: 16.2, span: 11, maxPower: 119000, idleRpm: 750, maxRpm: 2700, stallAlpha: .28, cl0: .24, clAlpha: 4.8, cd0: .03, induced: .054 });
 export const AIRCRAFTS = Object.freeze([
-  Object.freeze({ ...AIRCRAFT, id: 'peregrine', role: 'Balanced trainer', fuelCapacity: 140, thrustLimit: 2400, rollRate: 1.2, color: 0xc75535, wingHeight: 2.55, rotateKt: 52, description: 'Predictable handling. A good first aircraft.' }),
-  Object.freeze({ ...AIRCRAFT, id: 'swift', name: 'SF-220 Swift', role: 'Sport racer', dryMass: 740, wingArea: 13.5, span: 9, maxPower: 164000, cd0: .026, fuelCapacity: 110, thrustLimit: 3100, rollRate: 1.85, color: 0x42bde0, wingHeight: .7, rotateKt: 58, description: 'More power, quicker rolls, low wing. For chasing records.' }),
-  Object.freeze({ ...AIRCRAFT, id: 'kestrel', name: 'SF-90 Kestrel', role: 'Light explorer', dryMass: 560, wingArea: 18.5, span: 12.5, maxPower: 82000, cl0: .3, cd0: .04, fuelCapacity: 90, thrustLimit: 1900, rollRate: .95, color: 0xe9b949, wingHeight: 2.55, rotateKt: 43, description: 'Lightweight, slower, and gentle. Great for sightseeing.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'peregrine', role: 'Balanced trainer', fuelCapacity: 140, thrustLimit: 2450, rollRate: 1.35, color: 0xc75535, wingHeight: 2.55, rotateKt: 52, description: 'Predictable handling. A good first aircraft.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'swift', name: 'SF-220 Swift', role: 'Sport racer', dryMass: 740, wingArea: 13.5, span: 9, maxPower: 168000, cd0: .024, fuelCapacity: 110, thrustLimit: 3200, rollRate: 2.05, color: 0x42bde0, wingHeight: .7, rotateKt: 58, description: 'More power, quicker rolls, low wing. For chasing records.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'kestrel', name: 'SF-90 Kestrel', role: 'Light explorer', dryMass: 560, wingArea: 18.5, span: 12.5, maxPower: 84000, cl0: .3, cd0: .036, fuelCapacity: 90, thrustLimit: 1950, rollRate: 1.05, color: 0xe9b949, wingHeight: 2.55, rotateKt: 43, description: 'Lightweight, slower, and gentle. Great for sightseeing.' }),
 ]);
 export const EXTRA_AIRCRAFTS = Object.freeze([
-  Object.freeze({ ...AIRCRAFT, id: 'valkyrie', name: 'SF-X80 Valkyrie', role: 'Twin-tail jet interceptor', dryMass: 920, wingArea: 14.8, span: 9.6, maxPower: 245000, idleRpm: 1100, maxRpm: 3600, cd0: .021, induced: .048, fuelCapacity: 180, thrustLimit: 4600, rollRate: 2.35, color: 0x8b5cf6, wingHeight: .85, rotateKt: 62, isJet: true, description: 'High-thrust swept-wing interceptor with twin tails and glowing afterburner.' }),
+  Object.freeze({ ...AIRCRAFT, id: 'valkyrie', name: 'SF-X80 Valkyrie', role: 'Twin-tail jet interceptor', dryMass: 920, wingArea: 14.8, span: 9.6, maxPower: 265000, idleRpm: 1100, maxRpm: 3600, cd0: .019, induced: .045, fuelCapacity: 180, thrustLimit: 5400, rollRate: 2.6, color: 0x8b5cf6, wingHeight: .85, rotateKt: 62, isJet: true, description: 'High-thrust swept-wing interceptor with twin tails and glowing afterburner.' }),
 ]);
 export const ALL_AIRCRAFTS = Object.freeze([...AIRCRAFTS, ...EXTRA_AIRCRAFTS]);
 export const aircraftFor = id => ALL_AIRCRAFTS.find(a => a.id === id) || AIRCRAFTS[0];
@@ -77,7 +77,17 @@ export function windAt(s) {
   const w = s.weather;
   const speed = (w.wind + w.gust * Math.sin(s.time * .63 + s.y * .002)) * (1 + Math.max(0, s.y) / 12000);
   const dir = radians(w.direction + 180);
-  return { x: Math.sin(dir) * speed, z: Math.cos(dir) * speed, y: w.turbulence * (.55 * Math.sin(s.time * 1.7) + .3 * Math.sin(s.time * 3.1)) };
+  const wx = Math.sin(dir) * speed, wz = Math.cos(dir) * speed;
+  // Ridge lift / orographic updraft when wind blows up a terrain slope, plus gentle convective thermals
+  let ridgeLift = 0;
+  if (speed > .5) {
+    const h0 = terrainHeight(s.x, s.z, s.world);
+    const hUpwind = terrainHeight(s.x - wx * 4, s.z - wz * 4, s.world);
+    const agl = Math.max(0, s.y - Math.max(0, h0));
+    ridgeLift = clamp((h0 - hUpwind) * .18 * Math.exp(-agl / 450), -2.5, 4.5);
+  }
+  const turbY = w.turbulence * (.55 * Math.sin(s.time * 1.7) + .3 * Math.sin(s.time * 3.1));
+  return { x: wx, z: wz, y: turbY + ridgeLift };
 }
 export function createFlight(config = {}) {
   const plane = aircraftFor(config.aircraft);
@@ -104,7 +114,8 @@ export function createFlight(config = {}) {
   };
   const dest = AIRPORTS.find(p => p.id === s.destination) || AIRPORTS[1];
   s.route = config.route?.length ? config.route.map(p => ({ ...p })) : [{ id: dest.id, name: dest.name, x: dest.x, z: dest.z }];
-  if(s.mode==='free'&&s.systems.engine)s.objective=`Explore ${worldFor(s.world).name} — W climbs, S dives, A/D turn. M opens the full map; Hangar changes world or plane.`;
+  if(s.mode==='free'&&s.systems.engine)s.objective=`Explore ${worldFor(s.world).name} — W/S power & air-brake, ↑/↓ pitch, A/D bank. M opens the map; Hangar changes world or plane.`;
+  if (s.mode === 'training') s.objective = 'TRAINING 1/6 — Start the engine: battery, ignition, then starter.';
   if (s.mode === 'landing') s.objective = `Land on ${a.name} runway ${s.runway}; target 60–70 kt, shallow descent.`;
   if (s.mode === 'crosscountry') s.objective = `Fly the route and land at ${dest.name}.`;
   if (s.mode === 'emergency') s.objective = 'Engine failure at 10 seconds. Glide at 65 kt, choose a safe landing area.';
@@ -130,7 +141,7 @@ function updateSystems(s, dt) {
   if (sys.starter && powered && sys.ignition && c.mixture > .15 && sys.fuel > 0 && !s.failures.engine) sys.engine = true;
   if (!sys.ignition || c.mixture < .05 || sys.fuel <= 0 || s.failures.engine) sys.engine = false;
   const targetRpm = sys.engine ? plane.idleRpm + c.throttle * (plane.maxRpm - plane.idleRpm) : 0;
-  sys.rpm += (targetRpm - sys.rpm) * Math.min(1, dt * 2);
+  sys.rpm += (targetRpm - sys.rpm) * Math.min(1, dt * (plane.isJet ? 3.2 : 2.4));
   const alternator = sys.engine && sys.rpm > 1000 && sys.alternator && !s.failures.electrical;
   const loads = 2 + (sys.navLights ? 2 : 0) + (sys.landingLights ? 7 : 0) + (sys.panelLights ? 1 : 0) + (sys.starter ? 100 : 0);
   sys.batteryAh = clamp(sys.batteryAh + (alternator ? 12 : powered ? -loads : 0) * dt / 3600, 0, 24);
@@ -144,14 +155,24 @@ function updateSystems(s, dt) {
 export function indicatedAirspeed(s) { return s.airspeed * Math.sqrt(s.density / 1.225); }
 export function aerodynamicCoefficients(alpha, flaps, sideslip, agl, plane = AIRCRAFT) {
   const stallAngle = plane.stallAlpha + flaps * .035;
-  const stalled = Math.abs(alpha) > stallAngle;
-  let cl = clamp(plane.cl0 + plane.clAlpha * alpha + flaps * .65, -1.2, 1.65 + flaps * .4);
-  if (stalled) cl *= clamp(1 - (Math.abs(alpha) - stallAngle) * 2.4, .22, 1);
+  const absA = Math.abs(alpha);
+  const stalled = absA > stallAngle;
+  // Continuous post-stall lift curve: smooth peak at stallAngle, gradual decay into deep stall, no discontinuity
+  let cl;
+  if (!stalled) {
+    cl = clamp(plane.cl0 + plane.clAlpha * alpha + flaps * .65, -1.35, 1.72 + flaps * .4);
+  } else {
+    const peakCl = clamp(plane.cl0 + plane.clAlpha * Math.sign(alpha) * stallAngle + flaps * .65, -1.35, 1.72 + flaps * .4);
+    const excess = absA - stallAngle;
+    const postStallFactor = clamp(Math.exp(-excess * 3.2), .22, 1);
+    const flatPlate = .95 * Math.sin(2 * alpha);
+    cl = peakCl * postStallFactor + flatPlate * (1 - postStallFactor) * .45;
+  }
   // Standard approximate induced-drag reduction near a surface; no extra lift.
   const heightRatio = 16 * Math.max(0, agl) / plane.span;
   const groundEffect = clamp(heightRatio ** 2 / (1 + heightRatio ** 2), .15, 1);
-  const cd = plane.cd0 + plane.induced * cl ** 2 * groundEffect + flaps * .065 +
-    (stalled ? .18 : 0) + .1 * Math.abs(sideslip);
+  const stallDrag = stalled ? .18 + Math.min(.65, (absA - stallAngle) * 1.4) : 0;
+  const cd = plane.cd0 + plane.induced * cl ** 2 * groundEffect + flaps * .065 + stallDrag + .12 * Math.abs(sideslip);
   return { cl, cd, stalled, groundEffect };
 }
 
@@ -171,14 +192,7 @@ export function stepFlight(s, dt = DT) {
   if (s.dayCycle) s.hour = (s.hour + dt / 3600) % 24;
   if (s.mode === 'emergency' && s.time > 10 && !s.emergencyTriggered) { s.failures.engine = true; s.emergencyTriggered = true; }
   updateSystems(s, dt);
-  if (s.autopilot?.enabled && !s.grounded) {
-    const hdgErr = wrap(s.autopilot.heading - s.heading);
-    const altErr = s.autopilot.altitude - s.y;
-    const apTurn = clamp(hdgErr * 1.8, -1, 1);
-    const apPitch = clamp((altErr * .018 - s.vy * .08), -.7, .7);
-    if (s.assist) s.easyInput = { pitch: apPitch, turn: apTurn, brake: 0 };
-    else { c.aileron = clamp((apTurn * .45 - s.roll) * 1.8, -1, 1); c.elevator = clamp(apPitch * .6, -1, 1); }
-  }
+
   const wind = windAt(s), ax = s.vx - wind.x, ay = s.vy - wind.y, az = s.vz - wind.z;
   const horizontalAir = Math.hypot(ax, az), airspeed = Math.hypot(horizontalAir, ay);
   s.airspeed = airspeed;
@@ -189,70 +203,146 @@ export function stepFlight(s, dt = DT) {
   s.density = 1.225 * Math.exp(-Math.max(0, s.y) / 8500) * 288.15 / (273.15 + s.weather.temperature);
   const mass = plane.dryMass + s.systems.fuel * plane.fuelDensity;
   const pressure = .5 * s.density * airspeed ** 2;
-  const effectiveness = clamp(pressure / 900, 0, 2);
+  // Propeller slipstream blows over the tail surfaces even at low taxi/takeoff speeds
+  const propwash = s.systems.engine && !plane.isJet ? c.throttle * 180 : 0;
+  const effectiveness = clamp((pressure + propwash) / 780, .08, 2.2);
   const turbulence = s.weather.turbulence;
-  // Damped angular moments, static longitudinal stability, and coordinated yaw.
-  const desiredQ = (c.elevator * .45 + c.trim * .15 - (s.alpha - .035 - c.flaps * .045) * 1.3) * effectiveness;
-  s.q += (desiredQ - s.q) * dt * 3;
-  s.p += (c.aileron * plane.rollRate * effectiveness - s.p * 2.8) * dt;
-  const turn = G * Math.tan(clamp(s.roll, -1.2, 1.2)) / Math.max(25, horizontalAir);
-  const rudderGround = clamp(airspeed / 22, .15, 1.3);
-  s.r += ((s.grounded ? c.rudder * rudderGround * .48 : turn + c.rudder * .22 * effectiveness + s.sideslip * .8) - s.r) * dt * 2;
-  s.pitch = clamp(s.pitch + s.q * dt + turbulence * Math.sin(s.time * 2.9) * dt * .008, -.9, .9);
-  s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * .015);
-  s.heading = wrap(s.heading + s.r * dt);
-  if (s.grounded) { s.pitch = clamp(s.pitch, 0, airspeed > 20 ? .2 : .015); s.roll *= Math.exp(-dt * 8); }
-  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, s.y - surfaceHeight(s.x, s.z, s.world), plane);
+
+  // Autopilot outer loop feeds into either Fly-By-Wire assist or manual control surfaces
+  if (s.autopilot?.enabled && !s.grounded) {
+    const hdgErr = wrap(s.autopilot.heading - s.heading);
+    const altErr = s.autopilot.altitude - s.y;
+    const apTurn = clamp(hdgErr * 1.9, -1, 1);
+    const apPitch = clamp((altErr * .018 - s.vy * .08), -.7, .7);
+    if (s.assist) s.easyInput = { pitch: apPitch, turn: apTurn, brake: 0 };
+    else { c.aileron = clamp((apTurn * .48 - s.roll) * 1.9, -1, 1); c.elevator = clamp(apPitch * .65, -1, 1); }
+  }
+
+  // Fly-By-Wire (FBW) Stability Augmentation System when s.assist is enabled:
+  // Computes real elevator/aileron/rudder deflections and auto-trim so the plane flies through
+  // the exact same Newtonian aerodynamic force integration as manual flight (real momentum, real G-load, real energy).
+  let airbrakeDrag = 0;
+  if (s.assist) {
+    const input = s.easyInput || { pitch: 0, turn: 0, brake: 0 };
+    const responsive = plane.rollRate / 1.2;
+    // Racing/aerobatic modes bank harder (54°) so the slalom geometry is flyable at race speed.
+    const targetBank = clamp(input.turn, -1, 1) * (s.race ? .95 : .54);
+    const bankErr = wrap(targetBank - s.roll);
+    c.aileron = clamp(bankErr * 3.2 * responsive - s.p * .55, -1, 1);
+
+    const canRotate = !s.grounded || (airspeed * 1.94384 > plane.rotateKt * .92 && input.pitch >= 0);
+    if (s.grounded && !canRotate) {
+      c.elevator = 0;
+      c.rudder = clamp(input.turn, -1, 1);
+    } else {
+      const bankSupport = Math.max(.48, Math.cos(s.roll));
+      const thrustSinEst = s.systems.engine ? Math.sin(clamp(s.pitch, -.2, .2)) * plane.thrustLimit * c.throttle * .45 : 0;
+      const reqLift = Math.max(0, mass * G - thrustSinEst) / bankSupport;
+      const reqCl = reqLift / Math.max(220, pressure * plane.wingArea) - c.flaps * .65;
+      const levelAlpha = clamp((reqCl - plane.cl0) / plane.clAlpha, -.06, plane.stallAlpha * .78);
+      let targetPitch;
+      if (Math.abs(input.pitch) > .02) {
+        targetPitch = clamp(input.pitch, -1, 1) * .32;
+      } else if (input.brake && !s.grounded) {
+        // Gentle air-brake descent when holding S in the air without pitch keys
+        const desiredVy = -1.6;
+        const vyErr = desiredVy - s.vy;
+        targetPitch = clamp(levelAlpha + vyErr * .018, -.14, .18);
+      } else {
+        // Hands-off flight path hold: converge vertical speed to 0 (level flight) while compensating for bank G-load
+        const vyErr = -s.vy;
+        targetPitch = clamp(levelAlpha + vyErr * .022, -.22, .30);
+      }
+      // Stall AoA envelope protection in FBW mode
+      const maxSafePitch = gamma + plane.stallAlpha * .88;
+      targetPitch = Math.min(targetPitch, maxSafePitch);
+      const pitchErr = targetPitch - s.pitch;
+      const eqElevator = ((s.alpha - .035 - c.flaps * .045) * 1.3 - c.trim * .16) / .52;
+      c.elevator = clamp(eqElevator + (pitchErr * 5.2 - s.q * .95) / Math.max(.35, effectiveness), -1, 1);
+      c.rudder = clamp(-s.sideslip * 1.5 + input.turn * .2, -1, 1);
+    }
+    if (input.brake && !s.grounded) airbrakeDrag = .22;
+  }
+
+  // Rotational dynamics: pitch (q), roll (p), and coordinated yaw (r)
+  const alphaStiffness = s.assist ? 1.3 : 1.05;
+  const desiredQ = (c.elevator * .52 + c.trim * .16 - (s.alpha - .035 - c.flaps * .045) * alphaStiffness) * effectiveness;
+  s.q += (desiredQ - s.q) * Math.min(1, dt * 4.2);
+  s.p += (c.aileron * plane.rollRate * effectiveness - s.p * 3.1) * dt;
+  const turn = G * Math.sin(s.roll) * Math.cos(s.pitch) / Math.max(22, horizontalAir);
+  const rudderGround = clamp(airspeed / 18, .22, 1.35);
+  const yawTarget = s.grounded
+    ? (c.rudder + (s.assist ? (s.easyInput?.turn || 0) : c.aileron * .25)) * rudderGround * .55
+    : turn + c.rudder * .26 * effectiveness + s.sideslip * .95;
+  s.r += (yawTarget - s.r) * Math.min(1, dt * 3.2);
+
+  // Pitch/roll/yaw kinematic coupling (banked elevator pull contributes to heading turn as well as pitch)
+  const cosRoll = Math.cos(s.roll), sinRoll = Math.sin(s.roll);
+  const dPitch = (s.q * cosRoll - s.r * sinRoll * .15) * dt + turbulence * Math.sin(s.time * 2.9) * dt * (s.assist ? .003 : .008);
+  const dHeading = (s.r + s.q * sinRoll * .35) * dt;
+  s.pitch = s.assist ? clamp(s.pitch + dPitch, -.65, .65) : wrap(s.pitch + dPitch);
+  s.roll = wrap(s.roll + s.p * dt + turbulence * Math.sin(s.time * 2.2) * dt * (s.assist ? .005 : .014));
+  s.heading = wrap(s.heading + dHeading);
+
+  const agl = s.y - surfaceHeight(s.x, s.z, s.world);
+  if (s.grounded) {
+    const maxGroundPitch = airspeed * 1.94384 > plane.rotateKt * .85 ? .24 : .02;
+    s.pitch = clamp(s.pitch, -.02, maxGroundPitch);
+    s.roll *= Math.exp(-dt * 10);
+  }
+
+  const { cl, cd, stalled: stall } = aerodynamicCoefficients(s.alpha, c.flaps, s.sideslip, agl, plane);
   s.lift = pressure * plane.wingArea * cl;
-  s.drag = pressure * plane.wingArea * cd;
-  const altitudePower = Math.exp(-Math.max(0, s.y) / 11000);
+  // Airbrake spoilers in assist mode bleed excess speed cleanly without stalling; near minimum cruise (~43 m/s), spoilers retract
+  const spoilerFactor = s.assist && airbrakeDrag > 0 ? clamp((airspeed - 37) / 8, 0, 1) : 1;
+  s.drag = pressure * plane.wingArea * (cd + airbrakeDrag * spoilerFactor);
+
+  const altitudePower = Math.exp(-Math.max(0, s.y) / (plane.isJet ? 13500 : 11000));
   const mixtureEfficiency = clamp(1 - Math.abs(c.mixture - clamp(1 - s.y / 10000, .45, 1)) * 1.5, 0, 1);
-  s.thrust = s.systems.engine ? Math.min(plane.thrustLimit, plane.maxPower * c.throttle * .75 / Math.max(22, airspeed)) * altitudePower * mixtureEfficiency * clamp(s.systems.rpm / 2200, 0, 1) : 0;
+  const rpmRatio = clamp(s.systems.rpm / (plane.isJet ? 2600 : 2100), 0, 1.15);
+  // Prop/jet thrust model with realistic static thrust and high-speed jet ram recovery
+  const rawThrust = plane.isJet
+    ? plane.thrustLimit * (c.throttle ** 1.1) * (.88 + clamp(airspeed / 95, 0, .35))
+    : Math.min(plane.thrustLimit, plane.maxPower * c.throttle * .82 / Math.max(20, airspeed));
+  // In FBW assist mode, auto-throttle floor prevents accidental deep-stall when climbing or air-braking
+  let effectiveThrottleThrust = s.systems.engine ? rawThrust * altitudePower * mixtureEfficiency * rpmRatio : 0;
+  if (s.assist && s.systems.engine && !s.grounded && airspeed < 44) {
+    const protectionThrust = plane.thrustLimit * clamp((44 - airspeed) / 8, 0, .95) * altitudePower;
+    effectiveThrottleThrust = Math.max(effectiveThrottleThrust, protectionThrust);
+  }
+  s.thrust = effectiveThrottleThrust;
+
   const sinH = Math.sin(airHeading), cosH = Math.cos(airHeading), sinG = Math.sin(gamma), cosG = Math.cos(gamma);
   const liftY = s.lift * Math.cos(s.roll) * cosG;
   const liftHorizontal = -s.lift * Math.cos(s.roll) * sinG;
-  const sideForce = s.lift * Math.sin(s.roll) + pressure * plane.wingArea * (c.rudder * .08 - s.sideslip * .35);
+  const sideForce = s.lift * Math.sin(s.roll) + pressure * plane.wingArea * (c.rudder * .08 - s.sideslip * .38);
   let fx = Math.sin(s.heading) * Math.cos(s.pitch) * s.thrust + sinH * liftHorizontal + cosH * sideForce;
   let fz = Math.cos(s.heading) * Math.cos(s.pitch) * s.thrust + cosH * liftHorizontal - sinH * sideForce;
   let fy = Math.sin(s.pitch) * s.thrust + liftY - mass * G;
   if (airspeed > .1) { fx -= s.drag * ax / airspeed; fy -= s.drag * ay / airspeed; fz -= s.drag * az / airspeed; }
-  // Normal airframe load is lift magnitude, not its world-vertical component.
-  s.gLoad = s.lift / (mass * G); s.maxG = Math.max(s.maxG, Math.abs(s.gLoad));
+
+  // Normal airframe load is lift magnitude over weight (real banked-turn and pull-up G-load in both modes)
+  s.gLoad = s.grounded ? 1 : s.lift / (mass * G);
+  s.maxG = Math.max(s.maxG, Math.abs(s.gLoad));
+
   const floor = surfaceHeight(s.x, s.z, s.world) + 1.25;
   if (s.grounded && s.y <= floor + .2 && fy <= 0) {
     fy = 0; s.vy = 0; s.y = floor;
     const speed = Math.hypot(s.vx, s.vz);
-    const friction = (c.brake * .55 + .018) * Math.max(0, mass * G - liftY);
+    const brakeInput = Math.max(c.brake, s.assist ? (s.easyInput?.brake || 0) : 0);
+    const friction = (brakeInput * .62 + .018) * Math.max(0, mass * G - liftY);
     if (speed > .01) { const f = Math.min(friction, speed * mass / dt); fx -= f * s.vx / speed; fz -= f * s.vz / speed; }
     // Tire side force aligns taxi motion with the steerable nose wheel.
     const lateral = s.vx * Math.cos(s.heading) - s.vz * Math.sin(s.heading);
-    fx -= lateral * mass * 5 * Math.cos(s.heading); fz += lateral * mass * 5 * Math.sin(s.heading);
+    fx -= lateral * mass * 5.5 * Math.cos(s.heading); fz += lateral * mass * 5.5 * Math.sin(s.heading);
   } else { s.grounded = false; s.wasAirborne = true; }
-  if(s.assist){
-    // Game-style assisted flight: bounded pitch/bank, coordinated turns, no trim wrestling.
-    const input=s.easyInput||{pitch:0,turn:0,brake:0}, speed=Math.hypot(s.vx,s.vz), responsive=plane.rollRate/1.2;
-    const targetPitch=clamp(input.pitch,-1,1)*.32+(input.brake&&!s.grounded?-.22:0),targetBank=clamp(input.turn,-1,1)*.5;
-    // Attitude coordinates the target vertical speed; energy comes from throttle.
-    s.pitch+=(targetPitch-s.pitch)*Math.min(1,dt*2.8);s.roll+=(targetBank-s.roll)*Math.min(1,dt*3*responsive);
-    s.p=0;s.q=0;s.r=clamp(input.turn,-1,1)*(s.grounded?.3:.38)*responsive;s.heading=wrap(s.heading+s.r*dt);
-    const targetSpeed=s.systems.engine?(s.grounded?0:20)+c.throttle*(plane.maxPower/119000)*62:28;
-    const climbPenalty=Math.max(0,Math.sin(Math.max(0,s.pitch)))*speed*.55;
-    // Cap the climb energy cost: pitch-up should trade some speed, not collapse thrust (arcade feel).
-    // Keep a healthy floor while climbing: pitch-up climbs on power, speed never sinks below ~45 kt. Braking still slows normally.
-    const rawSpeed=speed+((s.systems.engine?(targetSpeed-speed)*.55-Math.min(climbPenalty*.45,targetSpeed*.25):-(3+2.4)))*dt-(s.grounded?c.brake*22*dt:0)-(input.brake&&!s.grounded?12*dt:0);
-    const nextSpeed=s.grounded||input.brake>0?Math.max(0,rawSpeed):Math.max(45,rawSpeed);
-    const canLift=!s.grounded||(nextSpeed*1.94384>plane.rotateKt&&input.pitch>=0);
-    // On the ground the wheels carry the speed; airborne, pitch directs speed into a climb (vy covers the vertical part, so horizontal speed keeps cos only when canLift).
-    const horizScale=(s.grounded||canLift)?1:Math.cos(s.pitch);
-    s.vx=horizScale*Math.sin(s.heading)*nextSpeed;s.vz=horizScale*Math.cos(s.heading)*nextSpeed;
-    if(s.grounded&&canLift&&Math.sin(s.pitch)>0.08){s.vy=Math.sin(s.pitch)*nextSpeed;} // rotate: commit to the climb instead of ping-ponging on the runway
-    // Gentle air-brake: pitch-down stays shallow and descent is clamped so S never slams into terrain.
-    const targetVyRaw=canLift?(s.systems.engine?Math.sin(s.pitch)*nextSpeed+clamp((targetSpeed-Math.max(40,nextSpeed))*.05,0,14):-3):0;
-    const targetVy=s.assist&&(input.brake&&!s.grounded||targetVyRaw<0)&&targetVyRaw<-3.5?-3.5:targetVyRaw;
-    s.vy+=(targetVy-s.vy)*Math.min(1,dt*3);
-    if(canLift){s.grounded=false;s.wasAirborne=true;}
-    s.airspeed=nextSpeed;s.gLoad=1;s.alpha=.04;s.damage=Math.max(0,s.damage);
-  }else{s.vx += fx / mass * dt; s.vy += fy / mass * dt; s.vz += fz / mass * dt;}
+
+  // Integrate Newtonian translational accelerations (shared across both FBW assist and manual simulation!)
+  s.vx += fx / mass * dt;
+  s.vy += fy / mass * dt;
+  s.vz += fz / mass * dt;
+  s.airspeed = Math.hypot(s.vx - wind.x, s.vy - wind.y, s.vz - wind.z);
+
   const oldX = s.x, oldZ = s.z;
   s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt;
   s.distanceFlown += Math.hypot(s.x - oldX, s.z - oldZ);
@@ -277,7 +367,7 @@ export function stepFlight(s, dt = DT) {
   s.smoothness += controlValues.reduce((sum, v, i) => sum + Math.abs(v - s.previousControls[i]), 0);
   s.previousControls = controlValues;
   s.warnings = [];
-  if (!s.assist && stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — release pull, lower the nose slightly, add full power');
+  if (stall && airspeed > 15 && !s.grounded) s.warnings.push('STALL — release pull, lower the nose slightly, add full power');
   if (airspeed > (plane.isJet ? 120 : 75)) s.warnings.push('OVERSPEED');
   if (s.systems.fuel < 15) s.warnings.push('LOW FUEL');
   if (!s.systems.engine && !s.grounded) s.warnings.push('ENGINE OFF — best glide 65 kt, pick a landing area now');
@@ -330,7 +420,8 @@ function updateMission(s, dt) {
       !s.grounded && Math.abs(s.roll) > .26 && Math.abs(s.roll) < .61,
       Boolean(s.touchdown?.airport) && s.grounded && Math.hypot(s.vx, s.vz) < 2];
     if (step === 3) s.levelTime = passed[3] ? (s.levelTime || 0) + dt : 0;
-    if (passed[step] && (step !== 3 || s.levelTime > 10)) { s.trainingStep++; s.achievements.push(`training-${step + 1}`); }
+    // Brief grace before auto-crediting stage 1 so a pre-started engine doesn't flash past it on the first tick.
+    if (passed[step] && (step !== 3 || s.levelTime > 10) && (step !== 0 || s.time > 1.5)) { s.trainingStep++; s.achievements.push(`training-${step + 1}`); }
     if (s.trainingStep >= 6) { s.status = 'complete'; s.objective = 'Training complete — review your flight report.'; }
   } else if (s.touchdown && s.grounded && Math.hypot(s.vx, s.vz) < 2) {
     const correctDestination = s.touchdown.airport === s.destination && s.waypoint === s.route.length - 1;

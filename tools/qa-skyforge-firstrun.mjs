@@ -8,6 +8,7 @@ export default async function run(page){
   assert.ok(firstScreen.title,'setup headline visible on load');
   assert.ok(firstScreen.trainerHint,'training mode offered on setup screen');
   await page.locator('#mode').selectOption('training');
+  await page.locator('#start').selectOption('cold');
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   await page.locator('#flightCanvas').focus();
   const guidance=await page.locator('#objective').innerText();

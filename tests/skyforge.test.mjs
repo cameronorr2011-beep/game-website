@@ -133,4 +133,28 @@ jet.autopilot = { enabled: true, heading: .4, altitude: jet.y + 80 };
 run(jet, 6); assert.ok(Math.abs(wrapAngle(jet.heading - .4)) < .25, 'Autopilot steers toward target heading');
 const aero = createFlight({ mode: 'aerobatics', aircraft: 'valkyrie' });
 assert.equal(aero.race.gates.length, 7); assert.notEqual(aero.race.gates[2].y, aero.race.gates[0].y, 'Aerobatics gates vary in altitude');
-console.log(`SKYFORGE: startup/shutdown, taxi/brakes, takeoff/climb, roll/yaw/flaps, wind/stall, touchdown/crash, systems, navigation, jet/autopilot/aerobatics, determinism and saves passed (${(performance.now()-start).toFixed(1)} ms).`);
+
+// Verify real aerodynamic physics in BOTH Fly-By-Wire (assist) and Manual modes:
+// 1. Energy conservation: climbing at fixed throttle reduces airspeed compared to diving
+const climbPlane = createFlight({ world: 'beach', aircraft: 'swift', start: 'air', assist: false });
+const divePlane = createFlight({ world: 'beach', aircraft: 'swift', start: 'air', assist: false });
+climbPlane.controls.throttle = divePlane.controls.throttle = .65;
+climbPlane.controls.elevator = .35; divePlane.controls.elevator = -.35;
+run(climbPlane, 4); run(divePlane, 4);
+assert.ok(divePlane.airspeed > climbPlane.airspeed + 12, 'diving accelerates while climbing bleeds airspeed');
+assert.ok(climbPlane.y > divePlane.y + 80, 'climb gains altitude while dive loses altitude');
+
+// 2. Fly-By-Wire assist mode uses real aerodynamic lift & G-loads (not hardcoded 1.0G or fake teleportation)
+const fbwTurn = createFlight({ world: 'city', aircraft: 'peregrine', start: 'air', assist: true });
+fbwTurn.easyInput = { pitch: 0, turn: 1, brake: 0 };
+run(fbwTurn, 3);
+assert.ok(fbwTurn.lift > 5000, 'FBW assist computes real aerodynamic lift in Newtons');
+assert.ok(fbwTurn.gLoad > 1.08, 'banked turn in FBW assist increases G-load to maintain altitude');
+assert.ok(Math.abs(fbwTurn.alpha) > .01, 'FBW assist maintains real angle of attack');
+
+// 3. Continuous post-stall lift curve (no sudden cliff discontinuity at stallAlpha)
+const preStall = aerodynamicCoefficients(.275, 0, 0, 200);
+const justStalled = aerodynamicCoefficients(.285, 0, 0, 200);
+assert.equal(preStall.stalled, false); assert.equal(justStalled.stalled, true);
+assert.ok(Math.abs(preStall.cl - justStalled.cl) < .15, 'lift coefficient transitions smoothly across stall boundary');
+console.log(`SKYFORGE: startup/shutdown, taxi/brakes, takeoff/climb, roll/yaw/flaps, wind/stall, touchdown/crash, systems, navigation, FBW/energy/G-load, jet/autopilot/aerobatics, determinism and saves passed (${(performance.now()-start).toFixed(1)} ms).`);

@@ -121,15 +121,16 @@ function inputs(dt){const c=state.controls,sensitivity=save.settings.sensitivity
   let aileron=free?0:(input.turn+touchInput.x)*sensitivity;
   let rudder=free?0:input.rudder*sensitivity;
   if(!free){
-    if(state.assist){c.throttle=clamp(c.throttle+input.throttleUp*dt*.35-(input.throttleDown+input.throttleDownKeyS)*dt*.6,0,1);c.brake=input.brake?1:0;}
-    else{c.brake=input.brake?1:0;c.throttle=clamp(c.throttle+(input.throttleUp-input.throttleDown)*dt*.4,0,1);}
+    if(state.assist){c.throttle=clamp(c.throttle+input.throttleUp*dt*.55-(input.throttleDown+input.throttleDownKeyS)*dt*.65,0,1);c.brake=input.brake?1:0;}
+    else{c.brake=input.brake?1:0;c.throttle=clamp(c.throttle+(input.throttleUp-input.throttleDown)*dt*.5,0,1);}
   }
   const pad=navigator.getGamepads?.()[0];if(pad&&!free){const dz=save.settings.deadzone;const axis=v=>Math.abs(v)>dz?Math.sign(v)*(Math.abs(v)-dz)/(1-dz):0;
     aileron+=axis(pad.axes[0]||0)*sensitivity;elevator+=axis(pad.axes[1]||0)*sensitivity*(state.assist?1:save.settings.invert?-1:1);rudder+=axis(pad.axes[2]||0);
-    c.throttle=clamp(c.throttle+((pad.buttons[7]?.value||0)-(pad.buttons[6]?.value||0))*dt*.3,0,1);c.brake=Math.max(c.brake,pad.buttons[0]?.value||0);}
+    c.throttle=clamp(c.throttle+((pad.buttons[7]?.value||0)-(pad.buttons[6]?.value||0))*dt*.35,0,1);c.brake=Math.max(c.brake,pad.buttons[0]?.value||0);}
   if(!state.autopilot?.enabled){
     state.easyInput={pitch:clamp(elevator,-1,1),turn:clamp(aileron,-1,1),brake:input.brake?1:0};
-    c.elevator+=(clamp(elevator,-1,1)-c.elevator)*Math.min(1,dt*4);c.aileron+=(clamp(aileron,-1,1)-c.aileron)*Math.min(1,dt*4);c.rudder+=(clamp(rudder,-1,1)-c.rudder)*Math.min(1,dt*4);
+    const rate=Math.min(1,dt*10);
+    c.elevator+=(clamp(elevator,-1,1)-c.elevator)*rate;c.aileron+=(clamp(aileron,-1,1)-c.aileron)*rate;c.rudder+=(clamp(rudder,-1,1)-c.rudder)*rate;
   }
 }
 function drawHudOverlay(s,nav){
@@ -206,7 +207,7 @@ function updateUI(){if(!active)return;
   $('warnings').textContent=s.warnings.join(' · ');
   $('objective').textContent=s.objective+(s.grounded&&!s.systems.engine?' — There is no engine power yet: open Aircraft systems, then toggle Battery, Ignition and Start engine, or leave the dispatch screen set to Engine running / runway.':'');
   $('navInfo').textContent=`${nav.target.name} · ${(nav.distance/1000).toFixed(1)} km · BRG ${f(nav.bearing)}° · course error ${f(nav.error)}° · AGL ${f(ft(agl))} ft`;
-  $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · RUDDER ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED-DOWN · ${s.grounded?'ON GROUND — hold B to brake':'AIRBORNE'}`;
+  $('controlInfo').textContent=`THR ${f(s.controls.throttle*100)}% · PITCH ${f(degrees(s.pitch))}° · BANK ${f(degrees(s.roll))}° · AoA ${degrees(s.alpha).toFixed(1)}° · RUDDER ${f(s.controls.rudder*100)}% · FLAPS ${f(s.controls.flaps*30)}° · TRIM ${f(s.controls.trim*100)}% · GEAR FIXED-DOWN · ${s.grounded?'ON GROUND — hold B to brake':'AIRBORNE'}`;
   const sorted=[...frames].sort((a,b)=>a-b),mean=frames.reduce((a,b)=>a+b,0)/Math.max(1,frames.length);
   $('perf').textContent=`${mean?(1000/mean).toFixed(0):'—'} FPS · p95 ${sorted[Math.floor(sorted.length*.95)]?.toFixed(1)||'—'} ms · ${stats.drawCalls||0} calls · ${((stats.triangles||0)/1000).toFixed(0)}k triangles · ${stats.chunks||0} terrain tiles`;
   document.querySelectorAll('[data-system]').forEach(b=>{const k=b.dataset.system;const value=s.systems[k];b.classList.toggle('on',value);b.textContent=k==='starter'?'Start engine':`${k.replace(/([A-Z])/g,' $1')} ${value?'ON':'OFF'}`;});

@@ -267,11 +267,12 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     for(let i=0;i<90;i++){dummy.position.set(s.x+((i*1747+realTime*9)%15000)-7500,1200+(i%4)*230,s.z+((i*2377)%15000)-7500);dummy.scale.set(130+(i%5)*35,45+(i%4)*18,90+(i%7)*25);dummy.updateMatrix();clouds.setMatrixAt(i,dummy.matrix);}clouds.instanceMatrix.needsUpdate=true;clouds.count=Math.floor(s.weather.cloud*90);
     rain.visible=s.weather.rain>0;rain.position.copy(position);if(rain.visible){for(let i=0;i<1200;i++)rainPositions[i*3+1]=(i*37%150-realTime*45%150+150)%150-30;rainGeo.attributes.position.needsUpdate=true;}
     lights.forEach(({sock})=>sock.rotation.y=radians(s.weather.direction));
-    if(mode==='cockpit'){local.set(-.43,1.65,-.2).applyQuaternion(bodyQ);camera.position.copy(position).add(local);camera.quaternion.copy(bodyQ).multiply(new T.Quaternion().setFromEuler(new T.Euler(lookPitch,Math.PI+lookYaw,0,'YXZ')));}
-    else if(mode==='chase'){local.set(Math.sin(orbit)*13,5,-Math.cos(orbit)*15).applyQuaternion(bodyQ);target.copy(position).add(local);camera.position.lerp(target,1-Math.exp(-renderDt*8));camera.lookAt(position.clone().add(new T.Vector3(0,1,0)));}
+    const gSag=Math.max(-.08,Math.min(.08,(s.gLoad-1)*.022));
+    if(mode==='cockpit'){local.set(-.43,1.65-gSag,-.2).applyQuaternion(bodyQ);camera.position.copy(position).add(local);camera.quaternion.copy(bodyQ).multiply(new T.Quaternion().setFromEuler(new T.Euler(lookPitch-gSag*.35,Math.PI+lookYaw,0,'YXZ')));}
+    else if(mode==='chase'){local.set(Math.sin(orbit)*13-s.r*1.2,5-gSag*4,-Math.cos(orbit)*15).applyQuaternion(bodyQ);target.copy(position).add(local);camera.position.lerp(target,1-Math.exp(-renderDt*10));camera.lookAt(position.clone().add(new T.Vector3(0,1,0)));}
     else if(mode==='flyby'){camera.position.set(s.x+95*Math.sin(Math.floor(realTime/6)*1.7),Math.max(surfaceHeightSafe(s.x,s.z,world.id)+20,s.y+12),s.z+95*Math.cos(Math.floor(realTime/6)*1.7));camera.lookAt(position);}
     else {freePosition.x+=(freeInput.x||0)*120*renderDt;freePosition.y+=(freeInput.y||0)*120*renderDt;freePosition.z+=(freeInput.z||0)*120*renderDt;camera.position.copy(freePosition);camera.rotation.set(lookPitch,lookYaw+Math.PI,0,'YXZ');}
-    camera.fov=zoom;camera.updateProjectionMatrix();
+    camera.fov=zoom+Math.max(0,Math.min(7,(s.airspeed-42)*.09));camera.updateProjectionMatrix();
     const power=s.systems.voltage>20;gauges[0].rotation.z=power?-indicatedAirspeed(s)/80*Math.PI*1.7:0;gauges[1].rotation.z=power?s.roll:0;gauges[2].rotation.z=power?-s.y/304.8*Math.PI*2:0;gauges[3].rotation.z=power?-s.r*4:0;gauges[4].rotation.z=power?s.heading:0;gauges[5].rotation.z=power?-s.vy/10*Math.PI*.8:0;
     if(realTime-lastDisplay>.2){lastDisplay=realTime;
       const values=[`${Math.round(indicatedAirspeed(s)*1.94384)} KT`,`${Math.round(s.pitch*180/Math.PI)} DEG`,`${Math.round(s.y*3.28084)} FT`,`${(s.r*180/Math.PI).toFixed(1)} DEG/S`,`${Math.round((s.heading*180/Math.PI+360)%360)} DEG`,`${Math.round(s.vy*196.85)} FPM`];
