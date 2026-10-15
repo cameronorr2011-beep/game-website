@@ -4,7 +4,7 @@ import { wrap } from '../js/skyforge/simulation.mjs';
 const wrapAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
 const wrapDegrees = a => wrapAngle(a) * 180 / Math.PI;
 import { WORLDS, worldProps } from '../js/skyforge/worlds.mjs';
-import { keyboardFlightInput, sceneryCollision, AIRPORTS, AIRCRAFT, AIRCRAFTS, aircraftFor, DT, createFlight, stepFlight, navigation, terrainHeight, flightReport, readSave, writeSave, indicatedAirspeed, aerodynamicCoefficients } from '../js/skyforge/simulation.mjs';
+import { keyboardFlightInput, sceneryCollision, AIRPORTS, AIRCRAFT, AIRCRAFTS, ALL_AIRCRAFTS, aircraftFor, DT, createFlight, stepFlight, navigation, terrainHeight, flightReport, readSave, writeSave, indicatedAirspeed, aerodynamicCoefficients } from '../js/skyforge/simulation.mjs';
 const run = (s, seconds, control) => { for (let i = 0; i < Math.round(seconds / DT); i++) { control?.(s); stepFlight(s); assert.ok([s.x,s.y,s.z,s.pitch,s.roll,s.heading,s.airspeed].every(Number.isFinite)); } return s; };
 const start = performance.now();
 assert.equal(keyboardFlightInput(new Set(['KeyW'])).throttleUp,1);
@@ -125,4 +125,12 @@ const wreckedRace = createFlight({ mode: 'race' }); wreckedRace.race.countdown =
 const localLanding = createFlight({ mode: 'landing', departure: 'SF03', destination: 'SF02' }); assert.equal(localLanding.destination, 'SF03', 'landing challenge targets departure airport');
 writeSave({ settings: {}, config: { aircraft: 'swift', mode: 'race' }, training: [], logs: [], records: { 'swift/SF01/36': 63.2, broken: -1 } }, storage);
 assert.equal(readSave(storage).config.aircraft, 'swift'); assert.deepEqual(readSave(storage).records, { 'swift/SF01/36': 63.2 });
-console.log(`SKYFORGE: startup/shutdown, taxi/brakes, takeoff/climb, roll/yaw/flaps, wind/stall, touchdown/crash, systems, navigation, determinism and saves passed (${(performance.now()-start).toFixed(1)} ms).`);
+// Verify SF-X80 Valkyrie jet, aerobatics mode, and autopilot hold
+const jet = createFlight({ aircraft: 'valkyrie', world: 'cyberpunk', start: 'air' });
+assert.equal(jet.aircraftId, 'valkyrie'); assert.equal(aircraftFor('valkyrie').isJet, true);
+jet.controls.throttle = 1; run(jet, 4); assert.ok(jet.airspeed > 48, 'Valkyrie jet accelerates strongly');
+jet.autopilot = { enabled: true, heading: .4, altitude: jet.y + 80 };
+run(jet, 6); assert.ok(Math.abs(wrapAngle(jet.heading - .4)) < .25, 'Autopilot steers toward target heading');
+const aero = createFlight({ mode: 'aerobatics', aircraft: 'valkyrie' });
+assert.equal(aero.race.gates.length, 7); assert.notEqual(aero.race.gates[2].y, aero.race.gates[0].y, 'Aerobatics gates vary in altitude');
+console.log(`SKYFORGE: startup/shutdown, taxi/brakes, takeoff/climb, roll/yaw/flaps, wind/stall, touchdown/crash, systems, navigation, jet/autopilot/aerobatics, determinism and saves passed (${(performance.now()-start).toFixed(1)} ms).`);

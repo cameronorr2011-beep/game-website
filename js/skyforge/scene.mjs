@@ -3,7 +3,7 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { worldFor, worldProps } from './worlds.mjs';
-import { AIRPORTS, aircraftFor, terrainHeight, radians, indicatedAirspeed } from './simulation.mjs';
+import { AIRPORTS, aircraftFor, terrainHeight, radians, indicatedAirspeed, clamp } from './simulation.mjs';
 const clampTexture = value => Math.max(0,Math.min(255,Math.round(value)));
 const daylight = hour => Math.max(0,Math.sin((hour-6)/12*Math.PI));
 const mat = (color, extra = {}) => new T.MeshStandardMaterial({ color, roughness: .65, ...extra });
@@ -14,7 +14,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   renderer.outputColorSpace = T.SRGBColorSpace; renderer.toneMapping = T.ACESFilmicToneMapping;
   const scene = new T.Scene(); scene.fog = new T.FogExp2(0xa7bcc6, .00008);
   const pmrem=new T.PMREMGenerator(renderer), room=new RoomEnvironment();
-  const environment=pmrem.fromScene(room,.04);scene.environment=environment.texture;scene.environmentIntensity=.45;
+  const environment=pmrem.fromScene(room,.04);scene.environment=environment.texture;scene.environmentIntensity=.48;
   room.dispose();pmrem.dispose();
   const camera = new T.PerspectiveCamera(64, 1, .08, 28000);
   const hemi = new T.HemisphereLight(0xbddfff, 0x38432a, 2); scene.add(hemi);
@@ -22,7 +22,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   sun.shadow.mapSize.set(1024,1024); Object.assign(sun.shadow.camera, { left:-55,right:55,top:55,bottom:-55,near:1,far:350 }); sun.shadow.bias=-.0002; scene.add(sun,sun.target);
   const sky = new Sky(); sky.scale.setScalar(25000); scene.add(sky);
   const uniforms = sky.material.uniforms; uniforms.turbidity.value=4; uniforms.rayleigh.value=1.6; uniforms.mieCoefficient.value=.006; uniforms.mieDirectionalG.value=.8;
-  const waterMaterial = new T.ShaderMaterial({ uniforms:{ time:{value:0},color:{value:new T.Color(0x14728a)},light:{value:1} }, vertexShader:`uniform float time; varying vec3 wp; varying float wave; void main(){vec3 p=position;p.z+=sin(p.x*.009+time)*.65+cos(p.y*.006+time*.7)*.5;wave=p.z;wp=p;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);}`, fragmentShader:`uniform vec3 color;uniform float light;varying vec3 wp;varying float wave;void main(){float glint=pow(max(0.,sin(wp.x*.01+wp.y*.015)),25.);gl_FragColor=vec4((color*(.75+wave*.06)+vec3(glint*.18))*light,1.);}` });
+  const waterMaterial = new T.ShaderMaterial({ uniforms:{ time:{value:0},color:{value:new T.Color(0x14728a)},light:{value:1} }, vertexShader:`uniform float time; varying vec3 wp; varying float wave; void main(){vec3 p=position;p.z+=sin(p.x*.009+time)*.65+cos(p.y*.006+time*.7)*.5+sin((p.x+p.y)*.015+time*1.3)*.25;wave=p.z;wp=p;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);}`, fragmentShader:`uniform vec3 color;uniform float light;varying vec3 wp;varying float wave;void main(){float glint=pow(max(0.,sin(wp.x*.01+wp.y*.015)),25.);float foam=smoothstep(.8,1.2,wave)*.12;gl_FragColor=vec4((color*(.75+wave*.06)+vec3(glint*.2+foam))*light,1.);}` });
   const ocean = new T.Mesh(new T.PlaneGeometry(70000,70000,150,150),waterMaterial); ocean.rotation.x=-Math.PI/2; scene.add(ocean);
   const terrainCanvas=document.createElement('canvas');terrainCanvas.width=256;terrainCanvas.height=256;
   const terrainCtx=terrainCanvas.getContext('2d'),terrainPixels=terrainCtx.createImageData(256,256);
@@ -33,7 +33,8 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   let currentWorld='beach';
   const chunks=new Map(), chunkSize=2000, radius=quality==='low'?2:3;
   const treeMat=mat(0x294f37), trunkMat=mat(0x72533a), buildingMat=mat(0xabb2ae);
-  const neonMat=new T.MeshBasicMaterial({color:0xff4edf}),roadMat=mat(0x272c38);    const treeGeo=new T.ConeGeometry(7,30,6),buildingGeo=new T.BoxGeometry(1,1,1);
+  const neonMat=new T.MeshBasicMaterial({color:0xff4edf}),roadMat=mat(0x272c38),boatMat=mat(0xf4f4f0),sailMat=mat(0xe85d3f);
+  const buildingGeo=new T.BoxGeometry(1,1,1),coneGeo=new T.ConeGeometry(9,7,7);
   function chunk(cx,cz) {
     const key=`${cx},${cz}`; if(chunks.has(key))return;
     const distance=Math.max(Math.abs(cx-Math.floor(lastX/chunkSize)),Math.abs(cz-Math.floor(lastZ/chunkSize)));
@@ -45,15 +46,22 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     geo.setAttribute('color',new T.BufferAttribute(colors,3));geo.computeVertexNormals();
     const group=new T.Group();const mesh=new T.Mesh(geo,terrainMaterial);mesh.receiveShadow=true;group.add(mesh);group.position.set(cx*chunkSize+chunkSize/2,0,cz*chunkSize+chunkSize/2);
     const props=worldProps(cx,cz,currentWorld,terrainHeight,AIRPORTS),dummy=new T.Object3D();
-    const buildings=props.filter(p=>p.type==='building'),palms=props.filter(p=>p.type==='palm');
+    const buildings=props.filter(p=>p.type==='building'),palms=props.filter(p=>p.type==='palm'),boats=props.filter(p=>p.type==='boat'),turbines=props.filter(p=>p.type==='turbine');
     if(buildings.length){const towers=new T.InstancedMesh(buildingGeo,buildingMat,buildings.length),bands=new T.InstancedMesh(buildingGeo,neonMat,buildings.length*3);
       buildings.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(p.width,p.height,p.depth);dummy.updateMatrix();towers.setMatrixAt(i,dummy.matrix);
         for(let j=0;j<3;j++){dummy.position.y=p.y+p.height*(.25+j*.3);dummy.scale.set(p.width+1,2,p.depth+1);dummy.updateMatrix();bands.setMatrixAt(i*3+j,dummy.matrix);}});
-      group.add(towers);if(currentWorld==='cyberpunk')group.add(bands);else bands.dispose();
+      group.add(towers);if(currentWorld==='cyberpunk'||currentWorld==='city')group.add(bands);else bands.dispose();
       const streets=new T.InstancedMesh(buildingGeo,roadMat,16);for(let i=0;i<16;i++){const horizontal=i<8;dummy.position.set(horizontal?0:-860+(i-8)*235,terrainHeight(group.position.x,group.position.z,currentWorld)+.4,horizontal?-860+i*235:0);dummy.scale.set(horizontal?2000:16,.6,horizontal?16:2000);dummy.updateMatrix();streets.setMatrixAt(i,dummy.matrix);}group.add(streets);
     }
-    if(palms.length){const trunks=new T.InstancedMesh(buildingGeo,trunkMat,palms.length),crowns=new T.InstancedMesh(new T.ConeGeometry(9,7,7),treeMat,palms.length);
+    if(palms.length){const trunks=new T.InstancedMesh(buildingGeo,trunkMat,palms.length),crowns=new T.InstancedMesh(coneGeo,treeMat,palms.length);
       palms.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(1.4,p.height,1.4);dummy.updateMatrix();trunks.setMatrixAt(i,dummy.matrix);dummy.position.y=p.y+p.height;dummy.scale.set(1.8,.25,1.8);dummy.updateMatrix();crowns.setMatrixAt(i,dummy.matrix);});group.add(trunks,crowns);
+    }
+    if(boats.length){const hulls=new T.InstancedMesh(buildingGeo,boatMat,boats.length),sails=new T.InstancedMesh(coneGeo,sailMat,boats.length);
+      boats.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,1.2,p.z-group.position.z);dummy.rotation.set(0,p.heading||0,0);dummy.scale.set(p.width,2.4,p.depth);dummy.updateMatrix();hulls.setMatrixAt(i,dummy.matrix);
+        dummy.position.y=8;dummy.scale.set(.3,2,1.1);dummy.updateMatrix();sails.setMatrixAt(i,dummy.matrix);});group.add(hulls,sails);
+    }
+    if(turbines.length){const poles=new T.InstancedMesh(buildingGeo,boatMat,turbines.length);
+      turbines.forEach((p,i)=>{dummy.position.set(p.x-group.position.x,p.y+p.height/2,p.z-group.position.z);dummy.rotation.set(0,0,0);dummy.scale.set(2.2,p.height,2.2);dummy.updateMatrix();poles.setMatrixAt(i,dummy.matrix);});group.add(poles);
     }
     scene.add(group);chunks.set(key,{group,geo});
   }
@@ -63,23 +71,45 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     for(let dx=-radius;dx<=radius;dx++)for(let dz=-radius;dz<=radius;dz++)chunk(cx+dx,cz+dz);
   }
   function mesh(parent,geometry,material,x=0,y=0,z=0){const m=new T.Mesh(geometry,material);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;}
-  const asphalt=mat(0x303638),lineMat=mat(0xece8d6),hangarMat=mat(0x889caa),lights=[];
+  const asphalt=mat(0x303638),lineMat=mat(0xece8d6),hangarMat=mat(0x889caa),lights=[],airportBeacons=[];
+  const papiRed=new T.MeshBasicMaterial({color:0xff3b2f}),papiWhite=new T.MeshBasicMaterial({color:0xfff6d6}),beaconBeamMat=new T.MeshBasicMaterial({color:0x7affc8,transparent:true,opacity:.35,depthWrite:false});
   for(const a of AIRPORTS){const g=new T.Group();g.position.set(a.x,a.elevation+.08,a.z);g.rotation.y=a.heading;scene.add(g);
     mesh(g,new T.BoxGeometry(a.width,.12,a.length),asphalt);mesh(g,new T.BoxGeometry(14,.1,a.length*.65),asphalt,85,0,0);mesh(g,new T.BoxGeometry(110,.1,180),asphalt,70,0,-a.length*.25);
     for(let z=-a.length/2+35;z<a.length/2;z+=60)mesh(g,new T.BoxGeometry(1.2,.03,25),lineMat,0,.08,z);
-    for(const end of[-1,1])for(let i=-3;i<=3;i++)mesh(g,new T.BoxGeometry(2,.03,32),lineMat,i*4,.1,end*(a.length/2-30));
+    for(const end of[-1,1]){
+      for(let i=-3;i<=3;i++)mesh(g,new T.BoxGeometry(2,.03,32),lineMat,i*4,.1,end*(a.length/2-30));
+      // PAPI 4-light slope indicator array next to touchdown zone
+      for(let p=0;p<4;p++)mesh(g,new T.SphereGeometry(1.1,6,4),p<2?papiWhite:papiRed,-a.width/2-8-p*3.5,.8,end*(a.length/2-140));
+    }
     for(let i=0;i<4;i++)mesh(g,new T.BoxGeometry(45,19,42),hangarMat,155,9.5,-a.length*.25+i*65);
     mesh(g,new T.BoxGeometry(26,33,24),hangarMat,190,16.5,100);
+    const beaconHead=new T.Group();beaconHead.position.set(190,34.5,100);g.add(beaconHead);
+    const bCone=mesh(beaconHead,new T.ConeGeometry(8,42,10,1,true),beaconBeamMat,0,0,21);bCone.rotation.x=Math.PI/2;airportBeacons.push(beaconHead);
     const pole=mesh(g,new T.CylinderGeometry(.3,.3,12,8),lineMat,55,6,a.length/2-90);
     const sock=mesh(g,new T.ConeGeometry(1.5,7,10,1,true),mat(0xff793d),55,11,a.length/2-90);sock.rotation.z=Math.PI/2;lights.push({sock,pole});
     const lampMat=new T.MeshBasicMaterial({color:0xffdb8b});for(let z=-a.length/2;z<a.length/2;z+=80)for(const side of[-1,1])mesh(g,new T.SphereGeometry(.7,6,4),lampMat,side*(a.width/2+2),.5,z);
     for(let i=0;i<5;i++)mesh(g,new T.BoxGeometry(22,.08,1),lampMat,0,.2,-a.length/2-30-i*35);
     const labelCanvas=document.createElement('canvas');labelCanvas.width=512;labelCanvas.height=96;const ctx=labelCanvas.getContext('2d');ctx.fillStyle='#def5ff';ctx.font='bold 38px sans-serif';ctx.fillText(`${a.id} · ${a.name}`,8,62);const tex=new T.CanvasTexture(labelCanvas);const label=new T.Sprite(new T.SpriteMaterial({map:tex,transparent:true,depthTest:false}));label.position.set(0,80,0);label.scale.set(230,43,1);g.add(label);
   }
+  // Ambient sky traffic: airships and hot-air balloons around the archipelago
+  const skyTraffic=new T.Group();scene.add(skyTraffic);
+  const blimpHullMat=mat(0xe6edf2,{metalness:.2,roughness:.4}),balloonMats=[mat(0xff6b4a),mat(0xffbe3d),mat(0x3dd6d0),mat(0xa855f7)];
+  for(let i=0;i<6;i++){
+    const bg=new T.Group();
+    if(i<2){
+      const hull=mesh(bg,new T.SphereGeometry(22,16,12),blimpHullMat,0,0,0);hull.scale.set(1,1,2.8);
+      mesh(bg,new T.BoxGeometry(8,5,18),mat(0x283540),0,-22,0);
+    }else{
+      mesh(bg,new T.SphereGeometry(18,14,12),balloonMats[i%balloonMats.length],0,0,0);
+      mesh(bg,new T.BoxGeometry(5,4,5),trunkMat,0,-23,0);
+    }
+    bg.userData={cx:(i-2.5)*3600,cz:i*4200-1500,alt:480+(i%3)*190,speed:.05+i*.012,radius:900+i*250,isBlimp:i<2};
+    skyTraffic.add(bg);
+  }
   // Merge static airport geometry by material to reduce individual draw calls.
   scene.updateMatrixWorld(true);
-  for(const group of scene.children.filter(object=>object.isGroup)){
-    const batches=new Map();group.traverse(object=>{if(object.isMesh){const list=batches.get(object.material)||[];list.push(object);batches.set(object.material,list);}});
+  for(const group of scene.children.filter(object=>object.isGroup&&object!==skyTraffic)){
+    const batches=new Map();group.traverse(object=>{if(object.isMesh&&!airportBeacons.includes(object.parent)){const list=batches.get(object.material)||[];list.push(object);batches.set(object.material,list);}});
     for(const[material,objects]of batches){if(objects.length<3)continue;const geometries=objects.map(object=>{const geometry=object.geometry.clone();geometry.applyMatrix4(object.matrix);return geometry;});
       const merged=mergeGeometries(geometries);geometries.forEach(geometry=>geometry.dispose());if(!merged)continue;
       objects.forEach(object=>{group.remove(object);object.geometry.dispose();});const combined=mesh(group,merged,material);combined.castShadow=false;}
@@ -96,7 +126,16 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const rivets=new T.InstancedMesh(new T.SphereGeometry(.012,5,4),mat(0x98a4a9,{metalness:.8,roughness:.25}),80),rivetObject=new T.Object3D();
   for(let i=0;i<80;i++){rivetObject.position.set((i%2?1:-1)*.72,.57+(Math.floor(i/2)%2)*.5,-2.6+Math.floor(i/4)*.24);rivetObject.updateMatrix();rivets.setMatrixAt(i,rivetObject.matrix);}aircraft.add(rivets);
   mesh(aircraft,new T.BoxGeometry(4,.12,1.15),white,0,1,-3.1);
-  mesh(aircraft,new T.BoxGeometry(.14,1.7,1.25),white,0,1.7,-3.2);
+  const singleTailFin=mesh(aircraft,new T.BoxGeometry(.14,1.7,1.25),white,0,1.7,-3.2);
+  // Twin-tail & afterburner assembly for SF-X80 Valkyrie jet
+  const jetParts=new T.Group();jetParts.visible=false;aircraft.add(jetParts);
+  for(const side of[-1,1]){
+    const fin=mesh(jetParts,new T.BoxGeometry(.12,1.55,1.35),red,side*1.15,1.65,-3.15);fin.rotation.z=-side*.28;
+    mesh(jetParts,new T.BoxGeometry(.55,.45,2.4),dark,side*.95,.75,.2);
+  }
+  const burnerMat=new T.MeshBasicMaterial({color:0x38bdf8,transparent:true,opacity:.85,side:T.DoubleSide,depthWrite:false});
+  const afterburner=mesh(jetParts,new T.ConeGeometry(.42,2.8,16,1,true),burnerMat,0,.95,-5.1);afterburner.rotation.x=-Math.PI/2;
+  const burnerCore=mesh(jetParts,new T.ConeGeometry(.24,1.8,12,1,true),new T.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.9,depthWrite:false}),0,.95,-4.6);burnerCore.rotation.x=-Math.PI/2;
   const ailerons=[],flapMeshes=[];
   for(const side of[-1,1]){const strut=mesh(aircraft,new T.BoxGeometry(.08,.08,3),dark,side*1.8,1.65,-.1);strut.rotation.z=side*.9;wingStruts.push(strut);
     const aileron=mesh(aircraft,new T.BoxGeometry(2.3,.1,.35),red,side*4.1,2.53,-1.15);ailerons.push(aileron);
@@ -141,10 +180,17 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   const beacon=mesh(aircraft,new T.SphereGeometry(.07,8,6),new T.MeshBasicMaterial({color:0xff3322}),0,2.65,-3.2);
   const strobes=[];for(const side of[-1,1])strobes.push(mesh(aircraft,new T.SphereGeometry(.09,8,6),new T.MeshBasicMaterial({color:0xffffff}),side*5.45,2.55,0));
   const navLights=[];for(const[x,color]of[[-5.4,0xff3030],[5.4,0x36ff75],[0,0xffffff]]){const light=mesh(aircraft,new T.SphereGeometry(.075,8,6),new T.MeshBasicMaterial({color}),x,2.58,x?-.3:-3.3);navLights.push(light);}
+  // Wingtip contrail ribbons & aerobatic smoke
+  const trailPoints=48,contrails=[];
+  for(const side of[-1,1]){
+    const geo=new T.BufferGeometry();geo.setAttribute('position',new T.BufferAttribute(new Float32Array(trailPoints*3),3));
+    const line=new T.Line(geo,new T.LineBasicMaterial({color:0xe2f6ff,transparent:true,opacity:.55}));
+    line.frustumCulled=false;scene.add(line);contrails.push({line,geo,side,history:[]});
+  }
   const cloudMat=new T.MeshLambertMaterial({color:0xf0f0eb,transparent:true,opacity:.7,depthWrite:false});const clouds=new T.InstancedMesh(new T.SphereGeometry(1,8,5),cloudMat,90);scene.add(clouds);
   const dummy=new T.Object3D();
   const rainGeo=new T.BufferGeometry();const rainPositions=new Float32Array(1200*3);for(let i=0;i<1200;i++){rainPositions[i*3]=(i*71%200)-100;rainPositions[i*3+1]=(i*37%150);rainPositions[i*3+2]=(i*47%200)-100;}rainGeo.setAttribute('position',new T.BufferAttribute(rainPositions,3));const rain=new T.Points(rainGeo,new T.PointsMaterial({color:0xaac8dd,size:.2,transparent:true,opacity:.65}));scene.add(rain);
-  let mode='cockpit',lookYaw=0,lookPitch=0,zoom=64,orbit=0,freePosition=new T.Vector3(0,100,0),lastDisplay=0,lastRenderTime=0;
+  let mode='cockpit',lookYaw=0,lookPitch=0,zoom=64,orbit=0,freePosition=new T.Vector3(0,100,0),lastDisplay=0,lastRenderTime=0,smokeEnabled=false;
   const raycaster=new T.Raycaster();canvas.addEventListener('click',e=>{if(mode!=='cockpit')return;const rect=canvas.getBoundingClientRect();raycaster.setFromCamera(new T.Vector2((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1),camera);const hit=raycaster.intersectObjects(clickable)[0];if(hit)onInteract(hit.object.userData.control);});
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
   canvas.addEventListener('pointermove',e=>{if(e.buttons===2){lookYaw-=e.movementX*.003;lookPitch=Math.max(-1,Math.min(.75,lookPitch-e.movementY*.003));orbit+=e.movementX*.003;}});
@@ -153,18 +199,26 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
   function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
   window.addEventListener('resize',resize);resize();
   const raceGroup=new T.Group();scene.add(raceGroup);
-  const ringGeometry=new T.TorusGeometry(90,2,6,48),ringMaterials=[new T.MeshBasicMaterial({color:0xebbf78}),new T.MeshBasicMaterial({color:0x8de1e6})];
+  const ringGeometry=new T.TorusGeometry(90,2.2,8,48),ringMaterials=[new T.MeshBasicMaterial({color:0xebbf78}),new T.MeshBasicMaterial({color:0x8de1e6})];
   let displayedGates=null,displayedPlane=null;
-  function updateAircraftAndRace(s){
+  function updateAircraftAndRace(s,realTime){
     if(s.aircraftId!==displayedPlane){displayedPlane=s.aircraftId;const plane=aircraftFor(s.aircraftId),ratio=plane.span/11;red.color.setHex(plane.color);wing.scale.x=ratio;wing.position.y=plane.wingHeight;
       wingTips.forEach((tip,i)=>{tip.position.x=(i?1:-1)*5.35*ratio;tip.position.y=plane.wingHeight-.05;});
       ailerons.forEach((part,i)=>{part.position.x=(i?1:-1)*4.1*ratio;part.position.y=plane.wingHeight-.02;});flapMeshes.forEach(part=>part.position.y=plane.wingHeight-.02);
       wingStruts.forEach(part=>part.visible=plane.wingHeight>2);strobes.forEach((part,i)=>{part.position.x=(i?1:-1)*5.45*ratio;part.position.y=plane.wingHeight;});navLights.forEach((part,i)=>{if(i<2){part.position.x=(i?1:-1)*5.4*ratio;part.position.y=plane.wingHeight;}});
+      jetParts.visible=Boolean(plane.isJet);prop.visible=!plane.isJet;singleTailFin.visible=!plane.isJet;
+      contrails.forEach(c=>c.history.length=0);
+    }
+    if(jetParts.visible){
+      const thrustScale=.5+s.controls.throttle*1.25+Math.sin(realTime*42)*.08;
+      afterburner.visible=s.systems.engine&&s.controls.throttle>.1;
+      burnerCore.visible=afterburner.visible;
+      afterburner.scale.set(1,thrustScale,1);burnerCore.scale.set(1,thrustScale*.85,1);
     }
     if(displayedGates!==s.race?.gates){displayedGates=s.race?.gates;raceGroup.clear();
       for(const gate of displayedGates||[]){const ring=new T.Mesh(ringGeometry,ringMaterials[1]);ring.position.set(gate.x,gate.y,gate.z);ring.rotation.y=gate.heading;raceGroup.add(ring);}
     }
-    raceGroup.children.forEach((ring,i)=>{ring.visible=i>=s.race.next;ring.material=ringMaterials[i===s.race.next?0:1];});
+    if(s.race)raceGroup.children.forEach((ring,i)=>{ring.visible=i>=s.race.next;ring.material=ringMaterials[i===s.race.next?0:1];});
   }
   const position=new T.Vector3(),bodyQ=new T.Quaternion(),local=new T.Vector3(),target=new T.Vector3();
   function render(s,realTime,freeInput={}) {
@@ -173,12 +227,36 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     if(currentWorld!==world.id){currentWorld=world.id;for(const c of chunks.values()){scene.remove(c.group);c.geo.dispose();c.group.traverse(o=>{if(o.isInstancedMesh)o.dispose();});}chunks.clear();lastChunk='';}
     canvas.dataset.world=currentWorld;canvas.dataset.aircraft=s.aircraftId;
     buildingMat.color.setHex(world.building);waterMaterial.uniforms.color.value.setHex(world.water);neonMat.color.setHex(world.accent);
-    updateAircraftAndRace(s);
+    updateAircraftAndRace(s,realTime);
     stream(s.x,s.z);position.set(s.x,s.y,s.z);aircraft.position.copy(position);
     aircraft.rotation.set(-s.pitch,s.heading,-s.roll,'YXZ');bodyQ.copy(aircraft.quaternion);
+    // Update wingtip contrails
+    const plane=aircraftFor(s.aircraftId),spanHalf=plane.span*.49;
+    const showTrail=!s.grounded&&(s.airspeed>34||smokeEnabled||Math.abs(s.roll)>.35);
+    contrails.forEach(c=>{
+      if(showTrail){
+        local.set(c.side*spanHalf,plane.wingHeight,-.4).applyQuaternion(bodyQ).add(position);
+        c.history.unshift(local.clone());if(c.history.length>trailPoints)c.history.pop();
+      }else if(c.history.length)c.history.pop();
+      c.line.visible=c.history.length>1;
+      if(c.line.visible){
+        c.line.material.color.setHex(smokeEnabled?plane.color:0xe2f6ff);
+        c.line.material.opacity=smokeEnabled?.82:.45;
+        const arr=c.geo.attributes.position.array;
+        for(let i=0;i<trailPoints;i++){const pt=c.history[Math.min(i,c.history.length-1)];arr[i*3]=pt.x;arr[i*3+1]=pt.y;arr[i*3+2]=pt.z;}
+        c.geo.attributes.position.needsUpdate=true;
+      }
+    });
+    // Animate ambient sky traffic & airport rotating beacons
+    airportBeacons.forEach(b=>{b.rotation.y=realTime*1.8;});
+    skyTraffic.children.forEach((bg,i)=>{
+      const u=bg.userData,ang=realTime*u.speed+i;
+      bg.position.set(u.cx+Math.sin(ang)*u.radius,u.alt+Math.sin(realTime*.5+i)*12,u.cz+Math.cos(ang)*u.radius);
+      if(u.isBlimp)bg.rotation.y=ang+Math.PI/2;
+    });
     prop.rotation.z+=s.systems.rpm/60*Math.PI*2*renderDt;ailerons.forEach((a,i)=>a.rotation.x=(i?1:-1)*s.controls.aileron*.35);flapMeshes.forEach(a=>a.rotation.x=s.controls.flaps*.5);elevator.rotation.x=-s.controls.elevator*.35;rudder.rotation.y=s.controls.rudder*.35;yoke.rotation.z=Math.PI*.25-s.controls.aileron*.5;yoke.position.z=.68-s.controls.elevator*.07;
     beacon.visible=s.systems.voltage>20&&s.systems.beacon&&Math.sin(realTime*5)>0;strobes.forEach(l=>l.visible=s.systems.voltage>20&&s.systems.strobe&&realTime%1<.12);
-    propBlur.visible=s.systems.rpm>1000;
+    propBlur.visible=s.systems.rpm>1000&&!plane.isJet;
     cockpitFill.intensity=daylight(s.hour)*7+.15;
     pointLight.intensity=s.systems.voltage>20&&s.systems.panelLights?3:0;landingLight.intensity=s.systems.voltage>20&&s.systems.landingLights?500:0;navLights.forEach(l=>l.visible=s.systems.voltage>20&&s.systems.navLights);
     const elevation=Math.sin((s.hour-6)/12*Math.PI),day=Math.max(.025,elevation);const sunDirection=new T.Vector3(.35,elevation,.5).normalize();uniforms.sunPosition.value.copy(sunDirection);sky.visible=day>.05;
@@ -191,6 +269,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     lights.forEach(({sock})=>sock.rotation.y=radians(s.weather.direction));
     if(mode==='cockpit'){local.set(-.43,1.65,-.2).applyQuaternion(bodyQ);camera.position.copy(position).add(local);camera.quaternion.copy(bodyQ).multiply(new T.Quaternion().setFromEuler(new T.Euler(lookPitch,Math.PI+lookYaw,0,'YXZ')));}
     else if(mode==='chase'){local.set(Math.sin(orbit)*13,5,-Math.cos(orbit)*15).applyQuaternion(bodyQ);target.copy(position).add(local);camera.position.lerp(target,1-Math.exp(-renderDt*8));camera.lookAt(position.clone().add(new T.Vector3(0,1,0)));}
+    else if(mode==='flyby'){camera.position.set(s.x+95*Math.sin(Math.floor(realTime/6)*1.7),Math.max(surfaceHeightSafe(s.x,s.z,world.id)+20,s.y+12),s.z+95*Math.cos(Math.floor(realTime/6)*1.7));camera.lookAt(position);}
     else {freePosition.x+=(freeInput.x||0)*120*renderDt;freePosition.y+=(freeInput.y||0)*120*renderDt;freePosition.z+=(freeInput.z||0)*120*renderDt;camera.position.copy(freePosition);camera.rotation.set(lookPitch,lookYaw+Math.PI,0,'YXZ');}
     camera.fov=zoom;camera.updateProjectionMatrix();
     const power=s.systems.voltage>20;gauges[0].rotation.z=power?-indicatedAirspeed(s)/80*Math.PI*1.7:0;gauges[1].rotation.z=power?s.roll:0;gauges[2].rotation.z=power?-s.y/304.8*Math.PI*2:0;gauges[3].rotation.z=power?-s.r*4:0;gauges[4].rotation.z=power?s.heading:0;gauges[5].rotation.z=power?-s.vy/10*Math.PI*.8:0;
@@ -200,7 +279,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
         if(power&&i===1){ctx.save();ctx.translate(128,128);ctx.rotate(s.roll);ctx.translate(0,s.pitch*150);ctx.fillStyle='#5b92ad';ctx.fillRect(-220,-350,440,350);ctx.fillStyle='#8b6b45';ctx.fillRect(-220,0,440,350);ctx.strokeStyle='#f6e5af';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-180,0);ctx.lineTo(180,0);ctx.stroke();ctx.restore();}
         ctx.fillStyle=power?'#cde1d8':'#34464e';ctx.textAlign='center';ctx.font='bold 26px monospace';ctx.fillText(gaugeLabels[i],128,75);ctx.font='22px monospace';ctx.fillText(power?values[i]:'OFF',128,195);texture.needsUpdate=true;});
       displayCtx.fillStyle=power?'#081c22':'#040506';displayCtx.fillRect(0,0,512,512);
-      if(power){displayCtx.strokeStyle='#2a4e58';for(let i=0;i<512;i+=64){displayCtx.beginPath();displayCtx.moveTo(i,0);displayCtx.lineTo(i,512);displayCtx.moveTo(0,i);displayCtx.lineTo(512,i);displayCtx.stroke();}
+      if(power){displayCtx.strokeStyle='#2a4e58';for(let i=0;i<512;i+=64){displayCtx.beginPath();displayCtx.moveTo(i,0);displayCtx.lineTo(i,512);displayCtx.moveTo(0,i);displayCtx.moveTo(0,i);displayCtx.lineTo(512,i);displayCtx.stroke();}
         const scale=.017;for(const a of AIRPORTS){const x=256+(a.x-s.x)*scale,y=260-(a.z-s.z)*scale;displayCtx.fillStyle='#69d7dd';displayCtx.fillRect(x-4,y-4,8,8);displayCtx.font='20px monospace';displayCtx.fillText(a.id,x+8,y);}
         displayCtx.strokeStyle='#ffd487';displayCtx.beginPath();displayCtx.moveTo(256,260);for(const p of s.route)displayCtx.lineTo(256+(p.x-s.x)*scale,260-(p.z-s.z)*scale);displayCtx.stroke();
         displayCtx.save();displayCtx.translate(256,260);displayCtx.rotate(s.heading);displayCtx.fillStyle='#ffffff';displayCtx.beginPath();displayCtx.moveTo(0,-16);displayCtx.lineTo(-9,12);displayCtx.lineTo(9,12);displayCtx.fill();displayCtx.restore();
@@ -209,5 +288,7 @@ export function createScene(canvas, quality = 'medium', onInteract = () => {}) {
     renderer.render(scene,camera);
     return { drawCalls:renderer.info.render.calls,triangles:renderer.info.render.triangles,chunks:chunks.size,camera:mode };
   }
-  return {render,setCamera,resize,renderer,camera,scene,aircraft,get mode(){return mode;}};
+  function surfaceHeightSafe(x,z,w){return Math.max(0,terrainHeight(x,z,w));}
+  function toggleSmoke(){smokeEnabled=!smokeEnabled;return smokeEnabled;}
+  return {render,setCamera,resize,toggleSmoke,renderer,camera,scene,aircraft,get mode(){return mode;},get smoke(){return smokeEnabled;}};
 }
