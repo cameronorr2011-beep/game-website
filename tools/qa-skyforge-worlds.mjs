@@ -10,18 +10,19 @@ export default async function run(page){
   await page.locator('#world').selectOption(world);await page.locator('#aircraft').selectOption(plane);await page.locator('#mode').selectOption('free');
   await page.getByRole('button',{name:'Enter cockpit'}).click();
   await page.waitForFunction(({world,plane})=>document.querySelector('#flightCanvas').dataset.world===world&&document.querySelector('#flightCanvas').dataset.aircraft===plane,{world,plane});
-  // W = forward power. Motion verified by actual position change (nav distance shrinks), not just speed.
-  const initial=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),alt:Number(document.querySelector('#alt').textContent),ias:Number(document.querySelector('#ias').textContent)}));
+  // Simple wasd: W = climb up (plane advances). Motion verified by actual position change (nav distance shrinks).
+  const initial=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),alt:Number(document.querySelector('#alt').textContent)}));
   await page.keyboard.down('KeyW');
   await page.waitForFunction(initial=>Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1])<initial.dist-0.1,initial,{timeout:15000});
   await page.keyboard.up('KeyW');
-  const moved=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),ias:Number(document.querySelector('#ias').textContent)}));
-  assert.ok(moved.ias>initial.ias,'W raises speed');assert.ok(moved.dist<initial.dist-.1,'W moves the plane forward');
+  const moved=await page.evaluate(()=>({dist:Number(document.querySelector('#navInfo').textContent.match(/· ([\d.]+) km/)?.[1]),alt:Number(document.querySelector('#alt').textContent)}));
+  assert.ok(moved.alt>initial.alt+40,'W climbs the plane');assert.ok(moved.dist<initial.dist-.1,'W keeps flying forward');
   // A banks left, D banks right back, release auto-levels.
   await page.keyboard.down('KeyA');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])<-15,null,{timeout:5000});await page.keyboard.up('KeyA');
   await page.waitForTimeout(1500);await page.keyboard.down('KeyD');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1])>15,null,{timeout:5000});await page.keyboard.up('KeyD');
   await page.waitForFunction(()=>Math.abs(Number(document.querySelector('#controlInfo').textContent.match(/BANK (-?\d+)/)[1]))<3,null,{timeout:5000});
-  await page.keyboard.down('KeyS');await page.waitForFunction(()=>Number(document.querySelector('#controlInfo').textContent.includes('THR 0'))||Number(document.querySelector('#controlInfo').textContent.match(/THR (\d+)%/)[1])<40,null,{timeout:6000});
+  // Simple wasd: S = dive down — altitude/vertical speed should drop.
+  await page.keyboard.down('KeyS');await page.waitForFunction(()=>Number(document.querySelector('#vs').textContent)<-120,null,{timeout:9000});
   await page.keyboard.up('KeyS');
   // Map: zoom in/out, fit, center, drag, click waypoint.
   await page.getByRole('button',{name:'Map M',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#mapCanvas').dataset.world===document.querySelector('#world').value);

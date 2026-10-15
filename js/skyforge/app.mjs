@@ -117,11 +117,13 @@ if($('touchStick')){
 function inputs(dt){const c=state.controls,sensitivity=save.settings.sensitivity,free=visual.mode==='free';
   const input=keyboardFlightInput(keys);
   if((input.pitch||input.turn||input.brake||touchInput.active)&&state.autopilot?.enabled){state.autopilot.enabled=false;if($('autopilotToggle')){$('autopilotToggle').textContent='Autopilot off';$('autopilotToggle').classList.remove('active');}}
-  let elevator=free?0:(input.pitch+touchInput.y)*sensitivity*(state.assist?1:save.settings.invert?-1:1);
+  // Simple wasd flight (easy mode): W = climb up, S = dive down, A/D = bank & turn.
+  // Power is compounded while W is held so climbing doesn't bleed speed away.
+  let elevator=free?0:(input.pitch+(state.assist?input.throttleUp-input.throttleDownKeyS:0)+touchInput.y)*sensitivity*(state.assist?1:save.settings.invert?-1:1);
   let aileron=free?0:(input.turn+touchInput.x)*sensitivity;
   let rudder=free?0:input.rudder*sensitivity;
   if(!free){
-    if(state.assist){c.throttle=clamp(c.throttle+input.throttleUp*dt*.55-(input.throttleDown+input.throttleDownKeyS)*dt*.65,0,1);c.brake=input.brake?1:0;}
+    if(state.assist){c.throttle=clamp(c.throttle+input.throttleUp*dt*.8-(input.throttleDown+input.throttleDownKeyS)*dt*.35,0,1);c.brake=clamp(input.brake-input.throttleDownKeyS,0,1);}
     else{c.brake=input.brake?1:0;c.throttle=clamp(c.throttle+(input.throttleUp-input.throttleDown)*dt*.5,0,1);}
   }
   const pad=navigator.getGamepads?.()[0];if(pad&&!free){const dz=save.settings.deadzone;const axis=v=>Math.abs(v)>dz?Math.sign(v)*(Math.abs(v)-dz)/(1-dz):0;
