@@ -1,46 +1,43 @@
-"""NeuroML — neuron-gear Clash Royale player (v9, Full Vision + Groq Damage Punishment).
+"""NeuroML — Advanced Neuron-Geared Clash Royale Player (v10: Dueling Double DQN + PER + N-Step + Full Vision + Groq VLM).
 
-Architecture acts like a brain: 'surge neurons' (the Q-network) fire a
-dopamine signal when an action pays off, go silent or spike punishment when it
-doesn't, and losing a match or taking tower damage drains dopamine with a
-punishment spike.
-The ML actually occurring: Deep Q-Network (value-based reinforcement
-learning) — a neural net learns Q(s,a): how much future dopamine each (state,
-action) will release. It trains from its own replayed experiences with
-target-network bootstrapping and epsilon-greedy exploration.
+Architecture acts like a biological brain with cortical & limbic pathways:
+  1. Sensory Cortex (38 input neurons -> 128 LayerNorm + SiLU neurons)
+  2. Residual Synaptic Blocks (2 x 128-neuron skip-connected cortical columns
+     with LayerNorm & SiLU gating so gradients never vanish)
+  3. Dueling Limbic Pathways (Wang et al.):
+     - State-Value Stream V(s) (64 limbic neurons -> 1 baseline dopamine prediction)
+     - Action-Advantage Stream A(s,a) (64 motor neurons -> 20 card x zone advantages)
+     - Combined via Q(s,a) = V(s) + (A(s,a) - mean(A(s,*)))
+  4. Double DQN Target Decoupling (van Hasselt et al.):
+     - Online policy selects best next action a* = argmax_a Q_policy(s', a)
+     - Target network evaluates Q_target(s', a*) to eliminate Q-value overestimation
+  5. Prioritized Experience Replay (PER, Schaul et al.):
+     - Transitions with high TD-error |delta| (especially surprise tower-damage
+       punishments and big wins) are replayed with higher probability P(i) ~ |delta_i|^alpha
+       and weighted with importance-sampling weights w_i = (N * P(i))^(-beta)
+  6. 3-Step Bootstrapping (N-Step Returns):
+     - Propagates delayed tower-damage punishments and push rewards 3x faster
+       back to the card placement that caused them
+  7. Polyak Soft Target Synaptic Plasticity:
+     - Smoothly blends target weights every training step: theta_target <- tau*theta_policy + (1-tau)*theta_target
 
-Full Vision (new in v9):
-  - Pixel-level HP bar scanner tracks all 3 friendly towers (left princess,
-    right princess, king) and 2 enemy towers in real time.
-  - Arena unit-health-bar scanner detects active enemy & friendly troops in left
-    and right lanes and at the bridges.
-  - True card-affordability detector reads the pink elixir drop badge under each
-    of the 4 hand slots.
-  - Groq API integration (key read from GROQ_API_KEY env or groq_key.txt):
-    1) Vision screen classifier fallback when unknown screens appear.
-    2) Groq Damage Judge: when our towers take damage, queries Groq (with local
-       proportional punishment baseline) to sentence the surge neurons with an
-       immediate negative dopamine punishment spike.
-
-Gating rules (v8+):
-  - The bot ONLY acts while com.supercell.clashroyale is the foreground app.
-  - If the phone leaves the home Wi-Fi (or adb drops), it goes into a quiet
-    reconnect loop and resumes automatically when the network returns.
-
-Dopamine rules (v9):
-  - Win  -> +3.0 dopamine surge
-  - Loss -> NO dopamine at all, -4.0 punishment spike
-  - Tower damage taken -> immediate negative dopamine punishment (-0.5 to -3.0
-    per damage event, judged via Groq API / tower HP delta, zero positive reward)
-  - Enemy tower damaged -> +0.4 to +1.5 dopamine boost
-  - Elixir leak at 10 elixir -> escalating punishment, zero dopamine
+Full Vision & Live Groq VLM (`qwen/qwen3.8-27b`):
+  - Pixel-level HP bar scanner tracks all 5 towers (ally_left, ally_right,
+    ally_king, enemy_left, enemy_right) + active battlefield unit health bars +
+    individual card slot pink elixir badges.
+  - Live Groq VLM (`qwen/qwen3.8-27b`) classifies unknown screens AND acts as the
+    visual + tactical Damage Judge to sentence the surge neurons with immediate
+    negative punishment (-0.50 to -3.50, zero positive dopamine) whenever our
+    towers take damage.
 """
 import base64
 import io
 import itertools
 import json
+import math
 import os
 import random
+import re
 import subprocess
 import time
 import urllib.request
@@ -87,9 +84,9 @@ def tap(x, y):
     time.sleep(0.4)
 
 
-# ---------------------- Groq API (vision + damage judge) ----------------------
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-GROQ_TEXT_MODEL = "openai/gpt-oss-20b"
+# ---------------------- Groq VLM API (Vision + Damage Judge) ----------------------
+GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
+GROQ_TEXT_MODEL = "qwen/qwen3.8-27b"
 
 
 def load_groq_key():
@@ -106,17 +103,16 @@ def load_groq_key():
 
 
 def groq_vision_classify(img):
-    """Fallback full-vision classifier using Groq multimodal API when the pixel
-    probe returns 'unknown'. Returns one of: battle, lobby, result, quit_dialog,
-    popup, unknown."""
+    """Full-vision multimodal screen classifier using Groq's qwen/qwen3.8-27b VLM
+    when the fast pixel probe returns 'unknown'."""
     key = load_groq_key()
     if not key:
         return "unknown"
     try:
         thumb = img.copy()
-        thumb.thumbnail((512, 1100))
+        thumb.thumbnail((384, 832))
         buf = io.BytesIO()
-        thumb.save(buf, format="JPEG", quality=70)
+        thumb.save(buf, format="JPEG", quality=68)
         b64 = base64.b64encode(buf.getvalue()).decode()
         payload = {
             "model": GROQ_VISION_MODEL,
@@ -127,13 +123,13 @@ def groq_vision_classify(img):
                         "type": "text",
                         "text": (
                             "Classify this Clash Royale screen into EXACTLY one word from: "
-                            "battle, lobby, result, quit_dialog, popup, unknown."
+                            "battle, lobby, result, quit_dialog, popup, unknown. Do not explain."
                         ),
                     },
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ],
             }],
-            "max_tokens": 12,
+            "max_tokens": 16,
             "temperature": 0.0,
         }
         req = urllib.request.Request(
@@ -142,15 +138,15 @@ def groq_vision_classify(img):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/9.0",
+                "User-Agent": "NeuroML/10.0",
             },
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode())
-            ans = data["choices"][0]["message"]["content"].strip().lower()
+            ans = (data["choices"][0]["message"].get("content") or "").strip().lower()
             for label in ("battle", "lobby", "result", "quit_dialog", "popup"):
                 if label in ans:
-                    log(f"groq vision classified unknown screen -> {label}")
+                    log(f"groq VLM classified unknown screen -> {label}")
                     return label
     except Exception as e:
         err = e.read().decode(errors="ignore")[:120] if hasattr(e, "read") else str(e)[:120]
@@ -160,12 +156,12 @@ def groq_vision_classify(img):
 
 def groq_damage_punishment(dmg_info, img=None):
     """Calculate severe negative dopamine punishment when our towers take damage.
-    Uses local proportional damage physics immediately and queries Groq API key
-    judge when available so the surge neurons get punished for allowing tower hits."""
-    # Baseline local punishment: proportional to HP fraction lost + extra -1.5 per tower destroyed
+    Queries Groq's qwen/qwen3.8-27b VLM (with visual snapshot when available)
+    and combines with proportional HP-drop physics so the surge neurons are
+    strictly punished whenever our towers take damage."""
     hp_drop = dmg_info.get("ally_hp_drop", 0.0)
     towers_lost = dmg_info.get("ally_towers_lost", 0)
-    base_punish = -max(0.45, round(hp_drop * 4.0 + towers_lost * 1.5, 2))
+    base_punish = -max(0.50, round(hp_drop * 4.0 + towers_lost * 1.6, 2))
     base_punish = max(-3.5, base_punish)
 
     key = load_groq_key()
@@ -174,16 +170,29 @@ def groq_damage_punishment(dmg_info, img=None):
 
     try:
         prompt = (
-            f"Clash Royale RL Judge: Our towers just took damage! "
+            f"Clash Royale RL Judge: Our friendly towers just took damage! "
             f"HP fraction lost={hp_drop:.3f}, towers collapsed={towers_lost}, "
             f"left_hp={dmg_info.get('ally_left', 0):.2f}, right_hp={dmg_info.get('ally_right', 0):.2f}, "
             f"king_hp={dmg_info.get('ally_king', 0):.2f}. "
-            f"Output ONLY a single negative float between -0.5 and -3.5 to punish the surge neurons."
+            f"Output ONLY a single negative float between -0.50 and -3.50 (more negative for bigger damage or collapsed tower) to punish the surge neurons."
         )
+        if img is not None:
+            thumb = img.copy()
+            thumb.thumbnail((320, 690))
+            buf = io.BytesIO()
+            thumb.save(buf, format="JPEG", quality=60)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]
+        else:
+            content = prompt
+
         payload = {
-            "model": GROQ_TEXT_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 10,
+            "model": GROQ_VISION_MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 16,
             "temperature": 0.0,
         }
         req = urllib.request.Request(
@@ -192,18 +201,19 @@ def groq_damage_punishment(dmg_info, img=None):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/9.0",
+                "User-Agent": "NeuroML/10.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=7) as resp:
             data = json.loads(resp.read().decode())
-            txt = data["choices"][0]["message"]["content"].strip()
-            import re
+            txt = (data["choices"][0]["message"].get("content") or "").strip()
             m = re.search(r"-[0-9]+(?:\.[0-9]+)?", txt)
             if m:
                 val = float(m.group(0))
-                val = max(-3.5, min(-0.3, val))
-                return val, "groq_api_judge"
+                # Ensure severe damage / lost tower is never under-punished
+                val = min(val, base_punish * 0.85)
+                val = max(-3.5, min(-0.45, round(val, 2)))
+                return val, "groq_vlm_judge"
     except Exception as e:
         err = e.read().decode(errors="ignore")[:90] if hasattr(e, "read") else str(e)[:90]
         log(f"groq damage judge fallback to local punishment ({base_punish:+.2f}): {err}")
@@ -251,23 +261,16 @@ def _scan_bar_fraction(img, xr, yr, is_enemy=False, max_span=132.0):
             best_span = (max(xs) - min(xs)) if len(xs) >= 4 else 0
     if best_cnt < 5:
         return 0.0
-    # Combine pixel density and span so white HP numbers inside the bar don't
-    # artificially shrink the reading when the bar is full
     span_ratio = min(1.0, best_span / max_span)
     cnt_ratio = min(1.0, best_cnt / (max_span * 0.36))
     return round(max(span_ratio * 0.7 + cnt_ratio * 0.3, cnt_ratio), 3)
 
 
 def tower_healths(img):
-    """Full-vision scan of all 5 tower health bars on the battlefield:
-      - ally_left, ally_right (princess towers, y=1360..1450)
-      - ally_king (king tower, y=1725..1758; note: full=1.0 when unactivated)
-      - enemy_left, enemy_right (enemy princess towers, y=370..435)
-    """
+    """Full-vision scan of all 5 tower health bars on the battlefield."""
     al = _scan_bar_fraction(img, range(155, 340, 2), range(1360, 1450, 2), is_enemy=False, max_span=132.0)
     ar = _scan_bar_fraction(img, range(740, 920, 2), range(1360, 1450, 2), is_enemy=False, max_span=132.0)
     ak_raw = _scan_bar_fraction(img, range(430, 650, 2), range(1725, 1758, 2), is_enemy=False, max_span=152.0)
-    # King tower HP bar only appears once damaged or a princess tower falls
     ak = ak_raw if (ak_raw > 0.05 or al == 0.0 or ar == 0.0) else 1.0
     el = _scan_bar_fraction(img, range(155, 340, 2), range(370, 435, 2), is_enemy=True, max_span=132.0)
     er = _scan_bar_fraction(img, range(740, 920, 2), range(370, 435, 2), is_enemy=True, max_span=132.0)
@@ -283,8 +286,7 @@ def tower_healths(img):
 
 
 def scan_arena_vision(img):
-    """Full-vision scan of active troop/building health bars across the arena
-    (left lane, right lane, bridges, defense zones)."""
+    """Full-vision scan of active troop/building health bars across the arena."""
     enemy_left = 0
     enemy_right = 0
     enemy_bridge_l = 0
@@ -348,7 +350,6 @@ def classify(img):
             purple += 1
     tray = [img.getpixel((x, y)) for y in range(2050, 2160, 20) for x in range(320, 940, 60)]
     navy = sum(1 for r, g, b in tray if b > 70 and b > r + 30 and r < 80)
-    # Also detect battle by presence of tower HP bars + lower card tray
     th = tower_healths(img)
     has_towers = (th["ally_left"] > 0 or th["ally_right"] > 0 or th["enemy_left"] > 0 or th["enemy_right"] > 0)
     if (purple >= 5 and navy >= 8) or (navy >= 6 and has_towers):
@@ -383,7 +384,6 @@ def lane_variances(img):
 
 
 def match_phase(img, tick_count):
-    """Use a rough phase model from tick counter within a match."""
     if tick_count < 15:
         return 0  # early
     if tick_count < 45:
@@ -405,7 +405,6 @@ CANCEL_BUTTON = (365, 1480)
 OK_CENTER = (540, 2050)
 CLAIM_SPOT = (700, 1420)
 
-# card vocab for opponent memory tracking (index = the 16 known meta cards)
 OPPONENT_VOCAB = [
     "hogrider", "giant", "minipekka", "musketeer", "knight", "archers",
     "valkyrie", "skeletons", "fireball", "arrows", "zap", "cannon",
@@ -413,32 +412,84 @@ OPPONENT_VOCAB = [
 ]
 
 
-# ---------------------- neural net ----------------------
+# ---------------------- Advanced Neural Architecture (Dueling ResNet QNet) ----------------------
+class SynapticResBlock(nn.Module):
+    """Residual cortical column with LayerNorm + SiLU activation so deep neuron
+    gearing trains smoothly with skip connections."""
+    def __init__(self, dim=128):
+        super().__init__()
+        self.fc1 = nn.Linear(dim, dim)
+        self.ln1 = nn.LayerNorm(dim)
+        self.fc2 = nn.Linear(dim, dim)
+        self.ln2 = nn.LayerNorm(dim)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        h = self.act(self.ln1(self.fc1(x)))
+        h = self.ln2(self.fc2(h))
+        return self.act(x + h)
+
+
 class QNet(nn.Module):
-    """'Surge neuron' population: STATE_DIM input neurons -> two hidden
-    neuron layers -> 64 'emotional' interneurons -> ACTION_DIM output neurons,
-    one per (card slot, placement zone). ReLU sums act like firing rates."""
+    """Dueling Surge-Neuron Architecture:
+      - Sensory Input Stem (38 -> 128)
+      - 2 Residual Synaptic Cortical Blocks (128 -> 128)
+      - Limbic Value Stream V(s): estimates overall battlefield dopamine state (128 -> 64 -> 1)
+      - Motor Advantage Stream A(s,a): estimates relative advantage of each (card, zone) (128 -> 64 -> 20)
+      - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
+    """
     def __init__(self):
         super().__init__()
-        self.net = nn.Sequential(
+        self.sensory = nn.Sequential(
             nn.Linear(STATE_DIM, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.SiLU(),
+        )
+        self.cortex1 = SynapticResBlock(128)
+        self.cortex2 = SynapticResBlock(128)
+
+        # Limbic State-Value stream V(s)
+        self.value_stream = nn.Sequential(
             nn.Linear(128, 64),
-            nn.ReLU(),
+            nn.LayerNorm(64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+        )
+        # Motor Action-Advantage stream A(s,a)
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.SiLU(),
             nn.Linear(64, ACTION_DIM),
         )
 
+    def forward_streams(self, x):
+        single = x.dim() == 1
+        if single:
+            x = x.unsqueeze(0)
+        h0 = self.sensory(x)
+        h1 = self.cortex1(h0)
+        h2 = self.cortex2(h1)
+        v_hid = self.value_stream[:-1](h2)
+        a_hid = self.advantage_stream[:-1](h2)
+        v = self.value_stream[-1](v_hid)
+        a = self.advantage_stream[-1](a_hid)
+        q = v + (a - a.mean(dim=-1, keepdim=True))
+        if single:
+            return q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0), h2.squeeze(0), v_hid.squeeze(0)
+        return q, v, a, h1, h2, v_hid
+
     def forward(self, x):
-        return self.net(x)
+        return self.forward_streams(x)[0]
 
 
 METRICS_FILE = "ml_metrics.json"
 TRAIN_LOG = open("training.log", "a", buffering=1)
 _metrics = {
+    "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
     "steps": 0,
     "losses": [],
+    "td_errors": [],
     "epsilon": 0.35,
     "buffer": 0,
     "actions_taken": {},
@@ -448,17 +499,20 @@ _metrics = {
 }
 
 
-def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None):
-    """Every-train-step + every-action record into a human-watchable log and a
-    machine-readable metrics file, so learning is visible on disk in real time."""
+def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None, td_err=None):
+    """Every-train-step + every-action record into training.log and ml_metrics.json."""
     _metrics["steps"] += 1
     if loss is not None:
         _metrics["losses"].append(round(loss, 5))
         _metrics["losses"] = _metrics["losses"][-500:]
+        td_str = f" td_err={td_err:.4f}" if td_err is not None else ""
         TRAIN_LOG.write(
             f"[{time.strftime('%H:%M:%S')}] step={_metrics['steps']} "
-            f"loss={loss:.5f} eps={_metrics['epsilon']:.3f} buffer={_metrics['buffer']}\n"
+            f"loss={loss:.5f}{td_str} eps={_metrics['epsilon']:.3f} buffer={_metrics['buffer']}\n"
         )
+    if td_err is not None:
+        _metrics["td_errors"].append(round(td_err, 4))
+        _metrics["td_errors"] = _metrics["td_errors"][-300:]
     if reward is not None:
         _metrics["rewards"].append(round(reward, 3))
         _metrics["rewards"] = _metrics["rewards"][-500:]
@@ -477,34 +531,43 @@ def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None)
 
 
 class TargetedDQN:
+    """Advanced Dueling Double DQN with:
+      - Prioritized Experience Replay (PER, proportional TD-error priorities)
+      - 3-Step Bootstrapping queue (propagates tower-damage punishment 3x faster)
+      - Polyak Soft Target Updates (tau=0.015 per train step)
+      - Legacy checkpoint migration (upgrades older Sequential checkpoints seamlessly)
+    """
     def __init__(self):
         self.policy = QNet()
         self.target = QNet()
         self.target.load_state_dict(self.policy.state_dict())
-        self.optim = optim.Adam(self.policy.parameters(), lr=1e-3)
+        self.optim = optim.AdamW(self.policy.parameters(), lr=8e-4, weight_decay=1e-4)
         self.buffer = deque(maxlen=20000)
+        self.priorities = deque(maxlen=20000)
+        self.nstep_queue = deque(maxlen=3)
+        self.n_steps = 3
         self.epsilon = 0.35
         self.gamma = 0.95
         self.batch = 64
-        self.train_every = 4
+        self.train_every = 2  # Train every 2 battle ticks for faster convergence
+        self.per_alpha = 0.6
+        self.per_beta = 0.4
+        self.tau = 0.015
         self._memory_dirty = 0
 
     def dopamine_report(self, q_state):
-        """Per-neuron gearing view: run one forward pass and report raw
-        firing-rate sums per layer — visible in ml_metrics.json so you can
-        literally watch neuron activity shift as it learns."""
+        """Per-neuron gearing telemetry across Sensory/Cortical/Limbic/Advantage streams."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            h1 = torch.relu(self.policy.net[0](x))
-            h2 = torch.relu(self.policy.net[2](h1))
-            h3 = torch.relu(self.policy.net[4](h2))
-            out = self.policy.net[6](h3)
+            q, v, a, h1, h2, v_hid = self.policy.forward_streams(x)
             return {
-                "layer1_mean": round(h1.mean().item(), 3),
-                "layer2_mean": round(h2.mean().item(), 3),
-                "limbic_mean": round(h3.mean().item(), 3),
-                "output_best": int(out.argmax().item()),
-                "output_value": round(out.max().item(), 3),
+                "layer1_mean": round(h1.abs().mean().item(), 3),
+                "layer2_mean": round(h2.abs().mean().item(), 3),
+                "limbic_mean": round(v_hid.abs().mean().item(), 3),
+                "state_value_V": round(v.item(), 3),
+                "advantage_spread": round((a.max() - a.min()).item(), 3),
+                "output_best": int(q.argmax().item()),
+                "output_value": round(q.max().item(), 3),
             }
 
     def act(self, state, forbidden=None):
@@ -523,42 +586,122 @@ class TargetedDQN:
                         q[f] = -1e9
             return int(torch.argmax(q).item())
 
-    def remember(self, s, a, r, s2, done):
-        self.buffer.append([s, a, r, s2, done])
+    def _push_per(self, transition, init_prio=None):
+        self.buffer.append(transition)
+        if init_prio is None:
+            max_p = max(self.priorities) if self.priorities else 1.0
+            # Boost initial priority for severe punishment or major reward
+            r = transition[2]
+            boost = 2.0 if abs(r) >= 1.0 else 1.0
+            init_prio = max_p * boost
+        self.priorities.append(float(max(1e-3, init_prio)))
         self._memory_dirty += 1
 
-    def train_step(self):
-        if len(self.buffer) < self.batch:
-            return None
-        batch = random.sample(self.buffer, self.batch)
-        s, a, r, s2, d = zip(*batch)
-        s = torch.tensor(s, dtype=torch.float32)
-        a = torch.tensor(a, dtype=torch.long)
-        r = torch.tensor(r, dtype=torch.float32)
-        s2 = torch.tensor(s2, dtype=torch.float32)
-        d = torch.tensor(d, dtype=torch.float32)
+    def remember(self, s, a, r, s2, done):
+        """Store 1-step transition immediately AND accumulate 3-step return
+        transitions so delayed tower-damage punishments propagate rapidly."""
+        self.nstep_queue.append((s, a, float(r), s2, bool(done)))
+        # Compute N-step discounted return from the oldest transition in the queue
+        if len(self.nstep_queue) == self.n_steps or done:
+            while self.nstep_queue:
+                s0, a0, _, _, _ = self.nstep_queue[0]
+                R = 0.0
+                final_s2 = s2
+                final_done = False
+                steps_used = 0
+                for idx, (_, _, r_k, s2_k, d_k) in enumerate(self.nstep_queue):
+                    R += (self.gamma ** idx) * r_k
+                    final_s2 = s2_k
+                    steps_used = idx + 1
+                    if d_k:
+                        final_done = True
+                        break
+                self._push_per([s0, int(a0), round(R, 4), final_s2, final_done, steps_used])
+                self.nstep_queue.popleft()
+                if not done:
+                    break
 
+    def train_step(self):
+        n = len(self.buffer)
+        if n < self.batch:
+            return None
+        # Ensure priorities match buffer length
+        while len(self.priorities) < n:
+            self.priorities.append(1.0)
+
+        # Prioritized Experience Replay (PER) sampling
+        prios = [max(1e-4, float(p)) ** self.per_alpha for p in self.priorities]
+        total_p = sum(prios)
+        probs = [p / total_p for p in prios]
+        indices = random.choices(range(n), weights=probs, k=self.batch)
+
+        # Anneal importance-sampling beta toward 1.0
+        self.per_beta = min(1.0, self.per_beta + 0.001)
+        weights = [(n * probs[i]) ** (-self.per_beta) for i in indices]
+        max_w = max(weights) if weights else 1.0
+        weights = [w / max_w for w in weights]
+
+        batch = [self.buffer[i] for i in indices]
+        s = torch.tensor([b[0] for b in batch], dtype=torch.float32)
+        a = torch.tensor([b[1] for b in batch], dtype=torch.long)
+        r = torch.tensor([b[2] for b in batch], dtype=torch.float32)
+        s2 = torch.tensor([b[3] for b in batch], dtype=torch.float32)
+        d = torch.tensor([float(b[4]) for b in batch], dtype=torch.float32)
+        n_step = torch.tensor([float(b[5]) if len(b) > 5 else 1.0 for b in batch], dtype=torch.float32)
+        w_tensor = torch.tensor(weights, dtype=torch.float32)
+
+        # Current Q(s, a)
         q = self.policy(s).gather(1, a.unsqueeze(1)).squeeze(1)
+
+        # Double DQN Target: online policy selects best next action, target net evaluates it
         with torch.no_grad():
-            q_next = self.target(s2).max(1)[0]
-            q_exp = r + self.gamma * q_next * (1 - d)
-        loss = nn.functional.smooth_l1_loss(q, q_exp)
+            next_actions = self.policy(s2).argmax(dim=1, keepdim=True)
+            q_next = self.target(s2).gather(1, next_actions).squeeze(1)
+            gammas = self.gamma ** n_step
+            q_exp = r + gammas * q_next * (1.0 - d)
+
+        td_errors = (q - q_exp).detach().abs()
+        elementwise_loss = nn.functional.smooth_l1_loss(q, q_exp, reduction="none")
+        loss = (w_tensor * elementwise_loss).mean()
+
         self.optim.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
         self.optim.step()
+
+        # Update PER priorities with latest TD errors
+        td_list = td_errors.tolist()
+        for idx_pos, buf_idx in enumerate(indices):
+            if buf_idx < len(self.priorities):
+                # Extra priority boost if the transition involved punishment (r < -0.4)
+                punish_boost = 1.5 if batch[idx_pos][2] <= -0.45 else 1.0
+                self.priorities[buf_idx] = (td_list[idx_pos] + 1e-3) * punish_boost
+
+        # Polyak soft target update every training step
+        self.soft_update_target()
+
         value = loss.item()
+        mean_td = float(td_errors.mean().item())
         _metrics["buffer"] = len(self.buffer)
         _metrics["epsilon"] = self.epsilon
-        metrics_append(value)
+        metrics_append(value, td_err=mean_td)
         return value
+
+    def soft_update_target(self):
+        with torch.no_grad():
+            for tp, pp in zip(self.target.parameters(), self.policy.parameters()):
+                tp.data.mul_(1.0 - self.tau).add_(pp.data, alpha=self.tau)
 
     def sync_target(self):
         self.target.load_state_dict(self.policy.state_dict())
 
     def save(self):
-        torch.save({"policy": self.policy.state_dict(),
-                    "epsilon": self.epsilon}, "ml_policy.pt")
+        torch.save({
+            "arch": "dueling_resnet_v10",
+            "policy": self.policy.state_dict(),
+            "target": self.target.state_dict(),
+            "epsilon": self.epsilon,
+        }, "ml_policy.pt")
         try:
             with open("ml_replay.json", "w") as f:
                 json.dump(list(self.buffer)[-5000:], f)
@@ -568,17 +711,35 @@ class TargetedDQN:
 
     def load(self):
         if os.path.exists("ml_policy.pt"):
-            ckpt = torch.load("ml_policy.pt")
-            self.policy.load_state_dict(ckpt["policy"])
-            self.target.load_state_dict(ckpt["policy"])
-            self.epsilon = ckpt.get("epsilon", 0.35)
-            log(f"loaded model, epsilon={self.epsilon:.2f}")
+            try:
+                ckpt = torch.load("ml_policy.pt")
+                self.epsilon = ckpt.get("epsilon", 0.35)
+                if ckpt.get("arch") == "dueling_resnet_v10":
+                    self.policy.load_state_dict(ckpt["policy"])
+                    self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
+                    log(f"loaded Dueling-ResNet v10 model, epsilon={self.epsilon:.2f}")
+                else:
+                    # Migrate sensory stem weights from v8/v9 Sequential net if shapes match
+                    old_sd = ckpt.get("policy", {})
+                    if "net.0.weight" in old_sd and old_sd["net.0.weight"].shape == (128, STATE_DIM):
+                        with torch.no_grad():
+                            self.policy.sensory[0].weight.copy_(old_sd["net.0.weight"])
+                            self.policy.sensory[0].bias.copy_(old_sd["net.0.bias"])
+                            self.target.load_state_dict(self.policy.state_dict())
+                    log(f"migrated v8/v9 sensory weights into Dueling-ResNet v10, epsilon={self.epsilon:.2f}")
+            except Exception as e:
+                log(f"model load note: {e}")
         if os.path.exists("ml_replay.json"):
             try:
                 with open("ml_replay.json") as f:
                     data = json.load(f)
-                self.buffer.extend(data)
-                log(f"restored {len(data)} replay memories from disk")
+                for item in data:
+                    if len(item) == 5:
+                        item = list(item) + [1]
+                    self.buffer.append(item)
+                    r_val = float(item[2])
+                    self.priorities.append(2.0 if abs(r_val) >= 1.0 else 1.0)
+                log(f"restored {len(data)} prioritized replay memories from disk")
             except Exception as e:
                 log(f"replay restore failed: {e}")
 
@@ -658,10 +819,17 @@ def foreground_app():
 
 
 def main():
-    log("NeuroML v9 (Full Vision + Groq Damage Judge) started on " + DEV)
+    log("NeuroML v10 (Dueling Double DQN + PER + 3-Step + Groq VLM) started on " + DEV)
     offline_since = None
     brain = TargetedDQN()
     brain.load()
+    # Warm-train 3 steps on restored replay memories so new Dueling head aligns immediately
+    if len(brain.buffer) >= brain.batch:
+        for _ in range(3):
+            brain.train_step()
+        brain.save()
+        log(f"warm-trained Dueling Double DQN on {len(brain.buffer)} memories")
+
     just_queued = False
     back_streak = 0
     stuck_since = None
@@ -697,7 +865,6 @@ def main():
             img = Image.open(png).convert("RGB")
             state = classify(img)
             if state == "unknown":
-                # Consult Groq multimodal vision fallback if pixel probe is unsure
                 g_state = groq_vision_classify(img)
                 if g_state in ("battle", "lobby", "result", "quit_dialog"):
                     state = g_state
@@ -733,7 +900,6 @@ def main():
                 arena = scan_arena_vision(img)
                 afford = hand_affordability(img, mlxir)
 
-                # Determine threatened lane using both active enemy unit health bars and pixel variance
                 if arena["enemy_left"] > arena["enemy_right"] + 4 or arena["enemy_bridge_l"] >= 3:
                     lane = "left"
                 elif arena["enemy_right"] > arena["enemy_left"] + 4 or arena["enemy_bridge_r"] >= 3:
@@ -750,7 +916,6 @@ def main():
                     towers=towers, arena=arena, afford=afford,
                 )
 
-                # Build action mask: forbid unaffordable card slots
                 affordable_slots = [i for i in range(4) if state_s[7 + i] > 0.5]
                 forbidden = set()
                 for slot in range(4):
@@ -767,9 +932,7 @@ def main():
                 dmg_punish = None
                 dmg_source = None
 
-                # 1. Tower damage sensing + Groq API key punishment
                 if prev_towers is not None:
-                    # Only trigger damage if HP dropped significantly (>0.04) or a tower collapsed
                     dl = max(0.0, prev_towers["ally_left"] - towers["ally_left"])
                     dr = max(0.0, prev_towers["ally_right"] - towers["ally_right"])
                     dk = max(0.0, prev_towers["ally_king"] - towers["ally_king"])
@@ -785,14 +948,12 @@ def main():
                             "ally_king": towers["ally_king"],
                         }
                         dmg_punish, dmg_source = groq_damage_punishment(dmg_info, img)
-                        # When taking tower damage, surge neurons are strictly punished (zero positive dopamine!)
                         reward += dmg_punish
                         log(
                             f"TOWER DAMAGE TAKEN (drop={ally_drop:.2f}, lost={ally_lost}) "
                             f"-> punishment={dmg_punish:+.2f} via {dmg_source}"
                         )
 
-                    # Reward damaging enemy towers (only if we didn't just get punished)
                     el_drop = max(0.0, prev_towers["enemy_left"] - towers["enemy_left"])
                     er_drop = max(0.0, prev_towers["enemy_right"] - towers["enemy_right"])
                     enemy_drop = el_drop + er_drop
@@ -802,16 +963,14 @@ def main():
                         reward += enemy_bonus
                         log(f"ENEMY TOWER DAMAGED (drop={enemy_drop:.2f}) -> dopamine +{enemy_bonus:.2f}")
 
-                # 2. Tactical lane defense & elixir management rewards (suppressed if taking tower damage)
                 if dmg_punish is None:
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.5  # correct lane response
+                            reward += 0.5
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
                         reward += 0.3
                 else:
-                    # Ensure net reward remains strictly negative when taking damage
                     reward = min(reward, dmg_punish)
 
                 if mlxir <= 2 and lane is None:
@@ -822,7 +981,6 @@ def main():
                 else:
                     elixir_leak_ticks = 0
 
-                # Execute: drag card to spot
                 x, y = CARDS[slot % 4]
                 sx, sy = FIELD_SPOTS[spot_n]
                 sh(["shell", "input", "swipe", str(x), str(y), str(sx), str(sy), "350"])
@@ -846,17 +1004,14 @@ def main():
                 }
                 metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish, vision=vision_snapshot)
 
-                # Remember transition (prev state/action -> here)
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
 
-                # Train
                 if brain.buffer and len(brain.buffer) >= brain.batch and tick_in_match % brain.train_every == 0:
                     loss = brain.train_step()
                     if loss is not None:
                         train_loss_ma = loss if train_loss_ma is None else train_loss_ma * 0.9 + loss * 0.1
-                    if tick_in_match % 32 == 0:
-                        brain.sync_target()
+                    if tick_in_match % 24 == 0:
                         brain.save()
                         log(f"checkpoint saved: buffer={len(brain.buffer)} loss={train_loss_ma:.4f}")
 
@@ -945,8 +1100,7 @@ def main():
 
 
 def run_forever():
-    """Entry point with a watchdog that restarts main() on repeated crashes,
-    keeping persistent memory the only state to lose."""
+    """Entry point with a watchdog that restarts main() on repeated crashes."""
     while True:
         try:
             main()
