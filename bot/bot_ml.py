@@ -58,6 +58,9 @@ STATE_DIM = 38
 ACTION_DIM = 20
 CARD_VOCAB = 16
 
+TICK_SECONDS = 2.2  # fast play (was 3.2s; snappy but still human-possible)
+SWIPE_START_JITTER = 6  # pixels of humanization jitter on card swipes
+
 
 def log(msg):
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -227,6 +230,56 @@ def groq_damage_punishment(dmg_info, img=None):
 # ---------------------- Groq OSS AI Coach: Punisher + Mentor ----------------------
 GROQ_COACH_MODEL = "openai/gpt-oss-120b"
 SPOT_TO_ACTION = {}  # populated after SPOT_NAMES is defined (see below)
+
+
+def groq_deck_builder(player_deck=None):
+    """Groq deck-builder: fetch the real meta (from meta_decks.json, refreshed
+    via web) and ask gpt-oss-120b to evaluate + redesign the deck the bot uses.
+    Returns {'deck': [...8 card names...], 'critique': str, 'source': str}.
+    Only *suggests* decks; actual deck changes must be made manually in-game
+    (bot never opens Deck Edit to avoid touching account settings).
+    """
+    meta = {}
+    try:
+        meta = json.load(open("meta_decks.json"))
+    except Exception:
+        return {"deck": None, "critique": "no meta data", "source": "local"}
+    key = load_groq_key()
+    if not key:
+        return {"deck": None, "critique": "no key", "source": "local"}
+    import re as _re
+    prompt = (
+        "You are the NeuroML Deck Architect for a Clash Royale RL agent. "
+        f"Current ladder meta decks (fetched {meta.get('fetched_at')}):\n"
+        + json.dumps(meta.get("top_meta_decks", [])[:6], indent=1)
+        + f"\n\nAgent's current deck: {player_deck or 'unknown (use meta consensus)'}\n"
+        "1) Compare the agent's deck to the meta and name the biggest weaknesses.\n"
+        "2) Output the strongest 8-card deck possible given the meta.\n\n"
+        'Reply ONLY with minified JSON: {"best_deck": ["card1", ...8 names...], "why": "<25 words>"}'
+    )
+    try:
+        payload = {"model": GROQ_COACH_MODEL,
+                   "messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": 512, "temperature": 0.0}
+        req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "User-Agent": "NeuroML/11.5"})
+        with urllib.request.urlopen(req, timeout=14) as resp:
+            data = json.loads(resp.read().decode())
+            txt = (data["choices"][0]["message"].get("content") or "").strip()
+            m = _re.search(r"\{[^{}]*\}", txt, _re.S)
+            if not m:
+                return {"deck": None, "critique": "no json", "source": "groq"}
+            j = json.loads(m.group(0))
+            deck = j.get("best_deck")
+            if isinstance(deck, list) and len(deck) >= 6:
+                return {"deck": [str(c) for c in deck[:8]],
+                        "critique": str(j.get("why", ""))[:200], "source": "groq_deck_architect"}
+            return {"deck": None, "critique": "bad deck shape", "source": "groq"}
+    except Exception as e:
+        err = e.read().decode(errors="ignore")[:80] if hasattr(e, "read") else str(e)[:80]
+        return {"deck": None, "critique": f"architect unavailable: {err}", "source": "groq_unavailable"}
 
 
 def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
@@ -955,6 +1008,7 @@ def main():
 
     just_queued = False
     back_streak = 0
+    popup_hits = 0
     stuck_since = None
     tick_in_match = 0
     prev_state = None
@@ -994,16 +1048,23 @@ def main():
                     state = g_state
 
             now = time.time()
-            if stuck_since and now - stuck_since > 90:
-                log("stuck >90s — restarting app")
+            if stuck_since and now - stuck_since > 45:  # was 90s — UI recovery must be snappy
+                log(f"stuck on '{state}' for 45s — force cycle (OK → BACK → Battle tab)")
                 brain.save()
-                sh(["shell", "am", "force-stop", "com.supercell.clashroyale"])
-                time.sleep(2)
-                sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
-                    "-c", "android.intent.category.LAUNCHER", "1"])
-                time.sleep(25)
+                taps = [OK_CENTER, RESULT_OK, CANCEL_BUTTON, BATTLE_BUTTON]
+                for t in taps:
+                    tap(*t)
+                    time.sleep(0.5)
+                if now - stuck_since > 90:
+                    log("still stuck — restarting app")
+                    sh(["shell", "am", "force-stop", "com.supercell.clashroyale"])
+                    time.sleep(2)
+                    sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
+                        "-c", "android.intent.category.LAUNCHER", "1"])
+                    time.sleep(22)
                 stuck_since = None
                 back_streak = 0
+                popup_hits = 0
                 just_queued = False
                 continue
 
@@ -1106,10 +1167,14 @@ def main():
                 else:
                     elixir_leak_ticks = 0
 
+                # Humanized swipe: tiny jitter on start point + variable duration
+                jx = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
+                jy = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
+                dur = random.randint(280, 420)
                 x, y = CARDS[slot % 4]
                 sx, sy = FIELD_SPOTS[spot_n]
-                sh(["shell", "input", "swipe", str(x), str(y), str(sx), str(sy), "350"])
-                time.sleep(0.6)
+                sh(["shell", "input", "swipe", str(x + jx), str(y + jy), str(sx), str(sy), str(dur)])
+                time.sleep(0.45)
                 cards_played += 1
                 tick_in_match += 1
                 log(
@@ -1187,7 +1252,7 @@ def main():
                 prev_state = state_s
                 prev_action = action
                 prev_towers = towers
-                time.sleep(3.2)
+                time.sleep(TICK_SECONDS)
 
             elif state == "lobby":
                 stuck_since = None
@@ -1240,17 +1305,20 @@ def main():
 
             elif state == "popup":
                 stuck_since = stuck_since or now
-                # Most popups (chest opens, level-ups, overlays) dismiss with OK
-                log("popup -> tap OK center")
+                popup_hits += 1
+                # Most popups dismiss with OK; some (chest opens) need OK then BACK
+                log(f"popup -> dismiss (hit {popup_hits})")
                 tap(*OK_CENTER)
-                time.sleep(1.5)
-                sh(["shell", "input", "keyevent", "KEYCODE_BACK"])
-                time.sleep(2)
+                time.sleep(1.0)
+                if popup_hits % 2 == 0:
+                    sh(["shell", "input", "keyevent", "KEYCODE_BACK"])
+                    time.sleep(1.2)
 
             elif state == "other_tab":
                 stuck_since = None
                 back_streak = 0
                 prev_towers = None
+                popup_hits = 0  # reset when we reach a lobby tab
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, 0.0, prev_state, done=True)
                     prev_state = None
@@ -1258,13 +1326,13 @@ def main():
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                     brain.save()
                     log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
-                log("other lobby tab -> navigate back to Battle tab")
+                log("other lobby tab -> Battle tab")
                 tap(*TOP_BATTLE_TAB)
-                time.sleep(2.5)
+                time.sleep(2.0)
                 tap(*BATTLE_BUTTON)
                 just_queued = True
                 tick_in_match = 0
-                time.sleep(7)
+                time.sleep(6)
 
             else:  # truly unknown: probe with one BACK then OK, never blind-loop
                 stuck_since = stuck_since or now
