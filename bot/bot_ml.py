@@ -154,6 +154,10 @@ def groq_vision_classify(img):
     return "unknown"
 
 
+def _any(img, tests=None):
+    return None  # removed placeholder
+
+
 def groq_damage_punishment(dmg_info, img=None):
     """Calculate severe negative dopamine punishment when our towers take damage.
     Queries Groq's qwen/qwen3.8-27b VLM (with visual snapshot when available)
@@ -218,6 +222,93 @@ def groq_damage_punishment(dmg_info, img=None):
         err = e.read().decode(errors="ignore")[:90] if hasattr(e, "read") else str(e)[:90]
         log(f"groq damage judge fallback to local punishment ({base_punish:+.2f}): {err}")
     return base_punish, "groq_key_local_fallback"
+
+
+# ---------------------- Groq OSS AI Coach: Punisher + Mentor ----------------------
+GROQ_COACH_MODEL = "openai/gpt-oss-120b"
+SPOT_TO_ACTION = {}  # populated after SPOT_NAMES is defined (see below)
+
+
+def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
+    """The Groq OSS model acts simultaneously as PUNISHER and MENTOR.
+    PUNISHER: returns reward_delta (negative or small positive) that is ADDED
+      to the dopamine signal for the move.
+    MENTOR: returns recommended_spot + critique. The recommended action is
+      remembered in the replay buffer as an imitation memory (mentor loss) so
+      the Q-network learns to agree with the coach over time.
+    Returns dict: {agree, reward_delta, recommended_spot, critique, source}
+    """
+    out = {"agree": None, "reward_delta": None, "recommended_spot": None,
+           "critique": None, "source": None}
+    key = load_groq_key()
+    if not key:
+        return out
+    try:
+        import re as _re
+        prompt = (
+            "You are the NeuroML AI Coach for a Clash Royale RL agent. You are both its PUNISHER and its MENTOR.\n"
+            f"Battle state: {state_desc}\n"
+            f"The agent just played: {played_spot}\n"
+            f"Local reward signal was: {prev_reward:+.2f}\n\n"
+            "Reply ONLY with minified JSON, no markdown, exactly these keys:\n"
+            '{"reward_delta": <float -1.5..+0.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 20 words, coaching tone: punish mistakes AND teach the fix>"}\n\n'
+            "Rules: defending the threatened lane and not leaking elixir are good; "
+            "playing into the empty lane at max elixir or ignoring a big push is bad."
+        )
+        content = prompt
+        # gpt-oss-120b text-only: the structured state_desc already carries full vision
+        if img is not None:
+            pass  # image kept for future multimodal coach; text-only avoids API rejection
+        payload = {
+            "model": GROQ_COACH_MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 512,  # gpt-oss reasoning tokens consume budget; keep JSON in decoded output
+            "temperature": 0.0,
+        }
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "User-Agent": "NeuroML/11.0"},
+        )
+        with urllib.request.urlopen(req, timeout=14) as resp:
+            data = json.loads(resp.read().decode())
+            txt = (data["choices"][0]["message"].get("content") or "").strip()
+            m = _re.search(r"\{[^{}]*\}", txt, _re.S)
+            if not m:
+                return out
+            j = json.loads(m.group(0))
+            rd = j.get("reward_delta")
+            if isinstance(rd, (int, float)):
+                out["reward_delta"] = max(-1.5, min(0.5, float(rd)))
+            rs = j.get("recommended_spot")
+            if rs in SPOT_TO_ACTION:
+                out["recommended_spot"] = rs
+            cr = j.get("critique")
+            if isinstance(cr, str):
+                out["critique"] = cr.strip()[:160]
+            out["source"] = "groq_oss_coach"
+            _metrics["mentor_reviews"] = _metrics.get("mentor_reviews", 0) + 1
+    except Exception as e:
+        err = e.read().decode(errors="ignore")[:80] if hasattr(e, "read") else str(e)[:80]
+        out["critique"] = f"coach unavailable: {err}"
+        out["source"] = "groq_oss_coach_unavailable"
+    return out
+
+
+def mentor_log_line(entry):
+    """Append one coach review to the machine-readable coach feed + human log."""
+    try:
+        ts = time.strftime("%H:%M:%S")
+        entry["t"] = ts
+        with open(COACH_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        MENTOR_LOG.write(
+            f"[{ts}] played={entry.get('played')} critique={entry.get('critique')} "
+            f"delta={entry.get('reward_delta')} recommend={entry.get('recommended_spot')} agree={entry.get('agree')}\n"
+        )
+    except Exception:
+        pass
 
 
 # ---------------------- Full Vision / Sensing ----------------------
@@ -338,34 +429,56 @@ def hand_affordability(img, mlxir):
     return afford
 
 
+def _any(img, tests):
+    return sum(1 for _ in range(1) if False) if False else None
+
+
 def classify(img):
-    purple = 0
-    for y in range(2200, 2340, 8):
-        right = ELIXIR_X0
-        for x in range(ELIXIR_X0, 700, 10):
-            r, g, b = img.getpixel((x, y))
-            if r > 90 and g < 105 and b > 150:
-                right = x
-        if right - ELIXIR_X0 > 300:
-            purple += 1
-    tray = [img.getpixel((x, y)) for y in range(2050, 2160, 20) for x in range(320, 940, 60)]
-    navy = sum(1 for r, g, b in tray if b > 70 and b > r + 30 and r < 80)
-    th = tower_healths(img)
-    has_towers = (th["ally_left"] > 0 or th["ally_right"] > 0 or th["enemy_left"] > 0 or th["enemy_right"] > 0)
-    if (purple >= 5 and navy >= 8) or (navy >= 6 and has_towers):
-        return "battle"
-    row = [img.getpixel((x, 1480)) for x in range(250, 880, 30)]
-    red = sum(1 for r, g, b in row if r > 170 and r > g + 70 and r > b + 70)
-    blue = sum(1 for r, g, b in row if b > 170 and b > r + 40 and g > 110)
-    if red >= 3 and blue >= 3:
+    """Hard pixel-signature classifier calibrated on 14 real screenshots for
+    every known Clash Royale screen. Order matters: most specific first."""
+    # 1. Supercell ID sign-in / loading sheet: huge pure-white area mid-screen
+    sc_white = sum(1 for y in range(1000, 2000, 50) for x in range(100, 980, 60)
+                   if img.getpixel((x, y))[0] > 235 and img.getpixel((x, y))[1] > 235
+                   and img.getpixel((x, y))[2] > 235)
+    if sc_white >= 120:
+        return "popup"  # non-interactive loading sheet: press BACK/OK
+    # 2. Quit dialog: red Cancel left + blue OK right at y=1480
+    red_c = sum(1 for x in range(270, 450, 15) if img.getpixel((x, 1480))[0] > 180 and img.getpixel((x, 1480))[1] < 90)
+    blue_ok = sum(1 for x in range(620, 800, 15) if img.getpixel((x, 1480))[2] > 180 and img.getpixel((x, 1480))[0] < 90)
+    if red_c >= 6 and blue_ok >= 6:
         return "quit_dialog"
+    # 3. Battle: pink elixir drop icon bottom-left
+    pink_drop = sum(1 for y in range(2260, 2325, 6) for x in range(205, 265, 6)
+                    if img.getpixel((x, y))[0] > 170 and img.getpixel((x, y))[2] > 150
+                    and img.getpixel((x, y))[1] < 110)
+    if pink_drop >= 18:
+        return "battle"
+    # 4. Result screen: blue OK button bottom-center OR (blue/red ribbon + OK)
+    ok_blue = sum(1 for y in (2035, 2060, 2085) for x in range(450, 630, 15)
+                  if img.getpixel((x, y))[2] > 150 and img.getpixel((x, y))[1] > 80
+                  and img.getpixel((x, y))[0] < 110)
+    if ok_blue >= 12:
+        return "result"
+    # 5. Battle-tab lobby: bright yellow Battle button
+    yellow_btn = sum(1 for y in (1850, 1880, 1910) for x in range(380, 700, 25)
+                     if img.getpixel((x, y))[0] > 210 and 120 < img.getpixel((x, y))[1] < 215
+                     and img.getpixel((x, y))[2] < 80)
+    if yellow_btn >= 20:
+        return "lobby"
+    # 6. Other lobby tab (shop/collection/clan/events): top resource bar gold+gem
+    green_gem = sum(1 for y in range(50, 90, 5) for x in range(725, 785, 5)
+                    if img.getpixel((x, y))[1] > 170 and img.getpixel((x, y))[1] > img.getpixel((x, y))[0] + 50
+                    and img.getpixel((x, y))[1] > img.getpixel((x, y))[2] + 40)
+    gold_coin = sum(1 for y in range(50, 90, 5) for x in range(420, 470, 5)
+                    if img.getpixel((x, y))[0] > 200 and img.getpixel((x, y))[1] > 140
+                    and img.getpixel((x, y))[2] < 80)
+    if green_gem >= 6 and gold_coin >= 6:
+        return "other_tab"
+    # 7. Blue ribbon (result loading behind overlay)
     band = [img.getpixel((x, y)) for y in (1400, 1440) for x in range(240, 880, 60)]
     blue_rib = sum(1 for r, g, b in band if b > 140 and b > r + 40)
-    if blue_rib >= 8:
+    if blue_rib >= 18:
         return "result"
-    btn = [img.getpixel((x, y)) for y in (1850, 1900, 1950, 2000) for x in range(320, 800, 40)]
-    if sum(1 for r, g, b in btn if r > 200 and 110 < g < 200 and b < 100) >= 20:
-        return "lobby"
     return "unknown"
 
 
@@ -403,13 +516,17 @@ FIELD_SPOTS = {
 BATTLE_BUTTON = (540, 1876)
 CANCEL_BUTTON = (365, 1480)
 OK_CENTER = (540, 2050)
+RESULT_OK = (540, 2060)
 CLAIM_SPOT = (700, 1420)
+TOP_BATTLE_TAB = (150, 300)
 
 OPPONENT_VOCAB = [
     "hogrider", "giant", "minipekka", "musketeer", "knight", "archers",
     "valkyrie", "skeletons", "fireball", "arrows", "zap", "cannon",
     "tesla", "wizard", "bomber", "minions",
 ]
+
+SPOT_TO_ACTION.update({n: i for i, n in enumerate(SPOT_NAMES)})
 
 
 # ---------------------- Advanced Neural Architecture (Dueling ResNet QNet) ----------------------
@@ -485,6 +602,8 @@ class QNet(nn.Module):
 
 METRICS_FILE = "ml_metrics.json"
 TRAIN_LOG = open("training.log", "a", buffering=1)
+MENTOR_LOG = open("mentor.log", "a", buffering=1)
+COACH_FILE = "ai_coach.jsonl"
 _metrics = {
     "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
     "steps": 0,
@@ -495,11 +614,13 @@ _metrics = {
     "actions_taken": {},
     "rewards": [],
     "damage_punishments": [],
+    "mentor_reviews": 0,
+    "mentor_agree": 0,
     "matches": 0,
 }
 
 
-def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None, td_err=None):
+def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None, td_err=None, mentor=None):
     """Every-train-step + every-action record into training.log and ml_metrics.json."""
     _metrics["steps"] += 1
     if loss is not None:
@@ -521,6 +642,8 @@ def metrics_append(loss, reward=None, action=None, dmg_punish=None, vision=None,
         _metrics["damage_punishments"] = _metrics["damage_punishments"][-200:]
     if vision is not None:
         _metrics["vision"] = vision
+    if mentor is not None:
+        _metrics["last_mentor"] = mentor
     if action is not None:
         _metrics["actions_taken"][str(action)] = _metrics["actions_taken"].get(str(action), 0) + 1
     try:
@@ -840,6 +963,7 @@ def main():
     elixir_leak_ticks = 0
     train_loss_ma = None
     cards_played = 0
+    mentor_cooldown = 0.0
 
     while True:
         try:
@@ -866,7 +990,7 @@ def main():
             state = classify(img)
             if state == "unknown":
                 g_state = groq_vision_classify(img)
-                if g_state in ("battle", "lobby", "result", "quit_dialog"):
+                if g_state in ("battle", "lobby", "result", "quit_dialog", "popup"):
                     state = g_state
 
             now = time.time()
@@ -926,6 +1050,7 @@ def main():
                 action = brain.act(state_s, forbidden=forbidden)
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
+                mentor = None
 
                 # ---- Compute Dopamine / Punishment Signal ----
                 reward = 0.0
@@ -1002,10 +1127,20 @@ def main():
                     "affordable_slots": affordable_slots,
                     "elixir": mlxir,
                 }
-                metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish, vision=vision_snapshot)
+                metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish,
+                               vision=vision_snapshot,
+                               mentor=(None if mentor is None else {
+                                   "critique": mentor.get("critique"),
+                                   "reward_delta": mentor.get("reward_delta"),
+                                   "recommended_spot": mentor.get("recommended_spot"),
+                               }))
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
+                    if mentor is not None and mentor.get("recommended_spot") is not None:
+                        rec_action = (prev_action // 5) * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
+                        brain._push_per([prev_state, rec_action, 0.6, state_s, False, 1],
+                                        init_prio=1.5)  # mentor imitation memory
 
                 if brain.buffer and len(brain.buffer) >= brain.batch and tick_in_match % brain.train_every == 0:
                     loss = brain.train_step()
@@ -1014,6 +1149,40 @@ def main():
                     if tick_in_match % 24 == 0:
                         brain.save()
                         log(f"checkpoint saved: buffer={len(brain.buffer)} loss={train_loss_ma:.4f}")
+
+                # ---- AI Coach (Punisher + Mentor) reviews every move ----
+                mentor = None
+                if not leaking and time.time() >= mentor_cooldown:
+                    mentor_cooldown = time.time() + 22  # stay under free-tier rate limit
+                    state_desc = (
+                        f"elixir={mlxir}, lane_threat={lane}, "
+                        f"enemy_units(E:{arena['enemy_left']}/{arena['enemy_right']}, "
+                        f"bridges {arena['enemy_bridge_l']}/{arena['enemy_bridge_r']}), "
+                        f"tower_hp(me {towers['ally_left']:.1f}/{towers['ally_right']:.1f}/{towers['ally_king']:.1f}, "
+                        f"enemy {towers['enemy_left']:.1f}/{towers['enemy_right']:.1f}), "
+                        f"affordable_slots={affordable_slots}, phase={phase}"
+                    )
+                    mentor = groq_mentor_review(state_desc, spot_n, reward, img)
+                    if mentor["source"] == "groq_oss_coach":
+                        # PUNISHER: blend coach verdict into dopamine signal
+                        if mentor["reward_delta"] is not None:
+                            reward += mentor["reward_delta"]
+                            log(f"COACH review: {mentor['critique']} (reward_delta={mentor['reward_delta']:+.2f})")
+                        mentor_entry = {
+                            "played": spot_n, "critique": mentor.get("critique"),
+                            "reward_delta": mentor.get("reward_delta"),
+                            "recommended_spot": mentor.get("recommended_spot"),
+                            "agree": mentor.get("agree"),
+                        }
+                        mentor_log_line(mentor_entry)
+                        _metrics["mentor_agree"] = _metrics.get("mentor_agree", 0)
+                        # MENTOR: remember the coach's recommended action for this state
+                        if mentor["recommended_spot"] is not None:
+                            rec_action = slot * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
+                            brain._push_per([state_s, rec_action, 0.6, state_s, False, 1], init_prio=1.5)
+                            _metrics["mentor_actions"] = _metrics.get("mentor_actions", {})
+                            _metrics["mentor_actions"][mentor["recommended_spot"]] = \
+                                _metrics["mentor_actions"].get(mentor["recommended_spot"], 0) + 1
 
                 prev_state = state_s
                 prev_action = action
@@ -1065,8 +1234,39 @@ def main():
                     brain.save()
                 tap(*OK_CENTER)
                 time.sleep(2)
+                if prev_state is None:  # reward already flushed; dismiss result fully
+                    tap(*RESULT_OK)
+                    time.sleep(2)
 
-            else:  # unknown or popup
+            elif state == "popup":
+                stuck_since = stuck_since or now
+                # Most popups (chest opens, level-ups, overlays) dismiss with OK
+                log("popup -> tap OK center")
+                tap(*OK_CENTER)
+                time.sleep(1.5)
+                sh(["shell", "input", "keyevent", "KEYCODE_BACK"])
+                time.sleep(2)
+
+            elif state == "other_tab":
+                stuck_since = None
+                back_streak = 0
+                prev_towers = None
+                if prev_state is not None and prev_action is not None:
+                    brain.remember(prev_state, prev_action, 0.0, prev_state, done=True)
+                    prev_state = None
+                    prev_action = None
+                    brain.epsilon = max(0.05, brain.epsilon * 0.985)
+                    brain.save()
+                    log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
+                log("other lobby tab -> navigate back to Battle tab")
+                tap(*TOP_BATTLE_TAB)
+                time.sleep(2.5)
+                tap(*BATTLE_BUTTON)
+                just_queued = True
+                tick_in_match = 0
+                time.sleep(7)
+
+            else:  # truly unknown: probe with one BACK then OK, never blind-loop
                 stuck_since = stuck_since or now
                 focus = sh(["shell", "dumpsys", "window"], timeout=20)
                 focus_text = focus.stdout.decode(errors="ignore")
@@ -1085,10 +1285,10 @@ def main():
                     back_streak += 1
                     time.sleep(3)
                 else:
-                    log("unknown, trying battle button blind")
-                    tap(*BATTLE_BUTTON)
-                    time.sleep(8)
-                    just_queued = True
+                    log("unknown -> OK center probe")
+                    tap(*OK_CENTER)
+                    time.sleep(2.5)
+                    back_streak = 0
         except Exception as e:
             import traceback
             log(f"loop error: {type(e).__name__}: {e!r} {traceback.format_exc(limit=2)}")
