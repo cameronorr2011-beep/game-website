@@ -47,11 +47,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 CFG = json.load(open("bot_config.json"))
 DEV = CFG["device"]
 SHOT_DIR = "cr_bot"
 os.makedirs(SHOT_DIR, exist_ok=True)
-LOG = open("bot.log", "a", buffering=1)
+LOG = open("bot.log", "a", buffering=1, encoding="utf-8", errors="replace")
 CARDS_DB = json.load(open("cards.json"))
 
 STATE_DIM = 38
@@ -90,6 +93,19 @@ def tap(x, y):
 # ---------------------- Groq VLM API (Vision + Damage Judge) ----------------------
 GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 GROQ_TEXT_MODEL = "qwen/qwen3.8-27b"
+
+# Global Groq rate-limit gate: when a 429/rate-limit error hits, silence ALL Groq
+# calls (vision, damage judge, mentor, VLM fallback) for this many seconds.
+_groq_muted_until = [0.0]
+GROQ_MUTE_SECONDS = 45
+
+
+def groq_is_muted():
+    return time.time() < _groq_muted_until[0]
+
+
+def mute_groq(seconds=None):
+    _groq_muted_until[0] = max(_groq_muted_until[0], time.time() + (seconds or GROQ_MUTE_SECONDS))
 
 
 def load_groq_key():
@@ -135,6 +151,24 @@ def groq_vision_classify(img):
             "max_tokens": 16,
             "temperature": 0.0,
         }
+        payload = {
+            "model": GROQ_VISION_MODEL,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Classify this Clash Royale screen into EXACTLY one word from: "
+                            "battle, lobby, result, quit_dialog, popup, unknown. Do not explain."
+                        ),
+                    },
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }],
+            "max_tokens": 16,
+            "temperature": 0.0,
+        }
         req = urllib.request.Request(
             "https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
@@ -144,16 +178,26 @@ def groq_vision_classify(img):
                 "User-Agent": "NeuroML/10.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=6) as resp:
             data = json.loads(resp.read().decode())
             ans = (data["choices"][0]["message"].get("content") or "").strip().lower()
             for label in ("battle", "lobby", "result", "quit_dialog", "popup"):
                 if label in ans:
                     log(f"groq VLM classified unknown screen -> {label}")
                     return label
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode(errors="ignore")
+        except Exception:
+            pass
+        if e.code in (429, 403) or "Rate limit" in body:
+            mute_groq()
+            log(f"groq rate-limited — muting all Groq calls for {GROQ_MUTE_SECONDS}s")
+        else:
+            log(f"groq vision note: HTTP {e.code} {body[:80]}")
     except Exception as e:
-        err = e.read().decode(errors="ignore")[:120] if hasattr(e, "read") else str(e)[:120]
-        log(f"groq vision fallback note: {err}")
+        log(f"groq vision note: {str(e)[:90]}")
     return "unknown"
 
 
@@ -171,6 +215,8 @@ def groq_damage_punishment(dmg_info, img=None):
     base_punish = -max(0.50, round(hp_drop * 4.0 + towers_lost * 1.6, 2))
     base_punish = max(-3.5, base_punish)
 
+    if groq_is_muted():
+        return base_punish, "groq_muted_local_fallback"
     key = load_groq_key()
     if not key:
         return base_punish, "local_sensor"
@@ -255,12 +301,16 @@ def groq_deck_builder(player_deck=None):
         + f"\n\nAgent's current deck: {player_deck or 'unknown (use meta consensus)'}\n"
         "1) Compare the agent's deck to the meta and name the biggest weaknesses.\n"
         "2) Output the strongest 8-card deck possible given the meta.\n\n"
-        'Reply ONLY with minified JSON: {"best_deck": ["card1", ...8 names...], "why": "<25 words>"}'
+        'Reply ONLY with minified JSON, no markdown, no reasoning: '
+        '{"best_deck": ["card1", "card2", "card3", "card4", "card5", "card6", "card7", "card8"], '
+        '"why": "<25 words>"}\n\n'
+        "Important: Start your reply with the opening { character immediately."
     )
     try:
         payload = {"model": GROQ_COACH_MODEL,
                    "messages": [{"role": "user", "content": prompt}],
-                   "max_tokens": 512, "temperature": 0.0}
+                   "max_tokens": 900, "temperature": 0.0,
+                   "reasoning_effort": "low"}
         req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -293,6 +343,8 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
     """
     out = {"agree": None, "reward_delta": None, "recommended_spot": None,
            "critique": None, "source": None}
+    if groq_is_muted():
+        return out
     key = load_groq_key()
     if not key:
         return out
@@ -303,10 +355,10 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
             f"Battle state: {state_desc}\n"
             f"The agent just played: {played_spot}\n"
             f"Local reward signal was: {prev_reward:+.2f}\n\n"
-            "Reply ONLY with minified JSON, no markdown, exactly these keys:\n"
+            "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
             '{"reward_delta": <float -1.5..+0.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 20 words, coaching tone: punish mistakes AND teach the fix>"}\n\n'
             "Rules: defending the threatened lane and not leaking elixir are good; "
-            "playing into the empty lane at max elixir or ignoring a big push is bad."
+            "playing into the empty lane at max elixir or ignoring a big push is bad.\n"
         )
         content = prompt
         # gpt-oss-120b text-only: the structured state_desc already carries full vision
@@ -487,8 +539,13 @@ def _any(img, tests):
 
 
 def classify(img):
-    """Hard pixel-signature classifier calibrated on 14 real screenshots for
-    every known Clash Royale screen. Order matters: most specific first."""
+    """Hard pixel-signature classifier calibrated on real screenshots.
+    Order matters: most specific first."""
+    # 0. Dimmed result overlay: extremely dark scene + faint blue OK button glow
+    import statistics as _st
+    _px = [sum(img.getpixel((x, y))) / 3 for y in range(400, 2000, 200) for x in range(200, 900, 300)]
+    if _st.mean(_px) < 25:
+        return "result"  # dimmed end-of-match overlay (WIN/LOSS) — tap OK
     # 1. Supercell ID sign-in / loading sheet: huge pure-white area mid-screen
     sc_white = sum(1 for y in range(1000, 2000, 50) for x in range(100, 980, 60)
                    if img.getpixel((x, y))[0] > 235 and img.getpixel((x, y))[1] > 235
@@ -557,7 +614,7 @@ def match_phase(img, tick_count):
     return 2  # late
 
 
-CARDS = [(332, 2031), (543, 2031), (737, 2031), (931, 2031)]
+CARDS = [(263, 2230), (470, 2230), (676, 2230), (883, 2230)]  # current in-game hand slots (y=2230 row)
 SPOT_NAMES = ["bridge_left", "bridge_right", "left_defend", "right_defend", "center_back"]
 FIELD_SPOTS = {
     "left_defend": (337, 1250),
@@ -566,10 +623,10 @@ FIELD_SPOTS = {
     "bridge_left": (220, 980),
     "bridge_right": (860, 980),
 }
-BATTLE_BUTTON = (540, 1876)
+BATTLE_BUTTON = (540, 1945)  # current in-game Battle button
 CANCEL_BUTTON = (365, 1480)
 OK_CENTER = (540, 2050)
-RESULT_OK = (540, 2060)
+RESULT_OK = (540, 1990)  # dimmed result-screen OK sits higher (~y1990)
 CLAIM_SPOT = (700, 1420)
 TOP_BATTLE_TAB = (150, 300)
 
@@ -654,8 +711,8 @@ class QNet(nn.Module):
 
 
 METRICS_FILE = "ml_metrics.json"
-TRAIN_LOG = open("training.log", "a", buffering=1)
-MENTOR_LOG = open("mentor.log", "a", buffering=1)
+TRAIN_LOG = open("training.log", "a", buffering=1, encoding="utf-8", errors="replace")
+MENTOR_LOG = open("mentor.log", "a", buffering=1, encoding="utf-8", errors="replace")
 COACH_FILE = "ai_coach.jsonl"
 _metrics = {
     "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
@@ -941,8 +998,12 @@ def build_state(mlxir, lv, rv, phase, last_slot, last_spot,
     state[0] = mlxir / 10.0
     state[1] = min(lv / 100.0, 1.0)
     state[2] = min(rv / 100.0, 1.0)
-    for i, name in enumerate(["musketeer", "knight", "archers", "giant"]):
-        c = CARDS_DB.get(name, {}).get("cost", 4)
+    try:
+        hand_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or ["musketeer", "knight", "archers", "giant"]
+    except Exception:
+        hand_deck = ["musketeer", "knight", "archers", "giant"]
+    for i, name in enumerate(hand_deck[:4]):
+        c = CARDS_DB.get((name or "").strip().lower(), {}).get("cost", 4)
         state[3 + i] = c / 10.0
         if afford is not None and i < len(afford):
             state[7 + i] = float(afford[i])
@@ -976,29 +1037,63 @@ def build_state(mlxir, lv, rv, phase, last_slot, last_spot,
 
 def foreground_app():
     """Return 'clashroyale', 'other', 'unknown'
-    (focused app present but not identifiable) or None (adb unreachable)."""
+    (focused app present but not identifiable) or None (adb unreachable).
+    Uses BOTH mCurrentFocus and mFocusedApp, and treats 'GameApp' windows of
+    com.supercell.clashroyale as in-game even mid-activity transition."""
     try:
         focus = sh(["shell", "dumpsys", "window"], timeout=15)
         if focus.returncode != 0 and not focus.stdout:
             return None
         text = focus.stdout.decode(errors="ignore")
-        for line in text.splitlines():
-            if "mCurrentFocus" in line:
-                if "null" in line:
-                    return "unknown"
-                if "clashroyale" in line:
-                    return "clashroyale"
-                return "other"
+        line_focus = next((l for l in text.splitlines() if "mCurrentFocus" in l), "")
+        line_app = next((l for l in text.splitlines() if "mFocusedApp" in l), "")
+        merged = (line_focus + " " + line_app).lower()
+        if "clashroyale" in merged or "com.supercell" in merged:
+            return "clashroyale"
+        if "notificationshade" in merged or "null" in merged:
+            return "clashroyale_or_locked" if "NotificationShade" in (line_focus + line_app) else "unknown"
+        if line_focus or line_app:
+            return "other"
         return "unknown"
     except Exception:
         return None
 
 
+AUTONOMOUS_DECK_FILE = "my_deck.json"
+
+
+def autonomous_deck_session():
+    """Once per startup: ask Groq's Deck Architect to read the live meta and
+    either confirm or redesign the deck. Writes my_deck.json so the state
+    builder uses real card costs. NEVER touches in-game Deck Edit."""
+    player_deck = None
+    try:
+        player_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck")
+    except Exception:
+        player_deck = None
+    r = groq_deck_builder(player_deck)
+    if r.get("deck") and len(r["deck"]) >= 6:
+        try:
+            json.dump({"deck": r["deck"], "critique": r.get("critique"),
+                       "updated": time.strftime("%Y-%m-%d %H:%M")},
+                      open(AUTONOMOUS_DECK_FILE, "w"), indent=1)
+            log(f"DECK ARCHITECT confirmed/rebuilt deck: {r['deck']} ({r.get('critique', '')[:60]})")
+        except Exception:
+            pass
+    else:
+        log(f"deck architect unavailable this session ({r.get('source')}) — keeping prior deck")
+    return r
+
+
 def main():
-    log("NeuroML v10 (Dueling Double DQN + PER + 3-Step + Groq VLM) started on " + DEV)
+    log("NeuroML v11 (Dueling DQN + full vision + Groq coach) started on " + DEV)
     offline_since = None
     brain = TargetedDQN()
     brain.load()
+    try:
+        autonomous_deck_session()  # autonomous deck evaluation at every startup
+    except Exception as e:
+        log(f"deck session note: {e}")
     # Warm-train 3 steps on restored replay memories so new Dueling head aligns immediately
     if len(brain.buffer) >= brain.batch:
         for _ in range(3):
@@ -1033,8 +1128,27 @@ def main():
                 continue
             offline_since = None
             if fg != "clashroyale":
-                log("game not in foreground — ML suspended (waiting for Clash)")
-                time.sleep(8)
+                # Wake screen + drag the lock icon (Android unlock swipe) if locked,
+                # then re-launch the game. Unattended play must never stop for lock.
+                # If dumpsys still sees the GameApp, re-check once more after 5s instead of
+                # force-relaunching (mid-transition glitch).
+                if fg == "clashroyale_or_locked":
+                    time.sleep(5)
+                    fg2 = foreground_app()
+                    if fg2 == "clashroyale":
+                        continue
+                log(f"game not in foreground (fg={fg}) — waking phone + unlocking")
+                sh(["shell", "input", "keyevent", "KEYCODE_WAKEUP"])
+                time.sleep(1)
+                sh(["shell", "input", "keyevent", "KEYCODE_MENU"])
+                time.sleep(0.5)
+                sh(["shell", "cmd", "statusbar", "collapse"])
+                time.sleep(0.5)
+                sh(["shell", "input", "swipe", "540", "1900", "540", "500", "300"])
+                time.sleep(1.5)
+                sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
+                    "-c", "android.intent.category.LAUNCHER", "1"])
+                time.sleep(20)
                 continue
 
             # ---- gate passed: Clash is open and reachable ----
