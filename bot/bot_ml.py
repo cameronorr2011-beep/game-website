@@ -71,6 +71,10 @@ def log(msg):
     print(line, flush=True)
 
 
+GROQ_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NeuroML/11.5"
+import urllib.error
+
+
 def sh(args, timeout=25):
     return subprocess.run(
         ["adb", "-s", DEV] + args, capture_output=True, timeout=timeout
@@ -175,7 +179,7 @@ def groq_vision_classify(img):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/10.0",
+                "User-Agent": GROQ_UA,
             },
         )
         with urllib.request.urlopen(req, timeout=6) as resp:
@@ -254,7 +258,7 @@ def groq_damage_punishment(dmg_info, img=None):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/10.0",
+                "User-Agent": GROQ_UA,
             },
         )
         with urllib.request.urlopen(req, timeout=7) as resp:
@@ -311,10 +315,11 @@ def groq_deck_builder(player_deck=None):
                    "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 900, "temperature": 0.0,
                    "reasoning_effort": "low"}
-        req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": "NeuroML/11.5"})
+                     "User-Agent": GROQ_UA, "Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=14) as resp:
             data = json.loads(resp.read().decode())
             txt = (data["choices"][0]["message"].get("content") or "").strip()
@@ -374,7 +379,7 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
             "https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": "NeuroML/11.0"},
+                     "User-Agent": GROQ_UA, "Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=14) as resp:
             data = json.loads(resp.read().decode())
@@ -789,7 +794,8 @@ class TargetedDQN:
         self._memory_dirty = 0
 
     def dopamine_report(self, q_state):
-        """Per-neuron gearing telemetry across Sensory/Cortical/Limbic/Advantage streams."""
+        """Per-neuron gearing telemetry across Sensory/Cortical/Limbic/Advantage streams.
+        Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
             q, v, a, h1, h2, v_hid = self.policy.forward_streams(x)
@@ -801,6 +807,11 @@ class TargetedDQN:
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
                 "output_best": int(q.argmax().item()),
                 "output_value": round(q.max().item(), 3),
+                # per-neuron activations (dashboard draws live brain)
+                "layer1_neurons": [round(v_, 3) for v_ in h1.abs().tolist()[:64]],
+                "layer2_neurons": [round(v_, 3) for v_ in h2.abs().tolist()[:64]],
+                "limbic_neurons": [round(v_, 3) for v_ in v_hid.abs().tolist()[:32]],
+                "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
             }
 
     def act(self, state, forbidden=None):
@@ -1300,6 +1311,34 @@ def main():
                 )
                 _metrics["epsilon"] = brain.epsilon
                 _metrics["neurons"] = brain.dopamine_report(state_s)
+                # Real-time ML equations panel (what the model is literally computing)
+                with torch.no_grad():
+                    x_t = torch.tensor(state_s, dtype=torch.float32)
+                    q_row = brain.policy(x_t)
+                    top = torch.topk(q_row, 3)
+                    if prev_state is not None:
+                        s2_t = torch.tensor(prev_state, dtype=torch.float32)
+                        na = torch.argmax(q_row)
+                        td_est = reward + brain.gamma * brain.target(s2_t).max().item() - q_row.max().item()
+                    else:
+                        td_est = reward
+                    _metrics["thinking"] = {
+                        "q_values_top3": [(int(i), round(v.item(), 3)) for v, i in zip(top.values, top.indices)],
+                        "chosen_action": action,
+                        "chosen_q": round(q_row[action].item(), 3),
+                        "td_error_recent": round(td_est, 3),
+                        "gamma": brain.gamma,
+                        "per_beta": round(brain.per_beta, 3),
+                        "equation": (
+                            f"Q(s,a) = V(s) + A(s,a) - mean(A) ; "
+                            f"target = r {reward:+.2f} + γ·maxQ(s',a*) γ={brain.gamma} ; "
+                            f"TD={td_est:+.3f}"
+                        ),
+                        "hud": (
+                            f"loss_ma={f'{train_loss_ma:.4f}' if train_loss_ma else 'n/a'} "
+                            f"buffer={len(brain.buffer)} eps={brain.epsilon:.3f}"
+                        ),
+                    }
                 vision_snapshot = {
                     "towers": towers,
                     "arena_units": arena,
@@ -1407,10 +1446,20 @@ def main():
                 log(f"result screen ({_verdict}) -> dopamine {dopamine:+.1f}")
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, dopamine, prev_state, done=True)
+                    brain.train_step()  # learn from the final episode transition NOW
                     prev_state = None
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
-                    brain.save()
+                # W/L counters (authoritative signal the user asked for)
+                if _verdict == "WIN":
+                    _metrics["wins"] = _metrics.get("wins", 0) + 1
+                else:
+                    _metrics["losses"] = _metrics.get("losses", 0) + 1
+                _metrics["win_history"] = (_metrics.get("win_history") or [])[-60:] + [1 if _verdict == "WIN" else 0]
+                wr = round(100.0 * (_metrics.get("wins", 0) / max(1, _metrics.get("wins", 0) + _metrics.get("losses", 0))), 1)
+                _metrics["win_rate"] = wr
+                brain.save()
+                log(f"score now W{_metrics.get('wins', 0)}/L{_metrics.get('losses', 0)} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
                 if prev_state is None:  # reward already flushed; dismiss result fully
