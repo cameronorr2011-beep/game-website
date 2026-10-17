@@ -1,35 +1,22 @@
-"""Clash Royale ML bot (v7) - Deep Q-Network that learns from playing.
+"""NeuroML — neuron-gear Clash Royale player (v8).
 
-Design
-------
-State vector (38 floats, all normalized 0..1):
-  - elixir/10                                  (1)
-  - left lane threat variance                  (1)
-  - right lane threat variance                 (1)
-  - hand card costs (4)                        (4)
-  - hand card can-afford flags (4)             (4)
-  - opponent known cards memory (16):          (16)
-      one-hot of seen opponent cards (16 card vocabulary)
-  - time phase: early/mid/late (3)             (3)
-  - towers lost/king damaged flags (4)         (4)
-  - last action/spot one-hots (4+5 -> 9)       (9)
-  ...total = 38
+Architecture pretends to be a brain: 'surge neurons' (the Q-network) fire an
+dopamine signal when an action pays off, go silent or spike punishment when it
+doesn't, and losing a match drains dopamine to zero *without* a reward burst.
+The ML actually occurring: Deep Q-Network (value-based reinforcement
+learning) — a neural net learns Q(s,a): how much future dopamine each (state,
+action) will release. It trains from its own replayed experiences with
+target-network bootstrapping and epsilon-greedy exploration.
 
-Action space (20):
-  card slot (4) x placement zone (5):
-    bridge_left, bridge_right, left_defend, right_defend, center_back
+Gating rules (new in v8):
+  - The bot ONLY acts while com.supercell.clashroyale is the foreground app.
+  - If the phone leaves the home Wi-Fi (or adb drops), it goes into a quiet
+    reconnect loop and resumes automatically when the network returns.
 
-Reward (per action):
-  - elixir efficiency: playing card cost <= elixir  -> +cost savings
-  - elixir leak penalty: at 10 elixir, refusing to play -0.1/tick
-  - threat nonce: playing when threat on attacking lane  +0.5
-  - waste penalty: playing expensive card with no threat  -0.2
-  - match end: +5 win / -5 loss (trophy delta sensed via result screens)
-
-Learning:
-  - DQN with target network + replay buffer + epsilon-greedy
-  - experience tuples stored live during matches; trains every k ticks
-  - model persisted to ml_policy.pt between runs
+Dopamine rules (new in v8):
+  - Win  -> +3.0 dopamine surge
+  - Loss -> NO dopamine at all except the punishment spike (-4.0)
+  - Elixir leak at 10 elixir -> escalating punishment, zero dopamine
 """
 import itertools
 import json
@@ -194,6 +181,9 @@ OPPONENT_VOCAB = [
 
 # ---------------------- neural net ----------------------
 class QNet(nn.Module):
+    """'Surge neuron' population: STATE_DIM input neurons -> two hidden
+    neuron layers -> 64 'emotional' interneurons -> ACTION_DIM output neurons,
+    one per (card slot, placement zone). ReLU sums act like firing rates."""
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
@@ -248,6 +238,24 @@ class TargetedDQN:
         self.batch = 64
         self.train_every = 4
         self._memory_dirty = 0
+
+    def dopamine_report(self, q_state):
+        """Per-neuron gearing view: run one forward pass and report raw
+        firing-rate sums per layer — visible in ml_metrics.json so you can
+        literally watch neuron activity shift as it learns."""
+        with torch.no_grad():
+            x = torch.tensor(q_state, dtype=torch.float32)
+            h1 = torch.relu(self.policy.net[0](x))
+            h2 = torch.relu(self.policy.net[2](h1))
+            h3 = torch.relu(self.policy.net[4](h2))
+            out = self.policy.net[6](h3)
+            return {
+                "layer1_mean": round(h1.mean().item(), 3),
+                "layer2_mean": round(h2.mean().item(), 3),
+                "limbic_mean": round(h3.mean().item(), 3),
+                "output_best": int(out.argmax().item()),
+                "output_value": round(out.max().item(), 3),
+            }
 
     def act(self, state, forbidden=None):
         import random
@@ -345,8 +353,29 @@ def build_state(mlxir, lv, rv, phase, last_slot, last_spot):
     return state
 
 
+def foreground_app():
+    """Return 'clashroyale', 'other', 'unknown'
+    (focused app present but not identifiable) or None (adb unreachable)."""
+    try:
+        focus = sh(["shell", "dumpsys", "window"], timeout=15)
+        if focus.returncode != 0 and not focus.stdout:
+            return None
+        text = focus.stdout.decode(errors="ignore")
+        for line in text.splitlines():
+            if "mCurrentFocus" in line:
+                if "null" in line:
+                    return "unknown"
+                if "clashroyale" in line:
+                    return "clashroyale"
+                return "other"
+        return "unknown"
+    except Exception:
+        return None
+
+
 def main():
-    log(f"bot v7 (DQN) started on {DEV}")
+    log("NeuroML started on " + DEV)
+    offline_since = None
     brain = TargetedDQN()
     brain.load()
     slot_cycle = itertools.cycle(range(4))
@@ -363,6 +392,23 @@ def main():
 
     while True:
         try:
+            # ---- GATE: no sensing, no tapping, no learning unless the game
+            # is the foreground app AND the phone is reachable ----
+            fg = foreground_app()
+            if fg is None:
+                # adb unreachable: phone left Wi-Fi or radio hiccup
+                offline_since = offline_since or time.time()
+                if time.time() - offline_since > 10:
+                    log("phone unreachable (left Wi-Fi?) — waiting for reconnect")
+                    sh(["connect", DEV], timeout=20)  # re-attempt adb over network
+                time.sleep(10)
+                continue
+            offline_since = None
+            if fg != "clashroyale":
+                log("game not in foreground — ML suspended (waiting for Clash)")
+                time.sleep(8)
+                continue
+            # ---- gate passed: Clash is open and reachable ----
             png = screenshot()
             img = None
             from PIL import Image
@@ -441,6 +487,7 @@ def main():
                 tick_in_match += 1
                 log(f"elixir={mlxir} lane={lane} phase={phase} slot={slot} spot={spot_n} reward={reward:+.2f} eps={brain.epsilon:.2f} loss={train_loss_ma if train_loss_ma else 'n/a'}")
                 _metrics["epsilon"] = brain.epsilon
+                _metrics["neurons"] = brain.dopamine_report(state_s)
                 metrics_append(None, reward=reward, action=action)
 
                 # remember transition (prev state/action -> here)
@@ -487,9 +534,21 @@ def main():
 
             elif state == "result":
                 stuck_since = stuck_since or now
-                log("result screen -> OK / continue")
+                # sense win vs loss from the ribbon color (blue=win, red-ish=loss)
+                from PIL import Image as _I
+                _img = _I.open(png).convert("RGB")
+                _band = [_img.getpixel((x, y)) for y in (1400, 1440) for x in range(240, 880, 60)]
+                _red = sum(1 for r, g, b in _band if r > 150 and r > b + 50 and g < 110)
+                _blue = sum(1 for r, g, b in _band if b > 140 and b > r + 40)
+                if _red >= _blue:
+                    dopamine = -4.0
+                    _verdict = "LOSS"
+                else:
+                    dopamine = 3.0
+                    _verdict = "WIN"
+                log(f"result screen ({_verdict}) -> dopamine {dopamine:+.1f}")
                 if prev_state is not None and prev_action is not None:
-                    brain.remember(prev_state, prev_action, 3.0, prev_state, done=True)
+                    brain.remember(prev_state, prev_action, dopamine, prev_state, done=True)
                     prev_state = None
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
