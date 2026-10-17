@@ -1,82 +1,88 @@
-# ORR GAMZ
+# CLASH ML
 
-Static browser game site. The repository root is the deployable website root: `index.html`, `css/`, and `js/` must be copied directly into Hostinger's `public_html` directory.
+A machine-learning Clash Royale bot that plays on a real Android phone over
+Wi-Fi ADB, learns from every match with a Deep Q-Network, and writes all its
+training traces to disk so you can watch it learn.
 
-## Hostinger Git deployment
+## What makes it ML
 
-Configure Hostinger Git deployment with:
+- **Deep Q-Network (DQN)** built from scratch on PyTorch: 38-value state → 3
+  hidden layers → 20 actions (4 card slots × 5 placement zones)
+- **Real learning loop**: experience replay buffer, target network with
+  periodic sync, epsilon-greedy exploration (decays 1.5%/match), Huber-loss
+  backprop every 4 battle ticks
+- **Reward shaping**: correct-lane defense +0.5, spending at max elixir +0.3,
+  **elixir-leak penalty** (-0.1/tick escalation at 10 elixir), waste penalty
+  when spending cheap into an empty field, +3 at match win, +1 survival at
+  lobby return
+- **Action masking**: the net can never pick a card slot it cannot afford
+- **Persistent memory**: everything survives restarts/crashes
+  | File | Purpose |
+  |---|---|
+  | `ml_policy.pt` | trained network weights + epsilon |
+  | `ml_replay.json` | up to 5000 (state, action, reward) transitions |
+  | `training.log` | one line per training step: step/loss/eps/buffer |
+  | `ml_metrics.json` | machine-readable counters (see below) |
+  | `bot.log` | every game decision and system event |
 
-- Repository: `https://github.com/cameronorr2011-beep/game-website.git`
-- Branch: `main`
-- Deployment directory: `public_html`
-- Build command: none (this is a static site)
-- Publish/copy source: repository root (`.`), not `game-website/` and not a build directory
-
-Every push to `main` should deploy the repository contents so that `public_html/index.html` exists at the document root. Do not configure a nested destination such as `public_html/game-website`.
-
-The site uses root-relative asset paths (`/css/style.css` and `/js/game.js`) so it works when served from the production domain root.
-
-## SKYFORGE flight simulator
-
-Play at `/games/skyforge.html` (linked from the homepage and games catalog).
-Default controls are **W climb, S dive, A/D turn**, **Shift/Ctrl power**, and
-**Space brakes**. Easy flight auto-levels when keys are released and starts
-already airborne in chase view. Optional manual flight retains stall/trim
-behavior; invert only applies there. Old control preferences migrate to the
-new non-inverted airborne start.
-
-Select **Beach**, **City**, **Cyberpunk**, or **Apocalypse** before launch.
-Worlds have different terrain and scenery (palms/coasts, city grids, neon towers,
-craters/ruins). Buildings have collision footprints shared with rendering.
-Press **M** for the full terrain map: zoom, drag-pan, find aircraft, view airports,
-race checkpoints and recorded path, and click coordinates to add waypoints.
-**Change world / plane** returns to the hangar and ends the current flight.
-
-Three selectable fictional aircraft (Peregrine trainer, Swift sport racer, and
-Kestrel light explorer) with different power, mass, wings, liveries, and handling.
-Use **Hangar / switch plane** to end the current flight and choose another.
-Choose **Air race** for a 3-second airborne countdown and seven visible checkpoint
-rings: gold is next, cyan is upcoming. Cross in order within 120 seconds; missed
-rings must be approached again from the front. Races use clear midday weather;
-best times are stored locally per world, flight-control mode, aircraft and departure runway (not an online
-leaderboard). Race results are included in `skyforge-flight-report.json`.
-Browser QA: `tools/qa-skyforge-race.mjs` checks switching, countdown, keyboard-only
-checkpoint flight, full race completion, best-time persistence, and export. `tools/qa-skyforge-worlds.mjs` verifies WASD directions, all four
-worlds, three planes, map navigation, export, persistence, and old-save migration.
-
-True 3D procedural scenery, a working cockpit,
-flight forces, aircraft systems, airports, route planning, weather, missions,
-and local flight reports. This is a simplified playable core, not a validated
-high-fidelity or real-world training simulator.
+## Watching it learn on disk
 
 ```bash
-npm ci --no-audit --no-fund
-npm test
-npm run build
-python -m http.server 8891 --bind 127.0.0.1
+tail -f training.log      # live per-step training losses
+cat ml_metrics.json       # running counters, action distribution, reward curve
+tail -f bot.log           # live decisions: elixir, lane threat, choice, reward
 ```
 
-Vercel: `vercel.json` runs `npm run build` and publishes the generated `public/`
-directory. Open `/games/skyforge.html` on the project's assigned domain.
-For Hostinger, deploy the committed `dist/` bundle alongside the repository-root
-site; no hosting build command is needed. Architecture, implemented systems, browser QA, measured performance,
-and explicit limitations: [docs/SKYFORGE.md](docs/SKYFORGE.md).
+Loss going down ≠ nothing; rewards per action trending up and action
+distribution shifting away from random are the real signals.
 
-## PHYCOFRONTIER algae discovery expedition
+## Requirements
 
-Play the original 2D exploration game at `/demo/`. It uses a deterministic
-Canvas world with twelve connected habitats, keyboard/touch movement, scanning,
-sample collection, functional microfluidic processing devices, a specimen
-archive, technology unlocks, a world map, outposts, and schema-versioned local
-progress. All organism names and traits are fictional game data; the game does
-not claim validated biological results or cloud accounts.
+- Windows/PC with `adb` (platform-tools) on PATH
+- Android phone on same Wi-Fi, wireless debugging paired
+- Python 3.12+, then:
+  ```bash
+  pip install pillow torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+  ```
+- Clash Royale installed on the phone, logged into the account you want played
+
+## Connection (one-time)
+
+1. Phone: Settings → Developer options → Wireless debugging → pair
+2. `adb pair <IP:port> <code>` (see the phone's pairing dialog)
+3. `adb connect <IP>` — device shows in `adb devices`
+4. Set `device` in `bot_config.json` to that IP:port
+
+## Running
 
 ```bash
-node demo/test_logic.mjs
+python bot_ml.py            # plays autonomously, learns continuously
+python bot_ml.py --build-deck   # prints a generated 8-card meta deck
+python bot.py               # the non-ML rule-based bot (fallback)
 ```
 
-## Local smoke test
+To stop: Ctrl+C (memory saves on exit and every checkpoint).
 
-```bash
-node smoke-test.mjs
-```
+## Safety rails
+
+- Quit-dialog auto-Cancel, BACK-key rate limited to 2, foreground-app check
+  with relaunch — it can't wander out of the game
+- All taps stay inside the game UI; it never touches Android nav bar,
+  settings, or Supercell ID screens
+- 90-second stuck watchdog restarts the app instead of tapping randomly
+
+## Honest limitations
+
+- Vision is color-statistics based (elixir bar, lane variance, screen
+  classification) — not object detection; odd screens can confuse it
+- Opponent card memory slots exist but aren't photo-recognized yet
+- Learning needs many matches to show clear improvement
+- **Automating Clash Royale violates Supercell's Terms of Service.** Use an
+  account you accept losing.
+
+## Files
+
+- `bot_ml.py` — the DQN bot (this README describes it)
+- `bot.py` — earlier rule-based bot
+- `cards.json`, `bot_config.json` — card DB and tap coordinates
+- `training.log`, `ml_metrics.json`, `ml_replay.json`, `ml_policy.pt`, `bot.log` — generated at runtime

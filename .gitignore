@@ -1,6 +1,0 @@
-node_modules/
-public/
-.env*
-__pycache__/
-.qa/
-*.log
