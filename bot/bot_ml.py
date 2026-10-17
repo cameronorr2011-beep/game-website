@@ -39,6 +39,7 @@ import os
 import random
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 from collections import deque
@@ -81,9 +82,35 @@ def sh(args, timeout=25):
     )
 
 
+_shot_thread = [None]
+_shot_result = [None]
+
+
+def screenshot_async():
+    """Pipeline: start the phone-side screencap in a background thread NOW; the
+    main loop keeps playing/acting while the (slow ~3s) PNG encode happens."""
+    def _work():
+        try:
+            _shot_result[0] = sh(["exec-out", "screencap", "-p"], timeout=15)
+        except Exception as e:
+            _shot_result[0] = None
+    _shot_thread[0] = threading.Thread(target=_work, daemon=True)
+    _shot_thread[0].start()
+
+
 def screenshot():
+    """If an async shot was started, wait for it (<3s); else take a sync one."""
     out = os.path.join(SHOT_DIR, "latest.png")
-    result = sh(["exec-out", "screencap", "-p"])
+    th = _shot_thread[0]
+    if th is not None:
+        th.join(timeout=15)
+        _shot_thread[0] = None
+        res = _shot_result[0]
+        if res is not None and len(res.stdout) > 1000:
+            with open(out, "wb") as f:
+                f.write(res.stdout)
+            return out
+    result = sh(["exec-out", "screencap", "-p"], timeout=15)
     with open(out, "wb") as f:
         f.write(result.stdout)
     return out
@@ -598,10 +625,12 @@ def classify(img):
 
 
 def lane_variances(img):
+    """Fast lane variance on a downsampled crop (抽样 40×80 grid instead of full 400×400).
+    ~6ms instead of ~600ms."""
     import statistics
 
     def variance(box):
-        region = list(img.crop(box).getdata())
+        region = [img.getpixel((x, y)) for y in range(box[1], box[3], 10) for x in range(box[0], box[2], 8)]
         rs = [p[0] for p in region]
         gs = [p[1] for p in region]
         return statistics.pstdev(rs) + statistics.pstdev(gs)
@@ -1302,6 +1331,7 @@ def main():
                 time.sleep(0.45)
                 cards_played += 1
                 tick_in_match += 1
+                screenshot_async()  # pipeline: next frame encodes while we think/train
                 log(
                     f"elixir={mlxir} lane={lane} towers_hp=({towers['ally_left']:.2f},{towers['ally_right']:.2f},{towers['ally_king']:.2f}) "
                     f"enemy_hp=({towers['enemy_left']:.2f},{towers['enemy_right']:.2f}) "
@@ -1452,9 +1482,9 @@ def main():
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                 # W/L counters (authoritative signal the user asked for)
                 if _verdict == "WIN":
-                    _metrics["wins"] = _metrics.get("wins", 0) + 1
+                    _metrics["wins"] = int(_metrics.get("wins", 0) or 0) + 1
                 else:
-                    _metrics["losses"] = _metrics.get("losses", 0) + 1
+                    _metrics["losses"] = int(_metrics.get("losses", 0) or 0) + 1
                 _metrics["win_history"] = (_metrics.get("win_history") or [])[-60:] + [1 if _verdict == "WIN" else 0]
                 wr = round(100.0 * (_metrics.get("wins", 0) / max(1, _metrics.get("wins", 0) + _metrics.get("losses", 0))), 1)
                 _metrics["win_rate"] = wr
