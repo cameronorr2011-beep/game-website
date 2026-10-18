@@ -39,6 +39,7 @@ import os
 import random
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 from collections import deque
@@ -71,15 +72,45 @@ def log(msg):
     print(line, flush=True)
 
 
+GROQ_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 NeuroML/11.5"
+import urllib.error
+
+
 def sh(args, timeout=25):
     return subprocess.run(
         ["adb", "-s", DEV] + args, capture_output=True, timeout=timeout
     )
 
 
+_shot_thread = [None]
+_shot_result = [None]
+
+
+def screenshot_async():
+    """Pipeline: start the phone-side screencap in a background thread NOW; the
+    main loop keeps playing/acting while the (slow ~3s) PNG encode happens."""
+    def _work():
+        try:
+            _shot_result[0] = sh(["exec-out", "screencap", "-p"], timeout=15)
+        except Exception as e:
+            _shot_result[0] = None
+    _shot_thread[0] = threading.Thread(target=_work, daemon=True)
+    _shot_thread[0].start()
+
+
 def screenshot():
+    """If an async shot was started, wait for it (<3s); else take a sync one."""
     out = os.path.join(SHOT_DIR, "latest.png")
-    result = sh(["exec-out", "screencap", "-p"])
+    th = _shot_thread[0]
+    if th is not None:
+        th.join(timeout=15)
+        _shot_thread[0] = None
+        res = _shot_result[0]
+        if res is not None and len(res.stdout) > 1000:
+            with open(out, "wb") as f:
+                f.write(res.stdout)
+            return out
+    result = sh(["exec-out", "screencap", "-p"], timeout=15)
     with open(out, "wb") as f:
         f.write(result.stdout)
     return out
@@ -175,7 +206,7 @@ def groq_vision_classify(img):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/10.0",
+                "User-Agent": GROQ_UA,
             },
         )
         with urllib.request.urlopen(req, timeout=6) as resp:
@@ -254,7 +285,7 @@ def groq_damage_punishment(dmg_info, img=None):
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "User-Agent": "NeuroML/10.0",
+                "User-Agent": GROQ_UA,
             },
         )
         with urllib.request.urlopen(req, timeout=7) as resp:
@@ -311,10 +342,11 @@ def groq_deck_builder(player_deck=None):
                    "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 900, "temperature": 0.0,
                    "reasoning_effort": "low"}
-        req = urllib.request.Request("https://api.groq.com/openai/v1/chat/completions",
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": "NeuroML/11.5"})
+                     "User-Agent": GROQ_UA, "Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=14) as resp:
             data = json.loads(resp.read().decode())
             txt = (data["choices"][0]["message"].get("content") or "").strip()
@@ -374,7 +406,7 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
             "https://api.groq.com/openai/v1/chat/completions",
             data=json.dumps(payload).encode(),
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": "NeuroML/11.0"},
+                     "User-Agent": GROQ_UA, "Accept": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=14) as resp:
             data = json.loads(resp.read().decode())
@@ -593,10 +625,12 @@ def classify(img):
 
 
 def lane_variances(img):
+    """Fast lane variance on a downsampled crop (抽样 40×80 grid instead of full 400×400).
+    ~6ms instead of ~600ms."""
     import statistics
 
     def variance(box):
-        region = list(img.crop(box).getdata())
+        region = [img.getpixel((x, y)) for y in range(box[1], box[3], 10) for x in range(box[0], box[2], 8)]
         rs = [p[0] for p in region]
         gs = [p[1] for p in region]
         return statistics.pstdev(rs) + statistics.pstdev(gs)
@@ -789,7 +823,8 @@ class TargetedDQN:
         self._memory_dirty = 0
 
     def dopamine_report(self, q_state):
-        """Per-neuron gearing telemetry across Sensory/Cortical/Limbic/Advantage streams."""
+        """Per-neuron gearing telemetry across Sensory/Cortical/Limbic/Advantage streams.
+        Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
             q, v, a, h1, h2, v_hid = self.policy.forward_streams(x)
@@ -801,6 +836,11 @@ class TargetedDQN:
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
                 "output_best": int(q.argmax().item()),
                 "output_value": round(q.max().item(), 3),
+                # per-neuron activations (dashboard draws live brain)
+                "layer1_neurons": [round(v_, 3) for v_ in h1.abs().tolist()[:64]],
+                "layer2_neurons": [round(v_, 3) for v_ in h2.abs().tolist()[:64]],
+                "limbic_neurons": [round(v_, 3) for v_ in v_hid.abs().tolist()[:32]],
+                "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
             }
 
     def act(self, state, forbidden=None):
@@ -1263,13 +1303,27 @@ def main():
                         reward += enemy_bonus
                         log(f"ENEMY TOWER DAMAGED (drop={enemy_drop:.2f}) -> dopamine +{enemy_bonus:.2f}")
 
+                # ---- RICH DOPAMINE SHAPING ----
                 if dmg_punish is None:
+                    # 1) correct-lane defense
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.5
+                            reward += 0.8   # was 0.5 — better reward for reading the push correctly
+                    # 2) spend at max elixir
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
-                        reward += 0.3
+                        reward += 0.4
+                    # 3) elixir discipline: playing at 9-10 elixir is good economy
+                    if mlxir >= 9:
+                        reward += 0.25
+                    # 4) proactive counter-push: attacking the opposite lane when enemy commits
+                    if arena["enemy_left"] + arena["enemy_right"] >= 8 and "bridge" in spot_n:
+                        opposite = arena["enemy_right"] if arena["enemy_left"] >= arena["enemy_right"] else arena["enemy_left"]
+                        if opposite <= 2:
+                            reward += 0.6   # punished the opponent for committing — rich reward
+                    # 5) counter-threshold rewards (visible dopamine when ahead)
+                    if towers["enemy_alive"] < towers["ally_alive"]:
+                        reward += 0.3       # structural advantage bonus per tick
                 else:
                     reward = min(reward, dmg_punish)
 
@@ -1291,6 +1345,7 @@ def main():
                 time.sleep(0.45)
                 cards_played += 1
                 tick_in_match += 1
+                screenshot_async()  # pipeline: next frame encodes while we think/train
                 log(
                     f"elixir={mlxir} lane={lane} towers_hp=({towers['ally_left']:.2f},{towers['ally_right']:.2f},{towers['ally_king']:.2f}) "
                     f"enemy_hp=({towers['enemy_left']:.2f},{towers['enemy_right']:.2f}) "
@@ -1300,6 +1355,34 @@ def main():
                 )
                 _metrics["epsilon"] = brain.epsilon
                 _metrics["neurons"] = brain.dopamine_report(state_s)
+                # Real-time ML equations panel (what the model is literally computing)
+                with torch.no_grad():
+                    x_t = torch.tensor(state_s, dtype=torch.float32)
+                    q_row = brain.policy(x_t)
+                    top = torch.topk(q_row, 3)
+                    if prev_state is not None:
+                        s2_t = torch.tensor(prev_state, dtype=torch.float32)
+                        na = torch.argmax(q_row)
+                        td_est = reward + brain.gamma * brain.target(s2_t).max().item() - q_row.max().item()
+                    else:
+                        td_est = reward
+                    _metrics["thinking"] = {
+                        "q_values_top3": [(int(i), round(v.item(), 3)) for v, i in zip(top.values, top.indices)],
+                        "chosen_action": action,
+                        "chosen_q": round(q_row[action].item(), 3),
+                        "td_error_recent": round(td_est, 3),
+                        "gamma": brain.gamma,
+                        "per_beta": round(brain.per_beta, 3),
+                        "equation": (
+                            f"Q(s,a) = V(s) + A(s,a) - mean(A) ; "
+                            f"target = r {reward:+.2f} + γ·maxQ(s',a*) γ={brain.gamma} ; "
+                            f"TD={td_est:+.3f}"
+                        ),
+                        "hud": (
+                            f"loss_ma={f'{train_loss_ma:.4f}' if train_loss_ma else 'n/a'} "
+                            f"buffer={len(brain.buffer)} eps={brain.epsilon:.3f}"
+                        ),
+                    }
                 vision_snapshot = {
                     "towers": towers,
                     "arena_units": arena,
@@ -1402,15 +1485,29 @@ def main():
                     dopamine = -4.0
                     _verdict = "LOSS"
                 else:
-                    dopamine = 3.0
+                    dopamine = 4.0   # win dopamine: was 3.0 — now richer for the celebratory spike
                     _verdict = "WIN"
                 log(f"result screen ({_verdict}) -> dopamine {dopamine:+.1f}")
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, dopamine, prev_state, done=True)
+                    brain.train_step()  # learn from the final episode transition NOW
                     prev_state = None
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
-                    brain.save()
+                # W/L counters (authoritative signal the user asked for).
+                # NOTE: ml_metrics.json's "losses" key is NOT this counter — it also
+                # carries the training-loss history list. So store W/L under
+                # wins_v/losses_v explicitly to never collide.
+                if _verdict == "WIN":
+                    _metrics["wins_v"] = int(_metrics.get("wins_v", 0) or 0) + 1
+                else:
+                    _metrics["losses_v"] = int(_metrics.get("losses_v", 0) or 0) + 1
+                _metrics["win_history"] = (_metrics.get("win_history") or [])[-60:] + [1 if _verdict == "WIN" else 0]
+                w_, l_ = int(_metrics.get("wins_v", 0)), int(_metrics.get("losses_v", 0))
+                wr = round(100.0 * w_ / max(1, w_ + l_), 1)
+                _metrics["win_rate"] = wr
+                brain.save()
+                log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
                 if prev_state is None:  # reward already flushed; dismiss result fully

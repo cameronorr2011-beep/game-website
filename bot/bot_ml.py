@@ -1303,13 +1303,27 @@ def main():
                         reward += enemy_bonus
                         log(f"ENEMY TOWER DAMAGED (drop={enemy_drop:.2f}) -> dopamine +{enemy_bonus:.2f}")
 
+                # ---- RICH DOPAMINE SHAPING ----
                 if dmg_punish is None:
+                    # 1) correct-lane defense
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.5
+                            reward += 0.8   # was 0.5 — better reward for reading the push correctly
+                    # 2) spend at max elixir
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
-                        reward += 0.3
+                        reward += 0.4
+                    # 3) elixir discipline: playing at 9-10 elixir is good economy
+                    if mlxir >= 9:
+                        reward += 0.25
+                    # 4) proactive counter-push: attacking the opposite lane when enemy commits
+                    if arena["enemy_left"] + arena["enemy_right"] >= 8 and "bridge" in spot_n:
+                        opposite = arena["enemy_right"] if arena["enemy_left"] >= arena["enemy_right"] else arena["enemy_left"]
+                        if opposite <= 2:
+                            reward += 0.6   # punished the opponent for committing — rich reward
+                    # 5) counter-threshold rewards (visible dopamine when ahead)
+                    if towers["enemy_alive"] < towers["ally_alive"]:
+                        reward += 0.3       # structural advantage bonus per tick
                 else:
                     reward = min(reward, dmg_punish)
 
@@ -1471,7 +1485,7 @@ def main():
                     dopamine = -4.0
                     _verdict = "LOSS"
                 else:
-                    dopamine = 3.0
+                    dopamine = 4.0   # win dopamine: was 3.0 — now richer for the celebratory spike
                     _verdict = "WIN"
                 log(f"result screen ({_verdict}) -> dopamine {dopamine:+.1f}")
                 if prev_state is not None and prev_action is not None:
@@ -1480,16 +1494,20 @@ def main():
                     prev_state = None
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
-                # W/L counters (authoritative signal the user asked for)
+                # W/L counters (authoritative signal the user asked for).
+                # NOTE: ml_metrics.json's "losses" key is NOT this counter — it also
+                # carries the training-loss history list. So store W/L under
+                # wins_v/losses_v explicitly to never collide.
                 if _verdict == "WIN":
-                    _metrics["wins"] = int(_metrics.get("wins", 0) or 0) + 1
+                    _metrics["wins_v"] = int(_metrics.get("wins_v", 0) or 0) + 1
                 else:
-                    _metrics["losses"] = int(_metrics.get("losses", 0) or 0) + 1
+                    _metrics["losses_v"] = int(_metrics.get("losses_v", 0) or 0) + 1
                 _metrics["win_history"] = (_metrics.get("win_history") or [])[-60:] + [1 if _verdict == "WIN" else 0]
-                wr = round(100.0 * (_metrics.get("wins", 0) / max(1, _metrics.get("wins", 0) + _metrics.get("losses", 0))), 1)
+                w_, l_ = int(_metrics.get("wins_v", 0)), int(_metrics.get("losses_v", 0))
+                wr = round(100.0 * w_ / max(1, w_ + l_), 1)
                 _metrics["win_rate"] = wr
                 brain.save()
-                log(f"score now W{_metrics.get('wins', 0)}/L{_metrics.get('losses', 0)} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
+                log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
                 if prev_state is None:  # reward already flushed; dismiss result fully

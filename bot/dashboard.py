@@ -15,7 +15,14 @@ import os
 import subprocess
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # threaded: /shot never blocks other endpoints
+
+# Pre-warm the vision module (torch import ~1.5s once) so the FIRST /vision or
+# /shot hit isn't slow and the page never looks "perpetually loading".
+try:
+    import bot_ml
+except Exception:
+    bot_ml = None
 
 CFG = json.load(open("bot_config.json"))
 DEV = CFG["device"]
@@ -47,11 +54,12 @@ canvas{width:100%;height:130px;margin:4px 0}
 .pill{display:inline-block;background:#212a35;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px}
 </style></head><body>
 <h1>NeuroML — The Full Brain</h1>
-<div class="sub">38 sensory neurons → 2×128 cortical → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq gpt-oss-120b</div>
+<div class="sub">38 sensory neurons → 2×128 cortical → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
 <div class="grid">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
-      <div class="phone"><img id="shot" src="/shot"></div></div>
+      <div class="phone"><img id="shot" src="/vision"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px">🔵 my tower HP · 🔴 enemy tower HP · 🟧 unit-scan zones · 🟪 elixir bar · 🟩 affordable card slot · <a href="/vision?fresh=1" target="_blank" style="color:#58a6ff">refresh now ↗</a></div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">VISION STATE</h2>
       <div id="vision" style="font-size:12px;color:var(--dim)">waiting…</div></div>
   </div>
@@ -101,6 +109,7 @@ async function poll(){try{
  k_loss.textContent=m.losses&&m.losses.length?m.losses[m.losses.length-1].toFixed(4):'-';
  k_td.textContent=m.td_errors&&m.td_errors.length?m.td_errors[m.td_errors.length-1].toFixed(3):'-';
  k_wr.textContent=(m.win_rate!=null?m.win_rate+'%':'-');
+ const erk=document.getElementById('k_wr');erk.style.color=(m.win_rate>=50?'#3fb950':'#f85149');
  line(c_loss,m.losses&&m.losses.slice(-120),'#3fb950');
  const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d29922');
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
@@ -114,7 +123,7 @@ async function poll(){try{
  const cf=await(await fetch('/coach')).json();
  feed.innerHTML=cf.slice(-50).reverse().map(r=>'<div><span class="pun">'+r.t+'</span> played <b>'+(r.played||'')+'</b> — '+(r.critique||'')+
   (r.reward_delta!=null?' <span class="pun">'+r.reward_delta+'</span>':'')+(r.recommended_spot?' <span class="men">teach:'+r.recommended_spot+'</span>':'')+'</div>').join('');
- shot.src='/shot?'+Date.now();
+ shot.src='/vision?'+Date.now();
 }catch(e){}}
 async function mem(){try{const h=await(await fetch('/health')).json();
  memviz.textContent=h.mem}else{}}
@@ -138,22 +147,155 @@ def coach():
         return "[]"
 
 
-def shot():
-    try:
-        out = subprocess.run(["adb", "-s", DEV, "exec-out", "screencap", "-p"],
-                             capture_output=True, timeout=10)
-        from PIL import Image
-        img = Image.open(io.BytesIO(out.stdout)).convert("RGB")
-        img.thumbnail((360, 780))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=66)
-        return buf.getvalue()
-    except Exception:
+_shot_lock = threading.Lock()
+_shot_cache = {"jpg": None, "t": 0, "vision": None}
+_refresh_thread = [None]
+
+
+def _refresh_background():
+    """Start refreshing the cached shot in a daemon thread; /shot always serves
+    instantly from the cache and never blocks."""
+    if _refresh_thread[0] is not None and _refresh_thread[0].is_alive():
+        return
+    def work():
+        with _shot_lock:
+            try:
+                img = _screencap()
+                # The overlay IS the star: annotate the frame with what the ML
+                # recognizes (tower HP boxes, elixir, slots, unit zones).
+                # Copy FIRST: vision_overlay mutates the image it draws on.
+                try:
+                    ov = vision_overlay(img.copy())
+                except Exception:
+                    import traceback
+                    try:
+                        open("dash_errors.log", "a").write(
+                            f"overlay failed: {traceback.format_exc()}\n")
+                    except Exception:
+                        pass
+                    ov = None
+                small = img.copy()
+                small.thumbnail((360, 780))
+                buf2 = io.BytesIO()
+                small.save(buf2, format="JPEG", quality=66)
+                _shot_cache["jpg"] = buf2.getvalue()
+                if ov is not None:
+                    bufov = io.BytesIO()
+                    ov.save(bufov, format="JPEG", quality=72)
+                    _shot_cache["vision"] = bufov.getvalue()
+                _shot_cache["t"] = time.time()
+            except Exception:
+                import traceback
+                try:
+                    open("dash_errors.log", "a").write(
+                        f"refresh failed: {traceback.format_exc()}\n")
+                except Exception:
+                    pass
+    _refresh_thread[0] = threading.Thread(target=work, daemon=True)
+    _refresh_thread[0].start()
+
+
+def _screencap(retries=1):
+    # adb is shared with the bot loop; a concurrent grab can blip — retry once
+    for attempt in range(retries + 1):
+        try:
+            out = subprocess.run(["adb", "-s", DEV, "exec-out", "screencap", "-p"],
+                                 capture_output=True, timeout=12)
+            if out.stdout and len(out.stdout) > 5000:
+                from PIL import Image
+                return Image.open(io.BytesIO(out.stdout)).convert("RGB")
+        except Exception:
+            pass
+        if attempt < retries:
+            time.sleep(0.8)
+    raise RuntimeError("screencap failed after retries")
+
+
+def shot(force=False):
+    """Instant: always serve the cached frame now (<1ms), and when it's stale
+    (>2.2s) kick off a background refresh so the NEXT call gets a newer frame.
+    /force=True (/vision) waits for a *fresh* screencap."""
+    if force:
+        _refresh_background()
+        th = _refresh_thread[0]
+        if th:
+            th.join(timeout=12)
+    elif _shot_cache["jpg"] is None or time.time() - _shot_cache["t"] > 2.2:
+        _refresh_background()
+    if _shot_cache["jpg"] is None:
         from PIL import Image as I
         im = I.new("RGB", (360, 780), (8, 8, 8))
         buf = io.BytesIO()
         im.save(buf, format="JPEG")
         return buf.getvalue()
+    return _shot_cache["jpg"]
+
+
+def vision_bytes(force=False):
+    """Serve the recognition-annotated frame. Cached + background-refreshed so
+    the page never blocks; ?fresh=1 waits for a brand-new screencap."""
+    if force or _shot_cache["vision"] is None or time.time() - _shot_cache["t"] > 2.2:
+        _refresh_background()
+        th = _refresh_thread[0]
+        if th and force:
+            th.join(timeout=12)
+    if _shot_cache["vision"] is None:
+        return shot()  # graceful fallback to the plain frame
+    return _shot_cache["vision"]
+
+
+def vision_overlay(img):
+    """Draw the bot's actual pixel-recognition boxes on the image — you SEE what
+    the ML sees: tower HP bars, unit scans, elixir bar, card affordability."""
+    from PIL import ImageDraw
+    # decode via bot_ml scanner results re-computed cheaply here (import once)
+    try:
+        import bot_ml
+    except Exception:
+        return img
+    W, H_ = img.size
+    scale = W / 1080.0
+    s = lambda v: int(v * scale)
+    d = ImageDraw.Draw(img)
+
+    def draw_bar(xr, yr, is_enemy, max_span, x0_pad=0):
+        frac = bot_ml._scan_bar_fraction(img, xr, yr, is_enemy=is_enemy, max_span=max_span)
+        color = (255, 80, 80) if is_enemy else (80, 170, 255)
+        x0, x1, y0 = s(min(xr)), s(min(xr) + max_span), s(min(yr))
+        d.rectangle([x0, y0 - 2, x0 + max_span * scale * frac, y0 + 4], outline=color, width=2)
+        d.text((x0, y0 - s(28)), f"{frac:.2f}", fill=color)
+
+    def box(x0, x1, y0, y1, color, label):
+        d.rectangle([s(x0), s(y0), s(x1), s(y1)], outline=color, width=2)
+        d.text((s(x0), s(y0) - s(22)), label, fill=color)
+    try:
+        towers = bot_ml.tower_healths(img)
+        arena = bot_ml.scan_arena_vision(img)
+        elx = bot_ml.elixir_count(img)
+        afford = bot_ml.hand_affordability(img, elx)
+    except Exception:
+        return img
+    # Draw everything, downscale for display AFTER drawing (also crops coords safely)
+    img.thumbnail((540, 1170))
+    d = ImageDraw.Draw(img)
+    scale = img.size[0] / 1080.0
+    # tower boxes
+    box(150, 340, 1360, 1450, (80, 170, 255), "my_L")
+    box(740, 920, 1360, 1450, (80, 170, 255), "my_R")
+    box(430, 650, 1725, 1758, (80, 170, 255), "king")
+    box(150, 340, 370, 435, (255, 80, 80), "en_L")
+    box(740, 920, 370, 435, (255, 80, 80), "en_R")
+    # elixir bar
+    box(228, 948, 2292, 2314, (255, 60, 225), f"elixir {elx}/10")
+    # card slot boxes (afford = green, not = gray)
+    for i, cx in enumerate([332, 543, 737, 931]):
+        c = (60, 220, 120) if i < len(afford) and afford[i] > 0.5 else (150, 150, 150)
+        box(cx - 70, cx + 70, 2160, 2340, c, f"slot{i}")
+    # arena unit zone boxes
+    d.rectangle([s(100), s(480), s(540), s(1650)], outline=(255, 140, 60), width=1)
+    d.rectangle([s(540), s(480), s(980), s(1650)], outline=(255, 140, 60), width=1)
+    d.text((s(100), s(1660)), f"units E {arena['enemy_left']}/{arena['enemy_right']} A {arena['ally_left']}/{arena['ally_right']}", fill=(255, 140, 60))
+    return img
 
 
 def health():
@@ -192,6 +334,9 @@ class H(BaseHTTPRequestHandler):
             self._send(coach().encode(), "application/json")
         elif path == "/shot":
             self._send(shot(), "image/jpeg")
+        elif path == "/vision":
+            fresh = "fresh=1" in (self.path or "")
+            self._send(vision_bytes(force=fresh), "image/jpeg")
         elif path == "/health":
             self._send(json.dumps(health()).encode(), "application/json")
         else:
@@ -200,4 +345,4 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
