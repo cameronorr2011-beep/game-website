@@ -20,6 +20,9 @@ forward 109 ms, train step **280 ms** — all far under the 5 s battle tick.
 
 ## Install anywhere (phone hotspot, PC, no same-network requirement)
 
+Full source + releases: **https://github.com/cameronorr2011-beep/game-website**
+(live demo site: https://vercel.com/orr5/game-website)
+
 NeuroML uses Wi-Fi ADB only to *see and tap the phone*. The brain itself runs
 on any device:
 

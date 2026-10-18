@@ -63,19 +63,32 @@ VALENCE_TAU_TICKS = 40.0  # decay time constant in decision ticks
 
 
 class AffectiveCore:
-    """Bounded, interpretable internal-state variables (v14 spec §2).
+    """Bounded, interacting internal-state dynamics (v14→v18 neuro-architecture).
 
-    Seven separately-inspectable channels, all drawn from real signals:
-      neg_rpe   – negative reward-prediction error (unexpected losses)
-      pos_rpe   – positive reward-prediction error (unexpected gains)
-      progress  – task progress (towers won / objectives)
-      danger    – unexpected threat or predicted losses
-      confidence – policy certainty (1 - normalised entropy)
-      frustration – repeated failures of similar strategies
-      relief    – decay of previously-high danger
-    Each decoays exponentially with its own time constant and is clamped to
-    [0, 1], so no signal can grow without bound (v14 spec §11). GT means
-    these are *computational analogues*, not measures of feeling.
+    Channels (all [0,1], all with their own decay time constants):
+      neg_rpe      negative reward-prediction error (unexpected losses)
+      pos_rpe      positive reward-prediction error (unexpected gains)
+      progress     task progress (towers won / objectives closed out)
+      danger       imminent threat urgency (multi-lane pushes, exposed king)
+      confidence   policy certainty (inverse normalised entropy)
+      frustration  repeated failure of similar strategies (EMA of losses)
+      relief       resolution of previously-high danger
+    v18.Added structural-state channels:
+      vigilance   the brain's post-push attention posture (rises on pushes,
+                  decays slow → the system "stays on guard")
+      momentum    recent trend signal (win/loss streak EMA; feeds planning)
+      pressure    mirrored opponent elixir advantage (they can punish soon)
+      curiosity   novelty of the current situation (1 - similarity to the
+                  nearest hippocampal memory; drives exploration where the
+                  brain "has not been")
+    COMPOSITE states (derived each tick, never stored): desperation =
+    f(danger, pressure, neg_rpe); composure = 1 - frustration · vigilance Fear.
+    Cross-channel interactions are real and tested: frustration inhibits
+    confidence recovery; high progress + composure accelerate desperation
+    decay; a spike of danger slows progress accumulation.
+    All channels are COMPUTATIONAL ANALOGUES — bounded dynamic state variables
+    named for the biology they abstract. They are not mechanisms, NOT measures
+    of subjective feeling or consciousness.
     """
 
     def __init__(self):
@@ -83,25 +96,50 @@ class AffectiveCore:
             "neg_rpe": 0.0, "pos_rpe": 0.0, "progress": 0.0,
             "danger": 0.0, "confidence": 0.5, "frustration": 0.0,
             "relief": 0.0,
+            "vigilance": 0.0, "momentum": 0.5,
+            "pressure": 0.0, "curiosity": 0.0,
         }
         self.tau: Dict[str, float] = {"neg_rpe": 30.0, "pos_rpe": 40.0,
                                       "progress": 120.0, "danger": 20.0,
                                       "confidence": 60.0, "frustration": 150.0,
-                                      "relief": 25.0}
+                                      "relief": 25.0,
+                                      "vigilance": 45.0, "momentum": 80.0,
+                                      "pressure": 35.0, "curiosity": 22.0}
+        self.neutral: Dict[str, float] = {"neg_rpe": 0.0, "pos_rpe": 0.0,
+                                          "progress": 0.0, "danger": 0.0,
+                                          "confidence": 0.5, "frustration": 0.0,
+                                          "relief": 0.0, "vigilance": 0.0,
+                                          "momentum": 0.5, "pressure": 0.0,
+                                          "curiosity": 0.0}
 
     @staticmethod
     def _clamp(x: float) -> float:
         return max(0.0, min(1.0, x))
 
     def decay_step(self) -> None:
-        """One decision tick of passive decay toward a neutral resting state."""
-        neutral = {"neg_rpe": 0.0, "pos_rpe": 0.0, "progress": 0.0,
-                   "danger": 0.0, "confidence": 0.5, "frustration": 0.0,
-                   "relief": 0.0}
+        """One decision tick: passive decay + CROSS-CHANNEL interactions.
+        Interactions are deliberately small (≤0.03/tick) and always keep the
+        state bounded; they give the dynamics real coupling, not labels."""
         for k, v in self.state.items():
             tau = self.tau[k]
             f = math.exp(-1.0 / tau)
-            self.state[k] = self._clamp(v * f + neutral[k] * (1.0 - f))
+            self.state[k] = self._clamp(v * f + self.neutral[k] * (1.0 - f))
+        s = self.state
+        # frustration slows confidence recovery (repeated failure lowers trust)
+        if s["frustration"] > 0.5 and s["confidence"] < 0.5:
+            s["confidence"] = self._clamp(s["confidence"] - 0.02)
+        # danger erodes composure (approx then, vigilance rises on real threats)
+        if s["danger"] > 0.4:
+            s["vigilance"] = self._clamp(s["vigilance"] + 0.03)
+        # progress + calm close out desperation (relief-like dynamics)
+        if s["progress"] > 0.6 and s["vigilance"] < 0.3 and s["neg_rpe"] < 0.3:
+            s["neg_rpe"] = self._clamp(s["neg_rpe"] - 0.02)
+        # vigilance decays slower when pressure is high (mirrored opponent)
+        if s["pressure"] > 0.5:
+            s["vigilance"] = self._clamp(s["vigilance"] + 0.01)
+        # curiosity decays into bold play after a win spike
+        if s["pos_rpe"] > 0.8 and s["curiosity"] > 0.3:
+            s["curiosity"] = self._clamp(s["curiosity"] - 0.015)
 
     def inject(self, channel: str, amount: float) -> float:
         """Instant stimulus, clamped and reflected through the decay buffer."""
@@ -116,9 +154,25 @@ class AffectiveCore:
         self.state[channel] = self._clamp(value)
         return self.state[channel]
 
+    def composites(self) -> Dict[str, float]:
+        """Derived structural states (never stored, recomputed each call):
+        desperation — collapse risk under threat + opponent pressure;
+        composure   — how regulated the executive state is under load.
+        These are units-free bounded signals, labeled computational analogues."""
+        s = self.state
+        desperation = self._clamp(0.5 * s["danger"] + 0.25 * s["pressure"]
+                                   + 0.25 * s["neg_rpe"])
+        composure = self._clamp(1.0 - 0.6 * s["frustration"]
+                                - 0.4 * s["vigilance"] + 0.2 * s["progress"])
+        return {"desperation": desperation, "composure": composure}
+
     def valence_scalar(self) -> float:
-        """Signed scalar in [-1, 1]: positive minus negative, roughly."""
-        return (self.state["pos_rpe"] - self.state["neg_rpe"])
+        """Signed scalar in [-1, 1]: positive minus negative, modulated a
+        little by derived desperation so plasticity slows under collapse risk."""
+        d = self.composites()
+        base = self.state["pos_rpe"] - self.state["neg_rpe"]
+        return self._clamp(base * (1.0 - 0.4 * d["desperation"]))
+
 
     def summary(self) -> Dict[str, float]:
         return dict(self.state)

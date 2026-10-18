@@ -1117,6 +1117,61 @@ def seed_lifetime_record(metrics, mem=None):
     return len(ms)
 
 
+# ============================================================
+# DETERMINISTIC REFEREE — the sole authority on pain and dopamine (v18).
+# Replaces the Groq damage-punisher with strict physics rules that cost zero
+# inference tokens and can never be talked into a wrong verdict.
+# ============================================================
+def referee_pain(dmg_info, ally_alive, tick):
+    """Deterministic tower-damage punishment from measurable state only.
+    Rules (each logged in the ledger by the caller, none invented):
+      R1 proportional:  -4 * hp_drop  (a full-loss tick scales with damage)
+      R2 tower loss:    -1.6 per fallen tower, escalated by threat: losing a
+                        tower while only 2 stand (king next) is 2x worse
+      R3 phase urgency: late-match damage (tick>45) while the king is alive
+                        weighs +25% — an endgame lapse decides the outcome
+      R4 floor/ceiling: clamp to [-3.5, -0.5]; never silent, never extreme
+    Returns (punish, source)."""
+    hp_drop = max(0.0, float(dmg_info.get("ally_hp_drop", 0.0)))
+    towers_lost = max(0, int(dmg_info.get("ally_towers_lost", 0)))
+    p = 4.0 * hp_drop + 1.6 * towers_lost
+    if towers_lost > 0 and ally_alive <= 1 + towers_lost:
+        p += 1.6 * towers_lost          # R2 king-next escalation
+    if tick > 45 and dmg_info.get("ally_king", 1.0) > 0.0:
+        p *= 1.25                        # R3 endgame urgency
+    p = max(-3.5, min(-0.5, -p))
+    return round(p, 2), "referee_rules"
+
+
+_MENTOR_PATTERNS = {"finish": ("finish", "finishing", "last hit", "kill the tower"),
+                    "defend": ("defend", "defense", "protect"),
+                    "elixir": ("elixir", "cycle", "save"),
+                    "counter": ("counter-push", "counterpush", "opposite lane")}
+
+def interpret_mentor(mentor, towers, mlxir):
+    """STRUCTURAL MENTOR INTERPRETER (the ML 'understands' Groq here): parse
+    the free-text critique into directives, check each against the CURRENT
+    measured state, and write an accept/reject verdict with a reason. The
+    interpreter can only ever NUDGE metadata — it never changes rewards or
+    actions by itself; laws (physics_finisher / referee) keep ownership."""
+    text = (mentor.get("critique") or "").lower()
+    intents = {k: any(p in text for p in pats) for k, pats in _MENTOR_PATTERNS.items()}
+    accepted, reason = False, "n/a"
+    if intents["finish"]:
+        low = min([towers.get("enemy_left", 1.0), towers.get("enemy_right", 1.0)])
+        if low <= TOWER_FINISH_THRESHOLD:
+            accepted, reason = True, "critique=finish aligns with lowest-HP law"
+        else:
+            accepted, reason = False, "critique=finish but no tower in finish range"
+    elif intents["defend"]:
+        accepted = True; reason = "critique=defend is always legal"
+    elif intents["elixir"] and mlxir <= 4:
+        accepted, reason = True, "critique=save consistent with low elixir"
+    elif intents["counter"]:
+        accepted, reason = True, "critique=counter aligned with counter-push shaping"
+    return {"intents": intents, "accepted": accepted, "reason": reason}
+
+
 PAIN_FILE = "pain_channels.json"
 
 def _load_pain_channels():
@@ -1287,6 +1342,16 @@ class SpikingAgent:
                 _metrics.setdefault("spiking_errors", []).append(
                     f"cortex: {e}")
             self.nucleus.encode_sensory(vals)
+            # v18 structural-state channels (bounded, cross-coupled):
+            try:
+                rec = (plan.get("recalled") or [])
+                sim = rec[0]["similarity"] if rec else 0.0
+                self.affect.set("curiosity", self.affect._clamp(1.0 - sim))
+                threat = max(state_s[36], state_s[37]) if len(state_s) > 37 else 0.0
+                if threat > 0.4:
+                    self.affect.inject("pressure", 0.12)   # opponent can punish soon
+            except Exception:
+                pass
             self.nucleus.step(50)          # 50 ms of simulated dynamics
             # affect: danger from imminent-threat state channels, confidence
             # from policy separation available later; injected from rewards.
@@ -1348,6 +1413,10 @@ class SpikingAgent:
                 self.affect.inject("pos_rpe", min(0.3, reward * 0.15))
             elif reward < 0:
                 self.affect.inject("neg_rpe", min(0.3, -reward * 0.15))
+            # momentum: the recent-trend channel (EMA of reward signs), not a
+            # win-counter — it shapes persistence of current strategy.
+            self.affect.state["momentum"] = self.affect._clamp(
+                self.affect.state["momentum"] * 0.97 + 0.2 * max(-1.0, min(1.0, reward)),)
             # valence-gated plasticity scale: strong frustration slows new
             # potentiation so one system cannot grab all the credit.
             val = self.affect.valence_scalar()
@@ -1423,6 +1492,39 @@ class SynapticResBlock(nn.Module):
         return self.act(x + h)
 
 
+# ============================================================
+# MODEL PROFILES (scalable capacity, honestly counted / v18):
+#   compact   768 x 5  ≈ 7.5M params
+#   standard  1024 x 6 ≈ 13.7M params
+#   advanced  1280 x 10 ≈ 34-35M params (30-40M target band)
+# Chosen with NEUROML_PROFILE env var; parameter counts are computed from the
+# instantiated modules (never from hardcoded claims) and the active profile
+# plus its measured sizes are published to _metrics for the dashboard.
+# ============================================================
+QNET_PROFILES = {
+    "compact": (768, 5),
+    "standard": (1024, 6),
+    "advanced": (1280, 10),
+}
+
+
+def param_report(net):
+    """Honest trainable-parameter report from the instantiated modules:
+    totals per class of layer, FP32 size in MB, split policy-stream totals."""
+    trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    sensory = sum(p.numel() for n, p in net.named_parameters() if n.startswith("sensory."))
+    cortical = sum(p.numel() for n, p in net.named_parameters() if n.startswith("cortex"))
+    streams = sum(p.numel() for n, p in net.named_parameters()
+                  if n.startswith(("value_stream.", "advantage_stream.")))
+    return {"profile": getattr(net, "profile", "?"),
+            "trainable_params": trainable,
+            "sensory_params": sensory,
+            "cortical_params": cortical,
+            "stream_params": streams,
+            "fp32_mb": round(trainable * 4 / 1024 / 1024, 1),
+            "depth": getattr(net, "depth", 0)}
+
+
 class QNet(nn.Module):
     """Dueling Surge-Neuron Architecture v5-deep (bigger, measured):
       - Sensory Input Stem (38 -> 1024 + LayerNorm + SiLU)
@@ -1442,55 +1544,55 @@ class QNet(nn.Module):
 
     def __init__(self):
         super().__init__()
-        W = self.WIDE
+        import os as _os
+        self.profile = _os.environ.get("NEUROML_PROFILE", "standard")
+        wide, depth = QNET_PROFILES[self.profile]
+        self.W = wide          # instance width (WIDE/NARROW kept for older code)
+        self.depth = depth
+        W = wide
         self.sensory = nn.Sequential(
             nn.Linear(STATE_DIM, W),
             nn.LayerNorm(W),
             nn.SiLU(),
         )
-        self.cortex1 = SynapticResBlock(W)
-        self.cortex2 = SynapticResBlock(W)
-        self.cortex3 = SynapticResBlock(W)
-        self.cortex4 = SynapticResBlock(W)
-        self.cortex5 = SynapticResBlock(W)
-        self.cortex6 = SynapticResBlock(W)
+        # depth-scaled cortical columns, names cortex1..cortexN so checkpoint
+        # keys stay migration-stable across profiles
+        for i in range(1, depth + 1):
+            setattr(self, f"cortex{i}", SynapticResBlock(W))
 
-        # Limbic State-Value stream V(s)
+        # Limbic State-Value stream V(s): wide -> wide//2 -> 1
         self.value_stream = nn.Sequential(
-            nn.Linear(W, self.NARROW),
-            nn.LayerNorm(self.NARROW),
+            nn.Linear(W, wide // 2),
+            nn.LayerNorm(wide // 2),
             nn.SiLU(),
-            nn.Linear(self.NARROW, 1),
+            nn.Linear(wide // 2, 1),
         )
-        # Motor Action-Advantage stream A(s,a)
+        # Motor Action-Advantage stream A(s,a): wide//2 -> 20
         self.advantage_stream = nn.Sequential(
-            nn.Linear(W, self.NARROW),
-            nn.LayerNorm(self.NARROW),
+            nn.Linear(W, wide // 2),
+            nn.LayerNorm(wide // 2),
             nn.SiLU(),
-            nn.Linear(self.NARROW, ACTION_DIM),
+            nn.Linear(wide // 2, ACTION_DIM),
         )
 
     def forward_streams(self, x):
         single = x.dim() == 1
         if single:
             x = x.unsqueeze(0)
-        h0 = self.sensory(x)
-        h1 = self.cortex1(h0)
-        h2 = self.cortex2(h1)
-        h3 = self.cortex3(h2)
-        h4 = self.cortex4(h3)
-        h5 = self.cortex5(h4)
-        h6 = self.cortex6(h5)
-        v_hid = self.value_stream[:-1](h6)
-        a_hid = self.advantage_stream[:-1](h6)
+        h = self.sensory(x)
+        hides = []
+        for i in range(1, self.depth + 1):
+            h = getattr(self, f"cortex{i}")(h)
+            hides.append(h)
+        v_hid = self.value_stream[:-1](h)
+        a_hid = self.advantage_stream[:-1](h)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
-            return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
-                    h2.squeeze(0), h3.squeeze(0), h4.squeeze(0),
-                    h5.squeeze(0), h6.squeeze(0), v_hid.squeeze(0))
-        return q, v, a, h1, h2, h3, h4, h5, h6, v_hid
+            return (q.squeeze(0), v.squeeze(0), a.squeeze(0),
+                    *[t.squeeze(0) for t in hides], v_hid.squeeze(0))
+        return q, v, a, *hides, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1568,6 +1670,11 @@ class TargetedDQN:
         self.policy = QNet()
         self.target = QNet()
         self.target.load_state_dict(self.policy.state_dict())
+        # honest capacity report (publish + log so claims are always measured)
+        _metrics["param_report"] = param_report(self.policy)
+        pr = _metrics["param_report"]
+        log(f"model profile '{pr['profile']}': {pr['trainable_params']:,} params "
+            f"({pr['fp32_mb']} MB fp32, depth {pr['depth']})")
         self.optim = optim.AdamW(self.policy.parameters(), lr=8e-4, weight_decay=1e-4)
         # GB-scale memory: 120k transitions × ~0.5 KB heavy states ≈ up to ~60 MB
         # in RAM, replay JSON dumps to disk every checkpoint so DOWNLOADERS and
@@ -1591,13 +1698,8 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, h3, h4, h5, h6, v_hid = self.policy.forward_streams(x)
-            return {
-                "layer1_mean": round(h1.abs().mean().item(), 3),
-                "layer2_mean": round(h2.abs().mean().item(), 3),
-                "layer3_mean": round(h3.abs().mean().item(), 3),
-                "layer4_mean": round(h4.abs().mean().item(), 3),
-                "layer5_mean": round(h5.abs().mean().item(), 3),
+            q, v, a, *hides, v_hid = self.policy.forward_streams(x)
+            rep = {
                 "limbic_mean": round(v_hid.abs().mean().item(), 3),
                 "state_value_V": round(v.item(), 3),
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
@@ -1605,16 +1707,15 @@ class TargetedDQN:
                 "output_value": round(q.max().item(), 3),
                 # FULL-depth per-neuron activations (dashboard draws live brain)
                 "sensory_neurons": q_state_fired(q_state),
-                "layer1_neurons": [round(v_, 3) for v_ in h1.tolist()],
-                "layer2_neurons": [round(v_, 3) for v_ in h2.tolist()],
-                "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
-                "layer4_neurons": [round(v_, 3) for v_ in h4.tolist()],
-                "layer5_neurons": [round(v_, 3) for v_ in h5.tolist()],
-                "layer6_neurons": [round(v_, 3) for v_ in h6.tolist()],
                 "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
                 "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
+                "depth": len(hides),
             }
+            for i, h in enumerate(hides, 1):
+                rep[f"layer{i}_mean"] = round(h.abs().mean().item(), 3)
+                rep[f"layer{i}_neurons"] = [round(v_, 3) for v_ in h.tolist()]
+            return rep
 
     def act(self, state, forbidden=None, pain_channels=None, bias=None):
         """Action selection (9ms, never blocked by training). Pain channels are
@@ -2315,7 +2416,7 @@ def main():
                             "ally_right": towers["ally_right"],
                             "ally_king": towers["ally_king"],
                         }
-                        dmg_punish, dmg_source = groq_damage_punishment(dmg_info, img)
+                        dmg_punish, dmg_source = referee_pain(dmg_info, towers.get("ally_alive", 3), tick_in_match)
                         reward += dmg_punish
                         match_stats["towers_lost"] += int(ally_lost)
                         log(
@@ -2567,6 +2668,8 @@ def main():
                         log(f"checkpoint saved: buffer={len(brain.buffer)} loss={train_loss_ma:.4f}")
 
                 # ---- AI Coach (Punisher + Mentor) reviews every move ----
+                # (mentor_cooldown is honored inside the governor so state_desc
+                # is always defined when the advisory path runs)
                 mentor = None
                 if not leaking and time.time() >= mentor_cooldown:
                     mentor_cooldown = time.time() + 22  # stay under free-tier rate limit
@@ -2585,20 +2688,28 @@ def main():
                         f"recent_creeps={len(opp_memory_store.get('recent_opponents', []))}"
                     )
                     # Coach advisory is STATE-CHECKED (spec §7): a recommendation
-                # is only accepted if it targets the lowest-HP tower lane and
-                # is affordable — the coach can never silently overwrite the
-                # laws-of-physics decision.
-                mentor = groq_reward_governor(state_desc, spot_n, reward, img)
-                if mentor.get("recommended_spot") == "bridge_right" and \
-                        towers.get("enemy_left", 1.0) < towers.get("enemy_right", 1.0):
-                    mentor["critique"] = (mentor.get("critique") or "") + " [physics vetoed: target the LOWER-HP left tower]"
-                    mentor["recommended_spot"] = "bridge_left"
-                    log("COACH physics check: recommendation redirected to the lower-HP tower")
+                    # is only accepted if it targets the lowest-HP tower lane and
+                    # is affordable — the coach can never silently overwrite the
+                    # laws-of-physics decision.
+                    mentor = groq_reward_governor(state_desc, spot_n, reward, img)
+                    if mentor.get("recommended_spot") == "bridge_right" and \
+                            towers.get("enemy_left", 1.0) < towers.get("enemy_right", 1.0):
+                        mentor["critique"] = (mentor.get("critique") or "") + " [physics vetoed: target the LOWER-HP left tower]"
+                        mentor["recommended_spot"] = "bridge_left"
+                        log("COACH physics check: recommendation redirected to the lower-HP tower")
                     if mentor["source"] == "groq_oss_coach":
-                        # PUNISHER: blend coach verdict into dopamine signal
+                        # ADVISORY-ONLY MENTOR: Groq sees the context and
+                        # critiques, but the DETERMINISTIC REFEREE owns every
+                        # dopamine and pain signal. The delta is logged, never
+                        # applied (saves Groq tokens; no model inference in the
+                        # reward path). The v18 deterministic referee and the
+                        # structural rules ARE the pain/dopamine authority.
+                        _mentor_intent = interpret_mentor(mentor, towers, mlxir)
+                        _metrics["mentor_intent"] = _mentor_intent
+                        _metrics["groq_tokens_saved_ticks"] = int(_metrics.get("groq_tokens_saved_ticks", 0)) + 1
                         if mentor["reward_delta"] is not None:
-                            reward += mentor["reward_delta"]
-                            log(f"COACH review: {mentor['critique']} (reward_delta={mentor['reward_delta']:+.2f})")
+                            log(f"COACH advisory (NOT applied): {mentor['critique']} "
+                                f"(suppressed delta {mentor['reward_delta']:+.2f})")
                         mentor_entry = {
                             "played": spot_n, "critique": mentor.get("critique"),
                             "reward_delta": mentor.get("reward_delta"),

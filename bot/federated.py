@@ -31,21 +31,33 @@ def export_delta(seed, metrics, consented=True, out=OUTBOX):
 
 def export_weights(seed, metrics, consented=True, out="federated_package.pt"):
     """Full export usable on phone/PC: policy + target tensors + meta. The
-    package carries NO user data (no replay, no groq key, no logs)."""
+    package carries NO user data (no replay, no groq key, no logs) but DOES
+    carry this device's match-ledger totals so the fleet aggregate counts
+    every game ever played on any NeuroML device."""
     if not consented:
         return {"exported": False, "reason": "not consented"}
     import torch
-    from bot_ml import TargetedDQN
+    from bot_ml import TargetedDQN, param_report
     brain = TargetedDQN()
     brain.load()
-    buf = {"schema": "neuroml_federated_v1",
+    pr = param_report(brain.policy)
+    buf = {"schema": "neuroml_federated_v2",
            "seed": seed,
            "t": time.time(),
            "epsilon": brain.epsilon,
+           "profile": pr["profile"],
+           "param_count": pr["trainable_params"],
            "policy": brain.policy.state_dict(),
            "target": brain.target.state_dict(),
            "replay_pointer": {"steps_count": int(metrics.get("steps", 0)),
                               "buffer_size": int(metrics.get("buffer", 0))},
+           # per-device match ledger — this is what aggregates fleet-wide:
+           "matches": {
+               "games": int(metrics.get("lifetime_games", 0) or metrics.get("games_recorded", 0) or 0),
+               "wins": int(metrics.get("wins_v", 0) or 0),
+               "losses": int(metrics.get("losses_v", 0) or 0),
+               "train_steps": int(metrics.get("steps", 0) or 0),
+           },
            "identity": _identity()}
     torch.save(buf, out)
     h = hashlib.sha256(open(out, "rb").read()).hexdigest()[:16]
@@ -55,6 +67,67 @@ def export_weights(seed, metrics, consented=True, out="federated_package.pt"):
               open(OUTBOX, "w"))
     return {"exported": True, "package": out, "sha": h,
             "steps": buf["replay_pointer"]["steps_count"]}
+
+
+def federated_average(package_paths, out="federated_aggregate.pt"):
+    """True federated averaging (not a skeleton): policy/target tensors are
+    weighted by each device's train-step count, producing ONE aggregate brain.
+    Also aggregates the match ledger — the fleet's all-time games/wins/losses
+    total across mobile and desktop installs. Returns the summary dict."""
+    import torch
+    buffers = []
+    total_steps = 0
+    games = wins = losses = 0
+    for p in package_paths:
+        ok, msg = verify_package(p)
+        if not ok:
+            raise ValueError(f"package {p}: {msg}")
+        b = torch.load(p, map_location="cpu")
+        steps = max(1, int(b.get("replay_pointer", {}).get("steps_count", 1)))
+        buffers.append((b, steps))
+        total_steps += steps
+        bm = b.get("matches", {})
+        games += int(bm.get("games", 0))
+        wins += int(bm.get("wins", 0))
+        losses += int(bm.get("losses", 0))
+    if not buffers:
+        return {"aggregated": False, "reason": "no packages"}
+    avg = {}
+    for key in buffers[0][0]["policy"].keys():
+        t = None
+        for b, steps in buffers:
+            w = torch.tensor(b["policy"][key], dtype=torch.float32) * (steps / total_steps)
+            t = w if t is None else t + w
+        avg[key] = t
+    avg_target = {}
+    for key in buffers[0][0]["target"].keys():
+        t = None
+        for b, steps in buffers:
+            w = torch.tensor(b["target"][key], dtype=torch.float32) * (steps / total_steps)
+            t = w if t is None else t + w
+        avg_target[key] = t
+    # the most-trained device anchors exploration state
+    lead = max(buffers, key=lambda x: x[1])[0]
+    torch.save({"schema": "neuroml_federated_v2",
+                "aggregate_of": [os.path.basename(p) for p in package_paths],
+                "devices": len(buffers), "total_steps": total_steps,
+                "epsilon": lead.get("epsilon", 0.35),
+                "profile": lead.get("profile"),
+                "identity": "federated_aggregate",
+                "policy": avg, "target": avg_target,
+                "fleet_matches": {"games": games, "wins": wins, "losses": losses,
+                                  "aggregate_winrate": round(100.0 * wins / max(1, wins + losses), 1)}},
+               out)
+    summary = {"aggregated": True, "devices": len(buffers),
+               "total_steps": total_steps,
+               "fleet_matches": {"games": games, "wins": wins, "losses": losses},
+               "package": out}
+    # fleet aggregate is written next to the ledger for the wizard/dashboard
+    try:
+        json.dump(summary, open("federated_aggregate_summary.json", "w"), indent=1)
+    except Exception:
+        pass
+    return summary
 
 
 def _identity():
@@ -69,13 +142,13 @@ def _identity():
 
 def verify_package(path):
     """Structural verification: schema, shapes, and telemetry integrity.
-    Returns (ok, message)."""
+    Accepts v1 and v2 (v2 carries the match ledger). Returns (ok, message)."""
     import torch
     try:
         buf = torch.load(path, map_location="cpu")
     except Exception as e:
         return False, f"unreadable package: {e}"
-    if buf.get("schema") != "neuroml_federated_v1":
+    if buf.get("schema") not in ("neuroml_federated_v1", "neuroml_federated_v2"):
         return False, "wrong schema"
     for key in ("policy",):
         sd = buf.get(key)
@@ -117,7 +190,12 @@ if __name__ == "__main__":
     ap.add_argument("--export-consent", action="store_true")
     ap.add_argument("--verify", metavar="PACKAGE")
     ap.add_argument("--apply", metavar="PACKAGE")
+    ap.add_argument("--aggregate", nargs="+", metavar="PACKAGE",
+                    help="federated-average several device packages into one brain")
     args = ap.parse_args()
+    if args.aggregate:
+        print(json.dumps(federated_average(args.aggregate)))
+        sys.exit(0)
     if args.verify:
         ok, msg = verify_package(args.verify)
         print(msg)
