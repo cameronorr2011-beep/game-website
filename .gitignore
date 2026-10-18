@@ -1,2 +1,18 @@
-
 groq_key.txt
+node_modules/
+# android build artifacts + generated bot source copies (built from public_gui at build time)
+android/app/build/
+android/.gradle/
+android/app/src/main/python/bot_ml.py
+android/app/src/main/python/bot.py
+android/app/src/main/python/dashboard.py
+android/app/src/main/python/referee.py
+android/app/src/main/python/spiking_core.py
+android/app/src/main/python/arena_twin.py
+android/app/src/main/python/federated.py
+android/app/src/main/python/updater.py
+android/app/src/main/python/fetch_brain.py
+android/app/src/main/assets/neuroml/cards.json
+android/app/src/main/assets/neuroml/my_deck.json
+android/app/src/main/assets/neuroml/meta_decks.json
+electron_app/node_modules/

@@ -18,12 +18,25 @@ pinned to a measurement — no decorative science.
 Measured on the reference desktop: decision forward **13.5 ms**, batch-128
 forward 109 ms, train step **280 ms** — all far under the 5 s battle tick.
 
-## Download the app
+## Download the app (two ways, no API keys needed)
 
-**Download page: https://game-website-two-tau.vercel.app** — serves the ready-to-run
-`NeuroMLCR.zip` (~80 KB code: full v18 brain + updater + federated; `install.bat` fetches
-Python deps itself and auto-fetches published brain files) plus the 5-step setup.
-The site auto-deploys every push to `main` of this repository.
+**Download page: https://game-website-two-tau.vercel.app** — pick EITHER:
+
+- **📱 Android app (`NeuroML-Android.apk`)** — the full-size brain runs ON the phone that
+  plays Clash. Screen capture = seeing, accessibility taps = playing. No computer, no ADB,
+  works on any network. Same DQN cortex + spiking nucleus, same learning, same dashboard
+  (neuron micro-dots shown for the live player account on that phone).
+- **🖥️ Windows desktop app (`NeuroML-Windows-Setup.exe` / portable `.exe`)** — an Electron
+  app: first run installs Python+torch itself, then a wizard walks through the whole
+  developer-options path (7× Build number → Wireless debugging → Pair device with code →
+  connect), reads the phone's real resolution, and the app window becomes the live
+  dashboard. The wizard IS the "all the wifi steps" path.
+
+Both apps need **zero API keys**: the AI mentor is routed through the maintained endpoint
+`/api/mentor` on this site (key lives server-side in Vercel env `key_for_ai`); a local
+`groq_key.txt` still takes priority if present (power users). The zip below stays for the
+terminal route: `NeuroMLCR.zip` (~80 KB code + `install.bat` auto-installs Python deps and
+auto-fetches published brain files). Site auto-deploys every push to `main`.
 
 Keep the served zip in sync after editing `public_gui/`:
 
@@ -37,7 +50,14 @@ Keep `public_gui/` in sync with `bot/` (the public folder ships the same code):
 cd bot && cp bot_ml.py dashboard.py federated.py updater.py spiking_core.py bot.py my_deck.json ../public_gui/
 ```
 
-## Publish the pretrained brain
+## Building the published apps
+
+The APK and the Windows EXE build automatically in GitHub Actions on pushes that touch
+them (`.github/workflows/apps.yml`) and are published to the stable `apps` Release with
+download links pinned on the site. The Android app runs the same `public_gui` Python via
+Chaquopy + torch (Python 3.8 wheels for Android) inside the app process: MediaProjection
+frames replace `adb exec-out screencap` and accessibility gestures replace `input tap`.
+CI inside the repo means app builds need no local Android tooling.
 
 The code zip is intentionally tiny (~80 KB); the trained brain
 (`ml_policy.pt`, policy+target checkpoint ≈ 100 MB, plus small
@@ -55,21 +75,25 @@ in the same folder as `bot_ml.py` before running `NeuroMLCR.bat` — the loader
 picks it up automatically on launch. The stable always-newest URL is:
 `https://github.com/cameronorr2011-beep/game-website/releases/latest/download/ml_policy.pt`
 
-## Install anywhere (phone hotspot, PC, no same-network requirement)
+## Install anywhere (on the phone itself, or phone hotspot + PC, no same-network requirement)
 
 Full source + releases: **https://github.com/cameronorr2011-beep/game-website**
 
-NeuroML uses Wi-Fi ADB only to *see and tap the phone*. The brain itself runs
-on any device:
+Two supported paths — both end with "the phone that plays Clash" displaying ITS account:
+
+- **On-device (APK)**: install `NeuroML-Android.apk`, grant screen capture + the tap
+  accessibility service, press Start. The phone IS the player phone — no pairing.
+- **PC + Wi-Fi ADB**: the brain runs on any computer and taps through Wi-Fi ADB only to
+  *see and tap the phone*:
 
 ```bash
 python -m venv .venv && .venv/Scripts/pip install torch pillow   # PC
 adb pair <phone-ip:port> <code> && adb connect <phone-ip>        # pairing pane
 python bot_ml.py            # plays + learns, writes all memory below
-python dashboard.py         # http://127.0.0.1:8765 command center
 ```
 
-The phone side is only ADB — no app install is required.
+The phone side for ADB path is only ADB — no app install is required. The APK path is
+the reverse: brain on the phone, nothing on any PC.
 
 ## Updates never wipe memory
 
@@ -89,7 +113,9 @@ code file is backed up to `.update_backups/<timestamp>/` with a
 ## Federated learning (opt-in, anonymized)
 
 Every device can export an anonymized model package (policy + target weights,
-training stats, a random device id — no account, no key, no replay, no logs):
+training stats, a random device id — no account, no key, no replay, no logs).
+The Android APK exports into its own folder (share the .pt any way you like);
+the desktop route is file/endpoint-based:
 
 ```bash
 python federated.py --export-consent          # writes federated_package.pt

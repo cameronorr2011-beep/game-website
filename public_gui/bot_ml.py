@@ -184,6 +184,25 @@ def tap(x, y):
 GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 GROQ_TEXT_MODEL = "qwen/qwen3.8-27b"
 
+# -------- Zero-key model routing (published APPS require NO Groq account) --------
+# A published app user never creates a Groq key. All model traffic goes through
+# the maintainer's Vercel proxy, which keeps the key server-side (env `key_for_ai`).
+# A locally present key (groq_key.txt or GROQ_API_KEY) still takes priority for
+# direct calls — that is the maintainer/power-user path.
+MENTOR_URL = os.environ.get(
+    "NEUROML_MENTOR_URL",
+    "https://game-website-two-tau.vercel.app/api/mentor",
+)
+
+
+def groq_api_url():
+    """One choke point for URL choice: direct-with-key when a local key exists,
+    else the maintainer's no-key proxy endpoint. Falls back to the proxy never
+    fabricates anything — every caller keeps its local-physics degrade path."""
+    if load_groq_key():
+        return "https://api.groq.com/openai/v1/chat/completions"
+    return MENTOR_URL
+
 # Global Groq rate-limit gate: when a 429/rate-limit error hits, silence ALL Groq
 # calls (vision, damage judge, mentor, VLM fallback) for this many seconds.
 _groq_muted_until = [0.0]
@@ -215,8 +234,8 @@ def groq_vision_classify(img):
     """Full-vision multimodal screen classifier using Groq's qwen/qwen3.8-27b VLM
     when the fast pixel probe returns 'unknown'."""
     key = load_groq_key()
-    if not key:
-        return "unknown"
+    if not key and not MENTOR_URL:
+        return "unknown"  # zero-key published app: still routes via mentor proxy
     try:
         thumb = img.copy()
         thumb.thumbnail((384, 832))
@@ -259,16 +278,15 @@ def groq_vision_classify(img):
             "max_tokens": 16,
             "temperature": 0.0,
         }
+        _headers = {"Content-Type": "application/json", "User-Agent": GROQ_UA}
+        if key:
+            _headers["Authorization"] = f"Bearer {key}"
         req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
+            groq_api_url(),
             data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "User-Agent": GROQ_UA,
-            },
+            headers=_headers,
         )
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode())
             ans = (data["choices"][0]["message"].get("content") or "").strip().lower()
             for label in ("battle", "lobby", "result", "quit_dialog", "popup"):
@@ -320,8 +338,8 @@ def groq_deck_builder(player_deck=None):
     except Exception:
         return {"deck": None, "critique": "no meta data", "source": "local"}
     key = load_groq_key()
-    if not key:
-        return {"deck": None, "critique": "no key", "source": "local"}
+    if not key and not MENTOR_URL:
+        return {"deck": None, "critique": "no coach endpoint", "source": "local"}
     import re as _re
     # Deck architect learns from the agent's own game memory: which placements won/lost
     try:
@@ -349,12 +367,15 @@ def groq_deck_builder(player_deck=None):
                    "messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 900, "temperature": 0.0,
                    "reasoning_effort": "low"}
+        _headers = {"Content-Type": "application/json", "User-Agent": GROQ_UA,
+                    "Accept": "application/json"}
+        if key:
+            _headers["Authorization"] = f"Bearer {key}"
         req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
+            groq_api_url(),
             data=json.dumps(payload).encode(),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": GROQ_UA, "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=14) as resp:
+            headers=_headers)
+        with urllib.request.urlopen(req, timeout=16) as resp:
             data = json.loads(resp.read().decode())
             txt = (data["choices"][0]["message"].get("content") or "").strip()
             m = _re.search(r"\{[^{}]*\}", txt, _re.S)
@@ -382,7 +403,7 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
     if groq_is_muted():
         return out
     key = load_groq_key()
-    if not key:
+    if not key and not MENTOR_URL:
         return out
     try:
         import re as _re
@@ -415,13 +436,16 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
             "max_tokens": 512,
             "temperature": 0.0,
         }
+        _headers = {"Content-Type": "application/json", "User-Agent": GROQ_UA,
+                    "Accept": "application/json"}
+        if key:
+            _headers["Authorization"] = f"Bearer {key}"
         req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
+            groq_api_url(),
             data=json.dumps(payload).encode(),
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
-                     "User-Agent": GROQ_UA, "Accept": "application/json"},
+            headers=_headers,
         )
-        with urllib.request.urlopen(req, timeout=14) as resp:
+        with urllib.request.urlopen(req, timeout=16) as resp:
             data = json.loads(resp.read().decode())
             txt = (data["choices"][0]["message"].get("content") or "").strip()
             m = _re.search(r"\{[^{}]*\}", txt, _re.S)

@@ -1,0 +1,42 @@
+{
+  "name": "neuroml-desktop",
+  "productName": "NeuroML",
+  "version": "20.0.0",
+  "description": "NeuroML — the full RL brain + live coach, connected to YOUR phone over Wi-Fi ADB. No API keys needed.",
+  "main": "main.js",
+  "author": "NeuroML",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.neuroml.desktop",
+    "productName": "NeuroML",
+    "files": [
+      "main.js",
+      "preload.js",
+      "wizard.html",
+      "wizard.js"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "NeuroML"
+    },
+    "portable": {
+      "artifactName": "NeuroML-Windows-Portable.exe"
+    },
+    "nsisArtifactName": "NeuroML-Windows-Setup.exe"
+  }
+}

@@ -1,0 +1,97 @@
+plugins {
+    id "com.android.application"
+    id "com.chaquo.python"
+}
+
+android {
+    namespace "com.neuroml.app"
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.neuroml.app"
+        minSdk 24
+        targetSdk 33
+        versionCode 20
+        versionName "20.0"
+
+        ndk { abiFilters "arm64-v8a" }
+    }
+
+    signingConfigs {
+        // Sideload-friendly: debug-signed release so users can install the APK
+        // without managing keystore passwords.
+        debug {
+            storeFile file("${System.properties['user.home']}/.android/debug.keystore")
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version "3.8"
+        pip {
+            install "torch==1.8.1"   // full-size brain runtime from Chaquopy's Android wheel index
+            install "Pillow"
+            install "numpy"
+            options "--extra-index-url", "https://chaquo.com/pypi-13.1"
+        }
+    }
+}
+
+// The REAL bot ships inside the APK: copy the public_gui code (same code that
+// runs on the desktop) into the Python source folder at build time, plus the
+// json data files into assets (extracted to filesDir on first run so relative
+// path logic in bot_ml.py works unchanged).
+def botSrc = "../../public_gui"
+
+tasks.register("copyBotPython", Copy) {
+    from(botSrc) {
+        include "*.py"
+        exclude "test_*.py"
+        exclude "android_main.py"
+    }
+    into "src/main/python"   // top-level so `import bot_ml` works unchanged
+}
+
+tasks.register("copyBotData", Copy) {
+    from(botSrc) {
+        include "cards.json", "my_deck.json", "meta_decks.json"
+        // bot_config.json ships as an Android template instead (device: local)
+    }
+    into "src/main/assets/neuroml"
+}
+
+def copyBotPythonResolved = tasks.named("copyBotPython")
+def copyBotDataResolved = tasks.named("copyBotData")
+
+project.tasks.whenTaskAdded { t ->
+    if (t.name.startsWith("writePythonRequirements")
+            || t.name.startsWith("buildPython")
+            || t.name.startsWith("extractPython")
+            || t.name.startsWith("pickPythonVersion")
+            || t.name.startsWith("prepareComChaquo")
+            || t.name.startsWith("mergePiP")
+            || t.name.startsWith("mergePyAppAssets")
+            || t.name.startsWith("mergePython")
+            || t.name.startsWith("mergePyAssets")
+            || t.name.contains("Pip")
+            || t.name.contains("pyAssets")
+            || t.name.contains("chaquopy")) {
+        t.dependsOn copyBotPythonResolved, copyBotDataResolved
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.6.1"
+    implementation "androidx.constraintlayout:constraintlayout:2.1.4"
+}

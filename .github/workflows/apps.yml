@@ -1,0 +1,104 @@
+name: build-published-apps
+
+# Builds the two downloadable "not-localhost" artifacts on every change to
+# them, then publishes to the `apps` GitHub Release with stable asset names:
+#   https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-Android.apk
+#   https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-Windows-Setup.exe
+#   https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-Windows-Portable.exe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - "electron_app/**"
+      - "public_gui/**"
+      - "api/**"
+      - ".github/workflows/apps.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"   # Chaquopy's buildPython for the py3.8 brain
+
+      - name: Set up Gradle 7.6
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "7.6"
+
+      - name: Build signed APK (full brain inside)
+        run: gradle -p android assembleRelease --no-daemon --stacktrace
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/NeuroML-Android.apk
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroML-Android.apk
+          path: dist/NeuroML-Android.apk
+
+      - name: Publish to stable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apps
+          name: NeuroML published apps
+          draft: false
+          prerelease: false
+          files: dist/NeuroML-Android.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Electron app (installer + portable)
+        working-directory: electron_app
+        run: |
+          npm install --no-audit --no-fund
+          npx electron-builder --win
+        shell: bash
+
+      - name: Stage EXEs
+        run: |
+          mkdir -p dist
+          cp electron_app/dist/*.exe dist/ 2>/dev/null || true
+          ls -lh dist
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeuroML-Windows
+          path: dist/*.exe
+
+      - name: Publish to stable release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apps
+          name: NeuroML published apps
+          draft: false
+          prerelease: false
+          files: dist/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
