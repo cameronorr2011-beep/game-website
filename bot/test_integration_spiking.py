@@ -60,6 +60,20 @@ def main():
         agent.observe_state(state)
         agent.learn(-1.0)
     check("negative valence rose", agent.affect.state["neg_rpe"] > 0.1)
+    # decay-per-observe: channels must relax when injections stop
+    for _ in range(120):
+        agent.observe_state(state)
+    check("valence decays after injections stop (equilibrium, not saturation)",
+          agent.affect.state["neg_rpe"] < 0.5, f"neg_rpe={agent.affect.state['neg_rpe']:.3f}")
+    # relief: simulate threat then resolution
+    agent.relief_test_probe = getattr(agent, 'relief_test_probe', None)
+    st = [0.0]*38; st[36] = 1.0
+    agent.affect.set("danger", 0.6)
+    agent.observe_state(st)                 # threat again -> danger rises
+    st2 = [0.0]*38
+    agent.observe_state(st2)                # clear -> relief fired
+    check("relief fires when danger resolves", agent.affect.state["relief"] > 0.01,
+          f"relief={agent.affect.state['relief']:.3f}")
     check("valence channels bounded", all(0.0 <= v <= 1.0 for v in agent.affect.state.values()))
 
     # ---- persistence: atomic versioned checkpoint round-trip

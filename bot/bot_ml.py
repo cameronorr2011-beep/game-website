@@ -1164,8 +1164,11 @@ class SpikingAgent:
         if not self.ok:
             return None
         try:
-            import math as _m
             t0 = time.time()
+            # passive valence decay each decision tick so channels reach an
+            # equilibrium between injection and decay instead of saturating
+            self.affect.decay_step()
+            was_danger = self.affect.state["danger"]
             # sensory encoding: 38 state dims mapped onto 64 sensory neurons
             vals = [max(0.0, min(1.0, v)) for v in state_s[:64]]
             vals += [0.0] * (64 - len(vals))
@@ -1175,6 +1178,10 @@ class SpikingAgent:
             # from policy separation available later; injected from rewards.
             if state_s[36] or state_s[37]:
                 self.affect.inject("danger", 0.15)
+            elif was_danger > 0.3:
+                # threat resolved: relief-like signal (v14 spec: relief on
+                # resolution of previously-high danger)
+                self.affect.inject("relief", 0.25)
             rates = [n.spike_count for n in self.nucleus.action]
             mx = max(rates) or 1
             mean = sum(rates) / len(rates)
@@ -2434,6 +2441,7 @@ def main():
                     except Exception as e:
                         log(f"deck re-eval note: {e}")
                 brain.save()
+                spike_agent.save()   # durable STDP weights + affect persisted at real match end
                 log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
