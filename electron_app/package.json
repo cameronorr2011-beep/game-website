@@ -23,6 +23,13 @@
       "wizard.html",
       "wizard.js"
     ],
+    "extraResources": [
+      {
+        "from": "../public_gui",
+        "to": "public_gui",
+        "filter": ["*.py", "*.json", "*.bat", "README.md"]
+      }
+    ],
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] },

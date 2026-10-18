@@ -51,7 +51,15 @@ document.querySelectorAll("[data-url]").forEach((a) => {
 });
 
 // auto-run "prepare" once on first open (idempotent — skips already-installed parts)
+// and, when this PC is already paired, start the brain immediately: open the app
+// and it is RUNNING — no extra clicks.
 (async () => {
   const r = await window.api.prepare();
-  if (r.ok) setBar(55);
+  if (!r.ok) return;
+  setBar(55);
+  const s = await window.api.state();
+  if (s.paired && !s.running) {
+    const lr = await window.api.launch();
+    if (lr.ok) setBar(100);
+  }
 })();

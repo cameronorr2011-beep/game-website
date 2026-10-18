@@ -20,7 +20,13 @@ const PYTHON_EMBED_URL =
 const GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py";
 const ADB_URL =
   "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
-const ADAPTER_SRC = path.join(__dirname, "..", "public_gui");
+const ADAPTER_SRC_DEV = path.join(__dirname, "..", "public_gui");
+// In a packaged EXE the bot source ships as extraResources (resources/public_gui);
+// in dev it is the sibling public_gui of the repo.
+const adapterSrc = () =>
+  app.isPackaged && fs.existsSync(path.join(process.resourcesPath, "public_gui"))
+    ? path.join(process.resourcesPath, "public_gui")
+    : ADAPTER_SRC_DEV;
 
 let win = null;
 let botProc = null;
@@ -147,9 +153,9 @@ function copyBotCode() {
     "federated_seed_ledger.json", "federated_outbox.json",
   ];
   const keep = (f) => KEEP.includes(f) || f.startsWith(".update_backups");
-  for (const f of fs.readdirSync(ADAPTER_SRC)) {
+  for (const f of fs.readdirSync(adapterSrc())) {
     if (keep(f)) continue;
-    const src = path.join(ADAPTER_SRC, f);
+    const src = path.join(adapterSrc(), f);
     if (!fs.statSync(src).isFile()) continue;
     fs.copyFileSync(src, path.join(neuromlDir(), f));
   }
@@ -185,11 +191,52 @@ async function showDashboard(dev) {
   }, 2600);
 }
 
+// Floating ⏹/▶ control so the bot can always be turned OFF from the app window.
+const CONTROL_SNIPPET = `
+(function () {
+  function hideOld(id) { var e = document.getElementById(id); if (e) e.remove(); }
+  hideOld('_nmlCtl');
+  var b = document.createElement('button');
+  b.id = '_nmlCtl';
+  b.style.cssText = 'position:fixed;bottom:14px;right:14px;z-index:2147483647;padding:10px 18px;' +
+    'border-radius:10px;border:2px solid #232c38;background:#0b0f14;color:#fff;' +
+    'font-weight:700;font-size:13px;cursor:pointer;box-shadow:0 4px 18px rgba(0,0,0,.5)';
+  b.textContent = '\u23F9 Stop brain';
+  b.onclick = function () { window.api && window.api.stop(); };
+  document.body.appendChild(b);
+})();`;
+
+function wireDashboardControls() {
+  if (!win) return;
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.getURL().startsWith("http://127.0.0.1:8765")
+      ? win.webContents.executeJavaScript(CONTROL_SNIPPET).catch(() => {})
+      : Promise.resolve();
+  });
+}
+
 // ---------------- IPC surface for the wizard renderer ----------------
 ipcMain.handle("state", async () => ({
   hasBotConfig: fs.existsSync(path.join(neuromlDir(), "bot_config.json")),
+  paired: (() => {
+    try {
+      const c = JSON.parse(fs.readFileSync(path.join(neuromlDir(), "bot_config.json"), "utf8"));
+      return !!(c.device && String(c.device).trim());
+    } catch { return false; }
+  })(),
   running: !!botProc,
 }));
+
+ipcMain.handle("stop", async () => {
+  try { botProc && botProc.kill(); } catch {}
+  try { dashProc && dashProc.kill(); } catch {}
+  botProc = dashProc = null;
+  send("brain", "brain stopped — nothing is playing", 55);
+  if (win && !win.isDestroyed() && win.webContents.getURL().startsWith("http://127.0.0.1")) {
+    win.loadFile("wizard.html");
+  }
+  return { ok: true };
+});
 
 ipcMain.handle("prepare", async () => {
   try {
@@ -248,6 +295,7 @@ function createWin() {
   });
   win.setMenuBarVisibility(false);
   win.loadFile("wizard.html");
+  wireDashboardControls();
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };

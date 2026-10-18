@@ -4,7 +4,9 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.IBinder;
 
 import com.chaquo.python.PyObject;
@@ -15,18 +17,31 @@ import java.io.File;
 
 /**
  * Runs bot_ml.py's brain loop + dashboard.py's server from inside ONE Python
- * process (android_main.py) on this phone. The user's Clash account shown on
- * screen is whoever is signed in on this device — the player's own account.
+ * process (android_main.py) on this phone — in its OWN ":brain" Android
+ * process so a stop can hard-exit Python without touching the UI.
+ * The user's Clash account shown on screen is whoever is signed in on this
+ * device — the player's own account.
  */
 public class BrainService extends Service {
     private static final String CH = "neuroml";
+    public static final String ACTION_STOP = "com.neuroml.app.STOP";
 
     @Override
     public IBinder onBind(Intent i) { return null; }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        startForeground(2, buildNotif());
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            setRunning(false);
+            startForeground(2, buildNotif("stopping…"));
+            stopForeground(true);
+            stopSelf();
+            hardExitPython();
+            return START_NOT_STICKY;
+        }
+        setRunning(true);
+        startForeground(2, buildNotif("running"));
+
         if (!Python.isStarted()) {
             Python.start(new AndroidPlatform(getApplicationContext()));
         }
@@ -38,25 +53,54 @@ public class BrainService extends Service {
                 mod.callAttr("run", filesDir.getAbsolutePath()).toString();
             } catch (Exception e) {
                 android.util.Log.e("NeuroML", "brain crashed: " + e, e);
-                pythonCrashed = String.valueOf(e);
+                setRunning(false);
+                hardExitPython();
             }
         }, "neuroml-brain").start();
+
+        // Auto-restart support when Android reclaims the process: a null intent
+        // (START_STICKY restart) still means "brain should be running".
         return START_STICKY;
     }
 
-    public static volatile String pythonCrashed;
+    private void hardExitPython() {
+        new Thread(() -> {
+            try {
+                Thread.sleep(150);
+                if (Python.isStarted()) {
+                    Python.getInstance().getModule("os").callAttr("_exit", 0);
+                }
+            } catch (Throwable t) {
+                // last resort: this is the :brain process, safe to terminate
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
+        }, "neuroml-stop").start();
+    }
 
-    private Notification buildNotif() {
+    private void setRunning(boolean r) {
+        getSharedPreferences("nml", Context.MODE_PRIVATE)
+                .edit().putBoolean("brain_running", r).apply();
+    }
+
+    private Notification buildNotif(String text) {
         NotificationManager nm = getSystemService(NotificationManager.class);
+        Notification.Builder b;
         if (android.os.Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(new NotificationChannel(CH, "NeuroML",
                     NotificationManager.IMPORTANCE_LOW));
-            return new Notification.Builder(this, CH)
-                    .setContentTitle("NeuroML brain running")
-                    .setContentText("Playing + learning; dashboard at in-app screen")
-                    .setSmallIcon(android.R.drawable.ic_media_play)
-                    .build();
+            b = new Notification.Builder(this, CH);
+        } else {
+            b = new Notification.Builder(this);
         }
-        return new Notification.Builder(this).build();
+        return b.setContentTitle("NeuroML brain " + text)
+                .setContentText("It plays the account signed in on this phone")
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .build();
+    }
+
+    @Override
+    public void onDestroy() {
+        setRunning(false);
+        super.onDestroy();
     }
 }

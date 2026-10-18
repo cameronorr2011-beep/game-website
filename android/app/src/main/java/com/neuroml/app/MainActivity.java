@@ -1,21 +1,22 @@
 package com.neuroml.app;
 
 import android.Manifest;
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.media.projection.MediaProjectionManager;
-import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
-import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
+import android.view.accessibility.AccessibilityManager;
+import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,13 +26,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 /**
- * Onboarding: (1) grant screen capture, (2) enable the tap service in
- * accessibility settings, (3) start the brain. In this SAME phone — the
- * player phone — no computer or connection is ever needed.
+ * ONE control: the brain switch.
+ *  - toggle ON  -> requests the screen-capture grant itself, asks for the tap
+ *                 service if missing, then STARTS the brain and opens the
+ *                 dashboard. It runs right away — nothing else to press.
+ *  - toggle OFF -> stops the brain completely (BotService hard-exits python).
+ * The dashboard shows the account signed in on THIS phone (the player's).
  */
 public class MainActivity extends Activity {
     private static final int PROJECTION_REQ = 4242;
+    private static final String PREFS = "nml";
     private TextView status;
+    private Switch brainSwitch;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -53,44 +59,105 @@ public class MainActivity extends Activity {
         sub.setText("The full RL brain runs on THIS phone. It sees the game through the screen, plays matches, learns, and federates anonymized packages. No API key, no computer.");
         sub.setTextColor(Color.parseColor("#8b98a8"));
         sub.setTextSize(14);
-        sub.setPadding(0, 16, 0, 32);
+        sub.setPadding(0, 16, 0, 24);
         root.addView(sub);
+
+        brainSwitch = new Switch(this);
+        brainSwitch.setText("  🧠 BRAIN (run / stop)");
+        brainSwitch.setTextSize(18);
+        brainSwitch.setTextColor(Color.WHITE);
+        root.addView(brainSwitch);
 
         status = new TextView(this);
         status.setTextColor(Color.parseColor("#3fb950"));
         status.setTextSize(13);
-        status.setPadding(0, 0, 0, 32);
+        status.setPadding(0, 16, 0, 28);
         root.addView(status);
 
-        root.addView(btn("① Allow screen capture (sees the game)", v -> requestCapture()));
-        root.addView(btn("② Enable taps in accessibility settings", v -> {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-            Toast.makeText(this, "Find \u201CNeuroML brain tap service\u201D and switch it ON", Toast.LENGTH_LONG).show();
-        }));
-        root.addView(btn("③ Start the brain + live dashboard", v -> {
-            if (!CaptureService.ready() || !TapAccessibilityService.available()) {
-                Toast.makeText(this, "Finish ① and ② first", Toast.LENGTH_LONG).show();
-                return;
-            }
+        root.addView(btn("📱 Open live dashboard", v -> {
             copyAssets();
-            startForegroundService(new Intent(this, BrainService.class));
             startActivity(new Intent(this, DashboardActivity.class));
         }));
-        root.addView(btn("Open dashboard again", v ->
-                startActivity(new Intent(this, DashboardActivity.class))));
 
         TextView note = new TextView(this);
-        note.setText("Automating Clash Royale violates Supercell's ToS — use an account you accept losing. The dashboard displays the account signed in on THIS phone (the player's), never anythingelse.");
+        note.setText("Automating Clash Royale violates Supercell's ToS — use an account you accept losing. The bot taps only inside the game and never opens account or deck screens.");
         note.setTextColor(Color.parseColor("#6e7b8a"));
         note.setTextSize(11);
         note.setPadding(0, 40, 0, 0);
         root.addView(note);
 
+        brainSwitch.setOnCheckedChangeListener((CompoundButton sb, boolean on) -> {
+            if (on) {
+                proceedToRun();
+            } else {
+                Intent stop = new Intent(this, BrainService.class);
+                stop.setAction(BrainService.ACTION_STOP);
+                startService(stop);
+                status.setText("Stopping the brain…");
+            }
+        });
+
         setContentView(new ScrollView(this) {{ addView(root); }});
     }
 
-    private Button btn(String label, View.OnClickListener c) {
-        Button b = new Button(this);
+    @Override
+    protected void onResume() {
+        super.onResume();
+        SharedPreferences p = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean running = p.getBoolean("brain_running", false);
+        brainSwitch.setOnCheckedChangeListener(null);   // reflect state, don't retrigger
+        brainSwitch.setChecked(running);
+        brainSwitch.setOnCheckedChangeListener((CompoundButton sb, boolean on) -> {
+            if (on) proceedToRun();
+            else {
+                Intent stop = new Intent(this, BrainService.class);
+                stop.setAction(BrainService.ACTION_STOP);
+                startService(stop);
+                status.setText("Stopping the brain…");
+            }
+        });
+        if (running) {
+            status.setText("✓ Brain running — it plays the account signed in on this phone.\nDashboard: the in-app screen, or any browser at http://127.0.0.1:8765 while it runs.");
+        }
+    }
+
+    /** Toggle ON or returning from a permission grant: run what's missing, in order. */
+    private void proceedToRun() {
+        if (!CaptureService.ready()) {
+            status.setText(" Android needs your one-time OK to see the screen…");
+            requestCapture();
+            return;
+        }
+        if (!tapsEnabled()) {
+            status.setText(" Android needs the NeuroML tap service ON — enabling it in settings…");
+            startActivity(new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            Toast.makeText(this, "Find \u201CNeuroML brain tap service\u201D and switch it ON, then come back — the brain will start by itself", Toast.LENGTH_LONG).show();
+            return;
+        }
+        startBrain();
+    }
+
+    /** Hard, reliable check: read the SYSTEM's enabled accessibility list
+     *  (static-instance detection lost races when the app process restarted). */
+    private boolean tapsEnabled() {
+        AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
+        for (AccessibilityServiceInfo info : am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)) {
+            String pkg = info.getResolveInfo() == null ? "" :
+                    info.getResolveInfo().serviceInfo == null ? "" :
+                            info.getResolveInfo().serviceInfo.packageName;
+            if (getPackageName().equals(pkg)) return true;
+        }
+        return false;
+    }
+
+    private void startBrain() {
+        copyAssets();
+        startForegroundService(new Intent(this, BrainService.class));
+        startActivity(new Intent(this, DashboardActivity.class));
+    }
+
+    private android.widget.Button btn(String label, View.OnClickListener c) {
+        android.widget.Button b = new android.widget.Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(Color.WHITE);
@@ -104,7 +171,7 @@ public class MainActivity extends Activity {
     }
 
     private void requestCapture() {
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 3);
         }
@@ -124,7 +191,8 @@ public class MainActivity extends Activity {
         svc.putExtra(CaptureService.EXTRA_RESULT, code);
         svc.putExtras(data); // MediaProjection result payload must reach the service
         startForegroundService(svc);
-        status.setText("✓ Capture active");
+        status.setText("✓ Capture active — checking the tap service…");
+        proceedToRun();     // continue the chain: tap service → brain
     }
 
     /** bot data files (json) → filesDir so relative-path logic in bot_ml.py works. */
