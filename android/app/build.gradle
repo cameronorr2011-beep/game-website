@@ -39,6 +39,10 @@ android {
 chaquopy {
     defaultConfig {
         version "3.8"
+        // Build手足 interpreter used ONLY for Chaquopy's own tooling (needs >= 3.10);
+        // the app still targets Python 3.8 above. CI passes -PchaquopyBuildPython;
+        // fall back to whatever python is on PATH for local builds.
+        buildPython (project.findProperty("chaquopyBuildPython") ?: "python")
         pip {
             options("--extra-index-url", "https://chaquo.com/pypi-13.1")
             install "torch==1.8.1"   // full-size brain runtime (cp38 arm64 Android wheel)
