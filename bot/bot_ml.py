@@ -1536,6 +1536,7 @@ def main():
                             f"TOWER DAMAGE TAKEN (drop={ally_drop:.2f}, lost={ally_lost}) "
                             f"-> punishment={dmg_punish:+.2f} via {dmg_source}"
                         )
+                        # loss is real even before shaping — tag it for the feed
 
                     el_drop = max(0.0, prev_towers["enemy_left"] - towers["enemy_left"])
                     er_drop = max(0.0, prev_towers["enemy_right"] - towers["enemy_right"])
@@ -1547,51 +1548,75 @@ def main():
                         match_stats["towers_down"] += int(enemy_lost)
                         log(f"ENEMY TOWER DAMAGED (drop={enemy_drop:.2f}) -> dopamine +{enemy_bonus:.2f}")
 
-                # ---- RICH DOPAMINE SHAPING ----
+                # ---- RICH DOPAMINE SHAPING (each item logged as its OWN
+                # dopamine event so the feed never shows a bad behavior green) ----
+                _events = []   # (label, amount) shown separately in the UI feed
                 if dmg_punish is None:
                     # 1) correct-lane defense
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.8   # was 0.5 — better reward for reading the push correctly
+                            reward += 0.8
+                            _events.append(("✅ correct lane defense", 0.8))
                     # 2) spend at max elixir
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
                         reward += 0.4
+                        _events.append(("✅ spent at max elixir", 0.4))
                     # 3) elixir discipline: playing at 9-10 elixir is good economy
                     if mlxir >= 9:
                         reward += 0.25
+                        _events.append(("✅ elixir economy (played at 9+)", 0.25))
                     # 4) proactive counter-push: attacking the opposite lane when enemy commits
                     if arena["enemy_left"] + arena["enemy_right"] >= 8 and "bridge" in spot_n:
                         opposite = arena["enemy_right"] if arena["enemy_left"] >= arena["enemy_right"] else arena["enemy_left"]
                         if opposite <= 2:
-                            reward += 0.6   # punished the opponent for committing — rich reward
+                            reward += 0.6
+                            _events.append(("✅ counter-push other lane", 0.6))
                     # 5) counter-threshold rewards (visible dopamine when ahead)
                     if towers["enemy_alive"] < towers["ally_alive"]:
-                        reward += 0.3       # structural advantage bonus per tick
+                        reward += 0.3
+                        _events.append(("✅ tower advantage held", 0.3))
                     # 6) RULES dopamine: playing by the law of the game is rewarded
                     if reward_rules_add:
                         reward += reward_rules_add
-                    # 7) TROOP-KILL DOPAMINE: vision sees enemy units die —
-                    #    big counts dropping = kills = real dopamine surge
-                    e_units_prev = opponent_arena_prev.get("enemy_left", 0) + \
-                        opponent_arena_prev.get("enemy_right", 0) if opponent_arena_prev else 0
+                        _events.append(("✅ game rule followed", reward_rules_add))
+                    # 7) TROOP-KILL DOPAMINE: vision sees enemy units die
+                    e_units_prev = (opponent_arena_prev.get("enemy_left", 0) +
+                                    opponent_arena_prev.get("enemy_right", 0)) if opponent_arena_prev else 0
                     e_units_now = arena["enemy_left"] + arena["enemy_right"]
                     e_death = max(0, e_units_prev - e_units_now)
-                    e_death_px = e_death * 3   # each count ≈ 3px of enemy-bar mass
                     if e_death >= 4:
                         kill_dopamine = min(1.5, round(e_death * 0.1, 2))
                         reward += kill_dopamine
+                        _events.append((f"💀 killed {e_death}px of enemy troops", kill_dopamine))
                         log(f"ENEMY TROOPS KILLED ({e_death}px bars fell) -> dopamine +{kill_dopamine:.2f}")
                 else:
                     reward = min(reward, dmg_punish)
+                    _events.append(("🛑 my tower took damage", dmg_punish))
+                    _events.append(("⛔ good events censored — tower damage dominates this tick", 0.0))
 
+                # ---- PUNISHMENTS (always their OWN negative event, never green) ----
                 if mlxir <= 2 and lane is None:
                     reward -= 0.2
+                    _events.append(("🔻 wasted elixir nowhere (played with no threat)", -0.2))
                 if leaking:
                     elixir_leak_ticks += 1
-                    reward -= 0.1 * elixir_leak_ticks
+                    leak_punish = 0.1 * elixir_leak_ticks
+                    reward -= leak_punish
+                    _events.append((f"💧 ELIXIR LEAK #{elixir_leak_ticks}", -leak_punish))
                 else:
                     elixir_leak_ticks = 0
+                # dropped tower this tick = pure red event even if kills happened
+                if prev_towers is not None:
+                    _tl = max(0, prev_towers["ally_alive"] - towers["ally_alive"])
+                    if _tl > 0:
+                        _events.append((f"💀 LOST {_tl} TOWER(S)", -2.5 * _tl))
+                # incorrect lane defense = red
+                if lane and dmg_punish is None:
+                    if (lane == "left" and spot_n in ("right_defend", "bridge_right")) or \
+                       (lane == "right" and spot_n in ("left_defend", "bridge_left")):
+                        reward -= 0.6
+                        _events.append(("❌ defended the WRONG lane", -0.6))
 
                 # Humanized swipe: tiny jitter on start point + variable duration
                 jx = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
@@ -1653,13 +1678,14 @@ def main():
                     "affordable_slots": affordable_slots,
                     "elixir": mlxir,
                 }
-                # Dopamine event per tick — the UI's live dopamine feed
-                if abs(reward) >= 0.25:
-                    _dlog = _metrics.setdefault("dopamine_events", [])
+                # Dopamine events — every labeled signal, good AND bad, shown
+                # separately so the feed never turns bad into green
+                _dlog = _metrics.setdefault("dopamine_events", [])
+                for lbl, amt in _events:
                     _dlog.append({"t": time.strftime("%H:%M:%S"),
-                                  "event": f"{spot_n} (elixir {mlxir})",
-                                  "amount": round(reward, 2)})
-                    _metrics["dopamine_events"] = _dlog[-80:]
+                                  "event": f"{lbl} · {spot_n} (elixir {mlxir})",
+                                  "amount": round(amt, 2)})
+                _metrics["dopamine_events"] = _dlog[-80:]
                 metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish,
                                vision=vision_snapshot,
                                mentor=(None if mentor is None else {
