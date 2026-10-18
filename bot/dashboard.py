@@ -65,7 +65,7 @@ canvas{width:100%;height:130px;margin:4px 0}
 .rules li{margin:2px 0;list-style:none}
 </style></head><body>
 <h1>NeuroML — The Full Brain</h1>
-<div class="sub">38 sensory neurons → 2×128 cortical → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
+<div class="sub">38 sensory → 1024-wide × 6-layer residual cortex → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
@@ -102,7 +102,7 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div class="coach" id="feed">waiting…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 768-wide × 4 cortical brain (dot = one real neuron)</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 1024-wide × 6-layer cortex (each dot = one real neuron, layer6 = deepest)</h2>
       <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation this tick · 🔴 red = negative activation · dark = quiet neuron</div>
       <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — what each pixel-scan reports)</div>
       <div id="senses" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;font-size:9px;font-family:Consolas,monospace;margin:4px 0"></div>
@@ -114,6 +114,8 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 4 — decision abstraction (before value/choice split)</div>
       <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(96,1fr)"></div></div>
+      <div style="font-size:11px;color:var(--dim)">DEEP CORTEX (layers 5–6 — abstract decision evidence, feeds V/A)</div>
+      <div class="brain"><div class="layer" id="deepcortex" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">LIMBIC — "how good is this situation" interneurons (feeds V(s))</div>
       <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage of each of the 20 moves (top = chosen)</div>
@@ -160,7 +162,7 @@ try{
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
  heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);
- heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.limbic_neurons,'l3',1.5);
+ heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.layer6_neurons||n.layer5_neurons||n.layer3_neurons,'deepcortex',1.5);heat(n.limbic_neurons,'l3',1.5);
  if(n.sensory_neurons){const se=document.getElementById('senses');
   if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
   else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))}}

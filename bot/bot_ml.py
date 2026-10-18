@@ -1329,20 +1329,21 @@ class SynapticResBlock(nn.Module):
 
 
 class QNet(nn.Module):
-    """Dueling Surge-Neuron Architecture v4 (measured-loads cortex):
-      - Sensory Input Stem (38 -> 768 + LayerNorm + SiLU)
-      - 5 Residual Synaptic Cortical Blocks (768 -> 768)  ≈ 11.8M cortical synapses
-      - Limbic State-Value stream V(s): 768 -> 384 -> 1
-      - Motor Action-Advantage stream A(s,a): 384 -> 20
+    """Dueling Surge-Neuron Architecture v5-deep (bigger, measured):
+      - Sensory Input Stem (38 -> 1024 + LayerNorm + SiLU)
+      - 6 Residual Synaptic Cortical Blocks (1024 -> 1024) ≈ 12.6M cortical synapses
+      - Limbic State-Value stream V(s): 1024 -> 512 -> 1
+      - Motor Action-Advantage stream A(s,a): 512 (rolled off) -> 20
       - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
-    6.26M trainable parameters ≈ 50 MB fp32 checkpoint. MEASURED on this CPU:
-    single forward 7.7ms (action selection never blocks), batch-128 forward
-    79ms, train step ≈ 6s but only every 2nd tick, overlapping the phonée
-    screencap pipeline. Capacity is REAL: deck-synergy and counter
-    representations need this width at 38-dim state inputs.
+    ≈ 13.6M trainable parameters ≈ 100 MB fp32 checkpoint. MEASURED on this CPU:
+    single forward ≈ double-digit ms (action selection never blocks), train
+    step a few hundred ms — a fraction of the 5s battle tick. Deeper + wider
+    cortex for richer deck-synergy / counter representations at 38-dim state.
+    Migration: v4-checkpoint sensory stem is partially copied; the new columns
+    then learn fast via warm training over the persisted replay buffer.
     """
-    WIDE = 768
-    NARROW = 384
+    WIDE = 1024
+    NARROW = 512
 
     def __init__(self):
         super().__init__()
@@ -1357,6 +1358,7 @@ class QNet(nn.Module):
         self.cortex3 = SynapticResBlock(W)
         self.cortex4 = SynapticResBlock(W)
         self.cortex5 = SynapticResBlock(W)
+        self.cortex6 = SynapticResBlock(W)
 
         # Limbic State-Value stream V(s)
         self.value_stream = nn.Sequential(
@@ -1383,16 +1385,17 @@ class QNet(nn.Module):
         h3 = self.cortex3(h2)
         h4 = self.cortex4(h3)
         h5 = self.cortex5(h4)
-        v_hid = self.value_stream[:-1](h5)
-        a_hid = self.advantage_stream[:-1](h5)
+        h6 = self.cortex6(h5)
+        v_hid = self.value_stream[:-1](h6)
+        a_hid = self.advantage_stream[:-1](h6)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
             return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
                     h2.squeeze(0), h3.squeeze(0), h4.squeeze(0),
-                    h5.squeeze(0), v_hid.squeeze(0))
-        return q, v, a, h1, h2, h3, h4, h5, v_hid
+                    h5.squeeze(0), h6.squeeze(0), v_hid.squeeze(0))
+        return q, v, a, h1, h2, h3, h4, h5, h6, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1403,7 +1406,7 @@ TRAIN_LOG = open("training.log", "a", buffering=1, encoding="utf-8", errors="rep
 MENTOR_LOG = open("mentor.log", "a", buffering=1, encoding="utf-8", errors="replace")
 COACH_FILE = "ai_coach.jsonl"
 _metrics = {
-    "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
+    "architecture": "Dueling-Double-DQN (1024×6 resnet depth) + PER + 3-Step + Groq-VLM",
     "steps": 0,
     # Seed the game-memory digest so the dashboard shows it even before the
     # first distill of this session (distill_match refreshes it every match end).
@@ -1493,7 +1496,7 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, h3, h4, h5, v_hid = self.policy.forward_streams(x)
+            q, v, a, h1, h2, h3, h4, h5, h6, v_hid = self.policy.forward_streams(x)
             return {
                 "layer1_mean": round(h1.abs().mean().item(), 3),
                 "layer2_mean": round(h2.abs().mean().item(), 3),
@@ -1512,6 +1515,7 @@ class TargetedDQN:
                 "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
                 "layer4_neurons": [round(v_, 3) for v_ in h4.tolist()],
                 "layer5_neurons": [round(v_, 3) for v_ in h5.tolist()],
+                "layer6_neurons": [round(v_, 3) for v_ in h6.tolist()],
                 "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
                 "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
@@ -1667,7 +1671,7 @@ class TargetedDQN:
 
     def save(self):
         torch.save({
-            "arch": "dueling_resnet_v4_measured",
+            "arch": "dueling_resnet_v5_deep",
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
@@ -1684,11 +1688,11 @@ class TargetedDQN:
             try:
                 ckpt = torch.load("ml_policy.pt")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v4_measured":
+                if ckpt.get("arch") == "dueling_resnet_v5_deep":
                     self.policy.load_state_dict(ckpt["policy"])
                     self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v4 (768×5) brain, epsilon={self.epsilon:.2f}")
-                elif ckpt.get("arch") in ("dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
+                    log(f"loaded Dueling-ResNet v5-deep (1024×6) brain, epsilon={self.epsilon:.2f}")
+                elif ckpt.get("arch") in ("dueling_resnet_v4_measured", "dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
                     # UPGRADE MIGRATION: sensory stem partial copy (works for any
                     # narrower predecessor), the rest starts fresh but learns fast
                     # from the big replay buffer.
@@ -1706,7 +1710,7 @@ class TargetedDQN:
                         except Exception:
                             pass
                     self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated {ckpt.get('arch')} sensory weights into v4 brain, epsilon={self.epsilon:.2f}")
+                    log(f"migrated {ckpt.get('arch')} sensory stem into v5-deep (1024×6) cortex; warm-training from replay, epsilon={self.epsilon:.2f}")
                 else:
                     log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
