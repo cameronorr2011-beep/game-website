@@ -105,7 +105,10 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div style="font-size:11px;color:var(--dim)">action advantage (20 = 4 slots × 5 zones)</div><div class="brain"><div class="layer" id="l4"></div></div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) dopamine baseline: <span id="vs" style="color:var(--yel)">-</span>
        · advantage spread <span id="asp" style="color:var(--yel)">-</span></div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim)">MEMORY PERSISTENCE</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">📚 GAME MEMORY (distilled story of every match)</h2>
+      <div style="font-size:12px" id="gmem">no matches distilled yet…</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px">Saved to game_memory.json at every match end. Reloaded at startup and fed to the AI coach — the brain remembers what won, even after restart.</div></div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">MEMORY PERSISTENCE</h2>
       <div style="font-size:12px" id="memviz">checking files…</div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Downloads keep their brain.</div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">OPPONENT MEMORY (what recent enemies played)</h2>
@@ -135,7 +138,13 @@ async function poll(){try{
  heat(n.layer1_neurons,'l1',2);heat(n.layer2_neurons,'l2',2);heat(n.limbic_neurons,'l3',2);heat(n.advantage_neurons,'l4',2);
  if(m.dopamine_events&&m.dopamine_events.length){const de=document.getElementById('dopa');
   de.innerHTML=m.dopamine_events.slice(-40).reverse().map(e=>'<div'+(Math.abs(e.amount)>=3?' class="big"':'')+'><span class="t">'+e.t+'</span><span class="ev">'+e.event+'</span><span class="'+(e.amount>=0?'pos':'neg')+'">'+(e.amount>=0?'+':'')+e.amount+'</span></div>').join('')}
- if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\\ntarget = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\\nchosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\\ntop3 = ${JSON.stringify(m.thinking.q_values_top3)}\\n${m.thinking.equation}\\n${m.thinking.hud}`}
+ if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}
+ if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
+  '<div style="font-size:20px;font-weight:800;color:#d29922">'+gm.games_remembered+' games remembered</div>'+
+  '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
+  '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85149">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
+  '<div style="margin-top:4px;color:#8b949e">'+gm.towers_destroyed_recent+' towers destroyed · '+gm.enemy_pushes_faced_recent+' pushes faced recently</div>'}
+ eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\\ntarget = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\\nchosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\\ntop3 = ${JSON.stringify(m.thinking.q_values_top3)}\\n${m.thinking.equation}\\n${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
   `my towers L/R/K: <b>${v.towers.ally_left}/${v.towers.ally_right}/${v.towers.ally_king}</b><br>`+
   `enemy towers L/R: <b style="color:#f85149">${v.towers.enemy_left}/${v.towers.enemy_right}</b><br>`+
@@ -231,6 +240,15 @@ def _screencap(retries=1):
     raise RuntimeError("screencap failed after retries")
 
 
+def _auto_refresher():
+    """Continuously refresh the frame cache in the background (~every 2.3s) so
+    the phone panel is ALWAYS current — polling never has to wait for a
+    screencap, which is what made localhost feel 'perpetually loading'."""
+    while True:
+        _refresh_background()
+        time.sleep(2.3)
+
+
 def shot(force=False):
     """Instant: always serve the cached frame now (<1ms), and when it's stale
     (>2.2s) kick off a background refresh so the NEXT call gets a newer frame.
@@ -318,11 +336,18 @@ def vision_overlay(img):
     return img
 
 
+_health_cache = {"data": None, "t": 0}
+
+
 def health():
+    """Cached 4s: the tasklist subprocess made every health poll ~0.6s."""
+    if _health_cache["data"] is not None and time.time() - _health_cache["t"] < 4.0:
+        return _health_cache["data"]
     items = []
     for f, note in [("ml_policy.pt", "policy weights"), ("ml_replay.json", "replay memories"),
                     ("training.log", "training log"), ("ml_metrics.json", "metrics"),
-                    ("my_deck.json", "autonomous deck"), ("groq_key.txt", "Groq key")]:
+                    ("my_deck.json", "autonomous deck"), ("groq_key.txt", "Groq key"),
+                    ("game_memory.json", "game memory book"), ("opponent_memory.json", "opponent memory")]:
         try:
             s = os.path.getsize(f)
             items.append(f"✔ {note} ({s // 1024} KB)")
@@ -330,7 +355,10 @@ def health():
             items.append(f"✖ {note} missing")
     bg = subprocess.run(["tasklist"], capture_output=True).stdout.decode(errors="ignore")
     bot_running = "python.exe" in bg
-    return {"bot": bot_running, "device": DEV, "mem": " ".join(items)}
+    data = {"bot": bot_running, "device": DEV, "mem": " ".join(items)}
+    _health_cache["data"] = data
+    _health_cache["t"] = time.time()
+    return data
 
 
 class H(BaseHTTPRequestHandler):
@@ -365,4 +393,5 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_auto_refresher, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

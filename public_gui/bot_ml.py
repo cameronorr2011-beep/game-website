@@ -325,17 +325,26 @@ def groq_deck_builder(player_deck=None):
     if not key:
         return {"deck": None, "critique": "no key", "source": "local"}
     import re as _re
+    # Deck architect learns from the agent's own game memory: which placements won/lost
+    try:
+        _gm = game_memory_digest()
+        _gm_line = _gm.get("one_line", "")
+        _gm_best = _gm.get("best_spots") or []
+    except Exception:
+        _gm_line, _gm_best = "", []
     prompt = (
         "You are the NeuroML Deck Architect for a Clash Royale RL agent. "
         f"Current ladder meta decks (fetched {meta.get('fetched_at')}):\n"
         + json.dumps(meta.get("top_meta_decks", [])[:6], indent=1)
         + f"\n\nAgent's current deck: {player_deck or 'unknown (use meta consensus)'}\n"
-        "1) Compare the agent's deck to the meta and name the biggest weaknesses.\n"
-        "2) Output the strongest 8-card deck possible given the meta.\n\n"
-        'Reply ONLY with minified JSON, no markdown, no reasoning: '
-        '{"best_deck": ["card1", "card2", "card3", "card4", "card5", "card6", "card7", "card8"], '
-        '"why": "<25 words>"}\n\n'
-        "Important: Start your reply with the opening { character immediately."
+        + f"\nAgent's game memory (how it plays): {_gm_line or 'no history yet'}\n"
+        + (f"Placements that historically paid best: {_gm_best}\n" if _gm_best else "")
+        + "1) Compare the agent's deck to the meta and name the biggest weaknesses CONSTRAINED by how this agent plays.\n"
+        + "2) Output the strongest 8-card deck possible given the meta AND this agent's proven play style.\n\n"
+        + 'Reply ONLY with minified JSON, no markdown, no reasoning: '
+        + '{"best_deck": ["card1", "card2", "card3", "card4", "card5", "card6", "card7", "card8"], '
+        + '"why": "<25 words>"}\n\n'
+        + "Important: Start your reply with the opening { character immediately."
     )
     try:
         payload = {"model": GROQ_COACH_MODEL,
@@ -382,15 +391,25 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
         return out
     try:
         import re as _re
+        # The coach knows the agent's GAME MEMORY — past performance shapes its advice
+        try:
+            gm = game_memory_digest()
+            gmline = gm.get("one_line", "")
+            best = gm.get("best_spots") or []
+            avoid = gm.get("avoid_spots") or []
+        except Exception:
+            gmline, best, avoid = "", [], []
         prompt = (
             "You are the NeuroML AI Coach for a Clash Royale RL agent. You are both its PUNISHER and its MENTOR.\n"
-            f"Battle state: {state_desc}\n"
-            f"The agent just played: {played_spot}\n"
-            f"Local reward signal was: {prev_reward:+.2f}\n\n"
-            "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
-            '{"reward_delta": <float -1.5..+0.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 20 words, coaching tone: punish mistakes AND teach the fix>"}\n\n'
-            "Rules: defending the threatened lane and not leaking elixir are good; "
-            "playing into the empty lane at max elixir or ignoring a big push is bad.\n"
+            f"Agent's game memory: {gmline or 'no history yet (first games)'}\n"
+            + (f"Spots that historically paid best: {best}\nSpots that historically lost dopamine: {avoid}\n" if best or avoid else "")
+            + f"Battle state: {state_desc}\n"
+            + f"The agent just played: {played_spot}\n"
+            + f"Local reward signal was: {prev_reward:+.2f}\n\n"
+            + "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
+            + '{"reward_delta": <float -1.5..+0.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 20 words, coaching tone: punish mistakes AND teach the fix>"}\n\n'
+            + "Rules: defending the threatened lane and not leaking elixir are good; "
+            + "playing into the empty lane at max elixir or ignoring a big push is bad.\n"
         )
         content = prompt
         # gpt-oss-120b text-only: the structured state_desc already carries full vision
@@ -642,6 +661,81 @@ def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, fini
 # OPPONENT MEMORY — remember what the enemy played, across matches
 # ============================================================
 OPPONENT_MEMORY_FILE = "opponent_memory.json"
+GAME_MEMORY_FILE = "game_memory.json"
+
+
+def _load_game_memory():
+    try:
+        return json.load(open(GAME_MEMORY_FILE))
+    except Exception:
+        return {"matches": [], "spot_ledger": {}, "winrate_history": []}
+
+
+def distill_match(verdict, stats):
+    """Distill a finished match into the long-term memory book — NOT the raw
+    replay, a compressed story: outcome, dopamine total, lanes faced, which
+    spots paid off. This is what the brain 'remembers about games'."""
+    mem = _load_game_memory()
+    matches = mem.setdefault("matches", [])
+    matches.append({
+        "t": time.strftime("%m-%d %H:%M"),
+        "v": verdict,
+        "dop": round(stats.get("reward_total", 0.0), 1),
+        "ticks": stats.get("ticks", 0),
+        "cards": stats.get("cards_played", 0),
+        "pushes_faced": stats.get("pushes_faced", 0),
+        "towers_down": stats.get("towers_down", 0),
+        "towers_lost": stats.get("towers_lost", 0),
+        "rule_corrections": stats.get("rule_corrections", 0),
+    })
+    mem["matches"] = matches[-200:]
+    # Spot ledger: which placements historically earned dopamine
+    ledger = mem.setdefault("spot_ledger", {})
+    for spot, (tot, n) in stats.get("spot_totals", {}).items():
+        cur = ledger.get(spot, [0.0, 0])
+        ledger[spot] = [round(cur[0] + tot, 2), cur[1] + n]
+    recent = mem["matches"][-100:]
+    wins = sum(1 for m in recent if m["v"] == "WIN")
+    mem["winrate_history"] = (mem.get("winrate_history", []) + [wins])[-100:]
+    try:
+        json.dump(mem, open(GAME_MEMORY_FILE, "w"), indent=1)
+    except Exception:
+        return {}
+    return game_memory_digest(mem)
+
+
+def game_memory_digest(mem=None):
+    """Compact human/JSON readable summary of everything remembered."""
+    if mem is None:
+        mem = _load_game_memory()
+    matches = mem.get("matches", [])
+    if not matches:
+        return {"games_remembered": 0}
+    last100 = matches[-100:]
+    wins = sum(1 for m in last100 if m["v"] == "WIN")
+    ledger = mem.get("spot_ledger", {})
+    ranked = sorted(
+        ((s, t / max(1, n)) for s, (t, n) in ledger.items() if n >= 3),
+        key=lambda x: x[1], reverse=True)
+    best = ranked[:2]
+    worst = ranked[-2:]
+    avg_dop = round(sum(m["dop"] for m in last100) / max(1, len(last100)), 2)
+    towers_down = sum(m.get("towers_down", 0) for m in last100)
+    pushes = sum(m.get("pushes_faced", 0) for m in last100)
+    return {
+        "games_remembered": len(matches),
+        "recent_winrate": round(100.0 * wins / max(1, len(last100)), 1),
+        "avg_dopamine_per_match": avg_dop,
+        "best_spots": [(s, round(v, 2)) for s, v in best],
+        "avoid_spots": [(s, round(v, 2)) for s, v in worst if v < 0],
+        "towers_destroyed_recent": towers_down,
+        "enemy_pushes_faced_recent": pushes,
+        "one_line": (
+            f"remembers {len(matches)} games · winrate {round(100.0*wins/max(1,len(last100))):.0f}% last {len(last100)} · "
+            f"plays best: {', '.join(s for s,_ in best[:2]) or 'n/a'} · "
+            f"worst: {', '.join(s for s,_ in worst[:1]) or 'n/a'}"
+        ),
+    }
 
 
 def _load_opponent_memory():
@@ -1274,6 +1368,10 @@ def main():
     cards_played = 0
     mentor_cooldown = 0.0
     opp_memory_store = _load_opponent_memory()
+    game_memory = _load_game_memory()
+    match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
+                   "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
+                   "rule_corrections": 0, "spot_totals": {}}
     opponent = None
     opponent_arena_prev = None
     opponent_towers_prev = None
@@ -1359,6 +1457,9 @@ def main():
                 just_queued = False
                 if opponent is None:
                     opponent = opponent_new_match()
+                    match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
+                                   "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
+                                   "rule_corrections": 0, "spot_totals": {}}
                     log("new opponent tracked (memory persistent across matches)")
                 mlxir = elixir_count(img)
                 lv, rv = lane_variances(img)
@@ -1407,9 +1508,13 @@ def main():
                 spot_n = SPOT_NAMES[spot_i]
                 if rule_note != "net":
                     reward_rules_add = 0.35  # following learned game rules is smart play
+                    match_stats["rule_corrections"] += 1
                     log(f"RULES: {rule_note} slot={slot} spot={spot_n}")
                 else:
                     reward_rules_add = 0.0
+                # game memory: accumulate per-spot dopamine totals
+                _st = match_stats["spot_totals"].setdefault(spot_n, [0.0, 0])
+                match_stats["spot_totals"][spot_n] = [round(_st[0], 3), _st[1] + 1]
 
                 # ---- Compute Dopamine / Punishment Signal ----
                 reward = 0.0
@@ -1433,6 +1538,7 @@ def main():
                         }
                         dmg_punish, dmg_source = groq_damage_punishment(dmg_info, img)
                         reward += dmg_punish
+                        match_stats["towers_lost"] += int(ally_lost)
                         log(
                             f"TOWER DAMAGE TAKEN (drop={ally_drop:.2f}, lost={ally_lost}) "
                             f"-> punishment={dmg_punish:+.2f} via {dmg_source}"
@@ -1445,6 +1551,7 @@ def main():
                     if dmg_punish is None and (enemy_drop >= 0.05 or enemy_lost > 0):
                         enemy_bonus = min(2.0, round(enemy_drop * 2.5 + enemy_lost * 1.2, 2))
                         reward += enemy_bonus
+                        match_stats["towers_down"] += int(enemy_lost)
                         log(f"ENEMY TOWER DAMAGED (drop={enemy_drop:.2f}) -> dopamine +{enemy_bonus:.2f}")
 
                 # ---- RICH DOPAMINE SHAPING ----
@@ -1503,6 +1610,12 @@ def main():
                 time.sleep(0.45)
                 cards_played += 1
                 tick_in_match += 1
+                # game-memory accumulators
+                match_stats["reward_total"] += reward
+                match_stats["ticks"] += 1
+                match_stats["cards_played"] += 1
+                match_stats["pushes_faced"] = len(opponent["pushes"]) if opponent else match_stats["pushes_faced"]
+                match_stats["towers_down"] = match_stats["towers_down"]
                 screenshot_async()  # pipeline: next frame encodes while we think/train
                 log(
                     f"elixir={mlxir} lane={lane} towers_hp=({towers['ally_left']:.2f},{towers['ally_right']:.2f},{towers['ally_king']:.2f}) "
@@ -1698,6 +1811,11 @@ def main():
                 w_, l_ = int(_metrics.get("wins_v", 0)), int(_metrics.get("losses_v", 0))
                 wr = round(100.0 * w_ / max(1, w_ + l_), 1)
                 _metrics["win_rate"] = wr
+                # ---- GAME MEMORY: distill this match into the long-term book ----
+                match_stats["reward_total"] += dopamine
+                dig = distill_match(_verdict, match_stats)
+                _metrics["game_memory"] = dig
+                log(f"GAME MEMORY distilled: {dig.get('one_line', '')}")
                 brain.save()
                 log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
