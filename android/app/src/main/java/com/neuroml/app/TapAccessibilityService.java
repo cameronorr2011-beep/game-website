@@ -46,7 +46,7 @@ public class TapAccessibilityService extends AccessibilityService {
             GestureDescription.Builder b = new GestureDescription.Builder();
             b.addStroke(new GestureDescription.StrokeDescription(p, 0, 55));
             final boolean[] done = {false};
-            s.dispatchGesture(b.build(), new android.accessibilityservice.GestureResultCallback() {
+            s.dispatchGesture(b.build(), new AccessibilityService.GestureResultCallback() {
                 @Override public void onCompleted(GestureDescription g) { done[0] = true; }
                 @Override public void onCancelled(GestureDescription g) { }
             }, null);

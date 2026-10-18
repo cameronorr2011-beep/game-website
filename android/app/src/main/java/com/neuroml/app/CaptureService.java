@@ -58,12 +58,17 @@ public class CaptureService extends Service {
                 (MediaProjectionManager) c.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         if (projection != null) { projection.stop(); releaseDisplay(); }
         try {
+            android.graphics.Point size = new android.graphics.Point();
             android.hardware.display.DisplayManager dm =
                     (android.hardware.display.DisplayManager) c.getSystemService(Context.DISPLAY_SERVICE);
             Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
-            WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
-            int w = Math.min(1080, d.getRealWidth() == 0 ? wm.getDefaultDisplay().getRealWidth() : d.getRealWidth());
-            int h = Math.min(2340, d.getRealHeight() == 0 ? wm.getDefaultDisplay().getRealHeight() : d.getRealHeight());
+            if (d == null) {
+                WindowManager wm = (WindowManager) c.getSystemService(Context.WINDOW_SERVICE);
+                d = wm.getDefaultDisplay();
+            }
+            d.getRealSize(size);
+            int w = Math.min(1080, size.x);
+            int h = Math.min(2340, size.y);
             projection = mgr.getMediaProjection(intent.getIntExtra(EXTRA_RESULT, 0), intent);
             reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
             readerThread = new HandlerThread("neuroml-capture");

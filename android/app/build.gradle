@@ -1,6 +1,6 @@
 plugins {
-    id "com.android.application"
-    id "com.chaquo.python"
+    id "com.android.application" version "7.4.2"
+    id "com.chaquo.python" version "14.0.2"
 }
 
 android {
@@ -15,6 +15,21 @@ android {
         versionName "20.0"
 
         ndk { abiFilters "arm64-v8a" }
+
+        // Chaquopy 14.x DSL: the python {} block lives INSIDE defaultConfig.
+        // (Top-level chaquopy {} only exists from Chaquopy 15.0.)
+        python {
+            version "3.8"
+            // buildPython is Chaquopy's build-tooling interpreter (needs >= 3.10
+            // on CI); the app still targets Python 3.8 above for the torch wheels.
+            buildPython (project.findProperty("chaquopyBuildPython") ?: "python")
+            pip {
+                options("--extra-index-url", "https://chaquo.com/pypi-13.1")
+                install "torch==1.8.1"   // full-size brain runtime (cp38 arm64 Android wheel)
+                install "Pillow"
+                install "numpy"
+            }
+        }
     }
 
     signingConfigs {
@@ -33,22 +48,6 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
         targetCompatibility JavaVersion.VERSION_11
-    }
-}
-
-chaquopy {
-    defaultConfig {
-        version "3.8"
-        // Build手足 interpreter used ONLY for Chaquopy's own tooling (needs >= 3.10);
-        // the app still targets Python 3.8 above. CI passes -PchaquopyBuildPython;
-        // fall back to whatever python is on PATH for local builds.
-        buildPython (project.findProperty("chaquopyBuildPython") ?: "python")
-        pip {
-            options("--extra-index-url", "https://chaquo.com/pypi-13.1")
-            install "torch==1.8.1"   // full-size brain runtime (cp38 arm64 Android wheel)
-            install "Pillow"
-            install "numpy"
-        }
     }
 }
 
