@@ -1042,6 +1042,42 @@ SPOT_TO_ACTION.update({n: i for i, n in enumerate(SPOT_NAMES)})
 # sensitivity-reduced after painful outcomes, so the same mistake fires less.
 # Analogy: long-term depression (LTD) at the synaptic channel level.
 # ============================================================
+# ============================================================
+# REWARD LEDGER helpers (spec §4): every contribution to the final reward is
+# logged; the per-tick net is the SUM of components — never a censoring min().
+# ============================================================
+
+def reward_totals_update(totals, events, dmg_punish=None):
+    """Aggregate per-event reward components into running totals. Returns the
+    same dict mutated. Tower damage is always recorded under its own key so
+    simultaneous good+bad events both appear (no censoring, no double-count:
+    each event row contributes exactly once)."""
+    for e, r in events:
+        if r != 0.0:
+            totals[e] = round(totals.get(e, 0.0) + r, 2)
+    if dmg_punish:
+        totals["ALL TOWER DAMAGE"] = round(totals.get("ALL TOWER DAMAGE", 0.0) + dmg_punish, 2)
+    return totals
+
+
+def seed_lifetime_record(metrics, mem=None):
+    """Seed the W/L record from the durable game-memory book so the dashboard
+    win/loss record survives restarts (fixes the 'session-only 100%' error).
+    Returns the number of verdict-bearing matches found."""
+    if mem is None:
+        mem = _load_game_memory()
+    ms = [m for m in mem.get("matches", []) if m.get("v") in ("WIN", "LOSS")]
+    w = sum(1 for m in ms if m["v"] == "WIN")
+    l = len(ms) - w
+    metrics["wins_v"] = w
+    metrics["losses_v"] = l
+    metrics["win_rate"] = round(100.0 * w / max(1, w + l), 1)
+    metrics["win_history"] = [1 if m["v"] == "WIN" else 0 for m in ms[-60:]]
+    metrics["lifetime_games"] = len(ms)
+    metrics["record_source"] = "game_memory.json lifetime record (seeded at startup)"
+    return len(ms)
+
+
 PAIN_FILE = "pain_channels.json"
 
 def _load_pain_channels():
@@ -1081,6 +1117,26 @@ def record_pain(ch, slot, spot, reward):
     return ch
 
 
+# ---------------------- CONFIGURABLE REWARD WEIGHTS (spec §4) ----------------------
+# Every shaped dopamine term lives here so the reward function can be tuned
+# without touching the loop. All values are dopamine units per event.
+REWARD_WEIGHTS = {
+    "correct_lane_defense": 0.8,
+    "spent_at_max_elixir": 0.4,
+    "elixir_economy_9plus": 0.25,
+    "counterpush_opposite_lane": 0.6,
+    "tower_advantage_held": 0.3,
+    "game_rule_followed": 0.35,
+    "enemy_troop_kill_per_px": 0.1,
+    "enemy_troop_kill_cap": 1.5,
+    "spell_connected": 0.3,
+    "spell_wasted": -1.2,
+    "wrong_lane_defense": -0.6,
+    "leak_per_tick": 0.1,
+    "cycling_amnesty": 0.15,
+    "play_with_no_threat": -0.2,
+    "tower_lost_per_tower": -2.5,
+}
 PAIN_VETO_THRESHOLD = -0.55   # avg channel pain beyond this = behavioral doubt
 
 def pain_forbidden(ch, slot, spot, net_q):
@@ -1915,12 +1971,20 @@ def main():
     prev_towers = None
     elixir_leak_ticks = 0
     last_spell_played = None
+    _pred_prev = None
+    _pred_mae = {"tower_hp_mae": 0.0, "elixir_mae": 0.0, "n": 0}
     _finisher_cast = False
     train_loss_ma = None
     cards_played = 0
     mentor_cooldown = 0.0
     opp_memory_store = _load_opponent_memory()
     game_memory = _load_game_memory()
+    # LIFETIME RECORD SEED: the W/L counters start from the durable game-memory
+    # book instead of from zero on every restart (dashboard honesty fix).
+    _seeded = seed_lifetime_record(_metrics, game_memory)
+    if _seeded:
+        log(f"lifetime record seeded: {_metrics['wins_v']}-{_metrics['losses_v']} "
+            f"over {_seeded} tracked matches ({_metrics['win_rate']}%)")
     match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
                    "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
                    "rule_corrections": 0, "spot_totals": {}}
@@ -1958,6 +2022,10 @@ def main():
 
             # ---- gate passed: USER opened Clash — play ----
             png = screenshot()
+            png_ts = os.path.getmtime(png) if os.path.exists(png) else time.time()
+            obs_age = time.time() - png_ts
+            _metrics["observation_ts"] = round(png_ts, 2)
+            _metrics["observation_age_ms"] = round(obs_age * 1000, 0)
             from PIL import Image
             img = Image.open(png).convert("RGB")
             state = classify(img)
@@ -1994,6 +2062,14 @@ def main():
                 stuck_since = None
                 back_streak = 0
                 just_queued = False
+                if obs_age > 12.0:
+                    # STALE OBSERVATION GUARD (spec P1§1): an old frame is not
+                    # a battlefield — acting on it would tap blind into the
+                    # past. Skip the shot; the screencap refreshes next loop.
+                    log(f"stale observation ({obs_age:.1f}s old > 12s) — skip shot")
+                    _metrics["stale_observations"] = int(_metrics.get("stale_observations", 0)) + 1
+                    time.sleep(1.0)
+                    continue
                 if opponent is None:
                     opponent = opponent_new_match()
                     match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
@@ -2006,6 +2082,35 @@ def main():
                 towers = tower_healths(img)
                 arena = scan_arena_vision(img)
                 afford = hand_affordability(img, mlxir)
+
+                # ---- PREDICTIVE WORLD MODEL (one-tick horizon, honestly
+                # scored): the model persists tower HP (nothing changed it) and
+                # regenerates elixir (~0.7/tick); the NEXT tick's observation
+                # is scored against it so prediction error is real data. ----
+                _pn = _pred_mae["n"] + 1
+                if _pred_prev is not None:
+                    pe_tower = (abs(towers["ally_left"] - _pred_prev["ally_left"]) +
+                                abs(towers["ally_right"] - _pred_prev["ally_right"]) +
+                                abs(towers["enemy_left"] - _pred_prev["enemy_left"]) +
+                                abs(towers["enemy_right"] - _pred_prev["enemy_right"]))
+                    pe_elixir = abs(min(10, max(0, mlxir)) - _pred_prev["elixir"])
+                    _pred_mae["tower_hp_mae"] = round(
+                        _pred_mae["tower_hp_mae"] * (1 - 1 / _pn) + pe_tower / _pn, 4)
+                    _pred_mae["elixir_mae"] = round(
+                        _pred_mae["elixir_mae"] * (1 - 1 / _pn) + pe_elixir / _pn, 4)
+                    _pred_mae["n"] = _pn
+                    _metrics["prediction"] = {
+                        "horizon_ticks": 1,
+                        "n_scored": _pn,
+                        "predictedTowerHP": {k: round(v, 3) for k, v in _pred_prev.items() if k != "elixir"},
+                        "tower_hp_mae": _pred_mae["tower_hp_mae"],
+                        "elixir_mae": _pred_mae["elixir_mae"],
+                    }
+                _pred_prev = {
+                    "ally_left": towers["ally_left"], "ally_right": towers["ally_right"],
+                    "enemy_left": towers["enemy_left"], "enemy_right": towers["enemy_right"],
+                    "elixir": min(10, mlxir + 0.7),
+                }
 
                 if arena["enemy_left"] > arena["enemy_right"] + 4 or arena["enemy_bridge_l"] >= 3:
                     lane = "left"
@@ -2054,11 +2159,27 @@ def main():
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
                 if rule_note != "net":
-                    reward_rules_add = 0.35  # following learned game rules is smart play
+                    reward_rules_add = REWARD_WEIGHTS["game_rule_followed"]
                     match_stats["rule_corrections"] += 1
                     log(f"RULES: {rule_note} slot={slot} spot={spot_n}")
                 else:
                     reward_rules_add = 0.0
+                # ---- DECISION PROVENANCE (who chose this play, and why): the
+                # policy may be overridden by the rules referee, the pain
+                # channels, the prefrontal vetoes or an unaffordable-slot mask
+                # — the final choice is always recorded with its origin so no
+                # component can silently select an action. ----
+                _metrics["decision"] = {
+                    "t": time.strftime("%H:%M:%S"),
+                    "action": f"slot{slot}.{spot_n}",
+                    "origin": ("dqn_policy" if rule_note == "net" and not spike_agent.vetoed
+                               else "rules_referee" if rule_note != "net"
+                               else "prefrontal_veto"),
+                    "rule_note": rule_note,
+                    "masked_actions": int(_metrics.get("masked_actions", 0) or len(forbidden)),
+                    "vetoed_actions": sorted(spike_agent.vetoed),
+                    "elixir": mlxir, "lane": lane,
+                }
                 # game memory: accumulate per-spot dopamine totals
                 _st = match_stats["spot_totals"].setdefault(spot_n, [0.0, 0])
                 match_stats["spot_totals"][spot_n] = [round(_st[0], 3), _st[1] + 1]
@@ -2089,12 +2210,12 @@ def main():
                         _hit_tower = (_el_tower_drop + _er_tower_drop) >= 0.03
                         if _hit_units or _hit_tower or _finisher_cast:
                             _v = "damaged units" if _hit_units else ("chipped enemy tower" if _hit_tower else "finisher attempt")
-                            _bonus = 0.3
+                            _bonus = REWARD_WEIGHTS["spell_connected"]
                             reward += _bonus
                             _events.append((f"✨ spell connected: {_v}", _bonus))
                             log(f"SPELL VALUE: {_spell_name} {_v} -> +{_bonus:.2f}")
                         else:
-                            _punish = -1.2
+                            _punish = REWARD_WEIGHTS["spell_wasted"]
                             record_pain(pain_channels, _slot_i, _spot_i, _punish)
                             _save_pain_channels(pain_channels)
                             reward += _punish
@@ -2140,31 +2261,34 @@ def main():
                 # ---- RICH DOPAMINE SHAPING (each item logged as its OWN
                 # dopamine event so the feed never shows a bad behavior green) ----
                 # (_events was created above for spell tracking — reuse it)
-                if dmg_punish is None:
+                # SIMULTANEOUS ACCOUNTING (spec §4): reward shaping runs on BOTH
+                # tower-hit and clean ticks; the damage punishment is then ADDED
+                # on top so neither signal is ever censored or double-counted.
+                if True:
                     # 1) correct-lane defense
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.8
-                            _events.append(("✅ correct lane defense", 0.8))
+                            reward += REWARD_WEIGHTS["correct_lane_defense"]
+                            _events.append(("✅ correct lane defense", REWARD_WEIGHTS["correct_lane_defense"]))
                     # 2) spend at max elixir
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
-                        reward += 0.4
-                        _events.append(("✅ spent at max elixir", 0.4))
+                        reward += REWARD_WEIGHTS["spent_at_max_elixir"]
+                        _events.append(("✅ spent at max elixir", REWARD_WEIGHTS["spent_at_max_elixir"]))
                     # 3) elixir discipline: playing at 9-10 elixir is good economy
                     if mlxir >= 9:
-                        reward += 0.25
-                        _events.append(("✅ elixir economy (played at 9+)", 0.25))
+                        reward += REWARD_WEIGHTS["elixir_economy_9plus"]
+                        _events.append(("✅ elixir economy (played at 9+)", REWARD_WEIGHTS["elixir_economy_9plus"]))
                     # 4) proactive counter-push: attacking the opposite lane when enemy commits
                     if arena["enemy_left"] + arena["enemy_right"] >= 8 and "bridge" in spot_n:
                         opposite = arena["enemy_right"] if arena["enemy_left"] >= arena["enemy_right"] else arena["enemy_left"]
                         if opposite <= 2:
-                            reward += 0.6
-                            _events.append(("✅ counter-push other lane", 0.6))
+                            reward += REWARD_WEIGHTS["counterpush_opposite_lane"]
+                            _events.append(("✅ counter-push other lane", REWARD_WEIGHTS["counterpush_opposite_lane"]))
                     # 5) counter-threshold rewards (visible dopamine when ahead)
                     if towers["enemy_alive"] < towers["ally_alive"]:
-                        reward += 0.3
-                        _events.append(("✅ tower advantage held", 0.3))
+                        reward += REWARD_WEIGHTS["tower_advantage_held"]
+                        _events.append(("✅ tower advantage held", REWARD_WEIGHTS["tower_advantage_held"]))
                     # 6) RULES dopamine: playing by the law of the game is rewarded
                     if reward_rules_add:
                         reward += reward_rules_add
@@ -2175,18 +2299,28 @@ def main():
                     e_units_now = arena["enemy_left"] + arena["enemy_right"]
                     e_death = max(0, e_units_prev - e_units_now)
                     if e_death >= 4:
-                        kill_dopamine = min(1.5, round(e_death * 0.1, 2))
+                        kill_dopamine = min(REWARD_WEIGHTS["enemy_troop_kill_cap"], round(e_death * REWARD_WEIGHTS["enemy_troop_kill_per_px"], 2))
                         reward += kill_dopamine
                         _events.append((f"💀 killed {e_death}px of enemy troops", kill_dopamine))
                         log(f"ENEMY TROOPS KILLED ({e_death}px bars fell) -> dopamine +{kill_dopamine:.2f}")
-                else:
-                    reward = min(reward, dmg_punish)
-                    _events.append(("🛑 my tower took damage", dmg_punish))
-                    _events.append(("⛔ good events censored — tower damage dominates this tick", 0.0))
+                if dmg_punish is not None:
+                    # the damage punishment STACKS on the earned shaping above
+                    reward += dmg_punish
+                    _events.append(("\U0001f6d1 my tower took damage", dmg_punish))
                     # SYNAPTIC PAIN: this (slot,spot) channel gets an LTD tag —
                     # repeating the same play will hurt more and be avoided sooner.
                     record_pain(pain_channels, slot, spot_i, dmg_punish)
                     _save_pain_channels(pain_channels)
+
+                # ---- REWARD LEDGER: every component of this tick's reward in
+                # the machine ledger + team-total aggregates (no censoring) ----
+                _rl = _metrics.setdefault("reward_ledger", [])
+                _comp = [{"e": e, "r": round(r_, 3)} for e, r_ in _events if r_ != 0.0]
+                _rl.append({"t": time.strftime("%H:%M:%S"), "spot": spot_n,
+                            "components": _comp, "net": round(reward, 3),
+                            "tower_damage": dmg_punish})
+                _metrics["reward_ledger"] = _rl[-60:]
+                reward_totals_update(_metrics.setdefault("reward_totals", {}), _events, dmg_punish)
 
                 # ---- PUNISHMENTS (always their OWN negative event, never green) ----
                 # CYCLING AMNESTY: leaking while deliberately cycling cheap cards
@@ -2195,29 +2329,30 @@ def main():
                 cheap_in_hand = sum(1 for i in range(4) if state_s[7 + i] > 0.5) >= 2
                 cycling_ok = leaking and cheap_in_hand and not lane
                 if mlxir <= 2 and lane is None:
-                    reward -= 0.2
-                    _events.append(("🔻 wasted elixir nowhere (played with no threat)", -0.2))
+                    reward += REWARD_WEIGHTS["play_with_no_threat"]
+                    _events.append(("🔻 wasted elixir nowhere (played with no threat)", REWARD_WEIGHTS["play_with_no_threat"]))
                 if leaking and not cycling_ok:
                     elixir_leak_ticks += 1
-                    leak_punish = 0.1 * elixir_leak_ticks
+                    leak_punish = REWARD_WEIGHTS["leak_per_tick"] * elixir_leak_ticks
                     reward -= leak_punish
                     _events.append((f"💧 ELIXIR LEAK #{elixir_leak_ticks}", -leak_punish))
                 elif leaking and cycling_ok:
                     elixir_leak_ticks = 0
-                    _events.append(("♻️ cycling cheap cards at max elixir (allowed)", 0.15))
+                    _events.append(("♻️ cycling cheap cards at max elixir (allowed)", REWARD_WEIGHTS["cycling_amnesty"]))
                 else:
                     elixir_leak_ticks = 0
                 # dropped tower this tick = pure red event even if kills happened
                 if prev_towers is not None:
                     _tl = max(0, prev_towers["ally_alive"] - towers["ally_alive"])
                     if _tl > 0:
-                        _events.append((f"💀 LOST {_tl} TOWER(S)", -2.5 * _tl))
-                # incorrect lane defense = red
-                if lane and dmg_punish is None:
+                        _events.append((f"💀 LOST {_tl} TOWER(S)", REWARD_WEIGHTS["tower_lost_per_tower"] * _tl))
+                # incorrect lane defense = red (still valid on tower-hit ticks:
+                # the defender's CHOICE not to defend the lane is a real error)
+                if lane:
                     if (lane == "left" and spot_n in ("right_defend", "bridge_right")) or \
                        (lane == "right" and spot_n in ("left_defend", "bridge_left")):
-                        reward -= 0.6
-                        _events.append(("❌ defended the WRONG lane", -0.6))
+                        reward += REWARD_WEIGHTS["wrong_lane_defense"]
+                        _events.append(("❌ defended the WRONG lane", REWARD_WEIGHTS["wrong_lane_defense"]))
 
                 # Humanized swipe: tiny jitter on start point + variable duration
                 jx = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)

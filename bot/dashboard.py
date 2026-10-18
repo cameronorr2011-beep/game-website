@@ -90,11 +90,16 @@ canvas{width:100%;height:130px;margin:4px 0}
         <div><span>LOSS (MA)</span><span id="k_loss">-</span></div>
         <div><span>TD ERROR</span><span id="k_td">-</span></div>
         <div><span>BUFFER</span><span id="k_buf">-</span></div>
-        <div><span>WIN RATE</span><span id="k_wr">-</span></div>
+        <div><span>WIN RATE (lifetime)</span><span id="k_wr">-</span></div>
       </div>
+      <div id="record_meta" style="font-size:10px;color:var(--dim);margin:4px 0">-</div>
       <h2 style="font-size:12px;color:var(--dim)">LOSS CURVE</h2><canvas id="c_loss" width=780 height=130></canvas>
       <h2 style="font-size:12px;color:var(--dim)">EXTREME REWARD HISTORY (tower dmg / wins / losses)</h2><canvas id="c_rw" width=780 height=130></canvas>
-      <h2 style="font-size:12px;color:var(--dim)">WIN / LOSS RECORD (last 60)</h2><div class="wl" id="wl"></div>
+      <h2 style="font-size:12px;color:var(--dim)">WIN / LOSS RECORD (lifetime, last 60 — green=win, red=loss)</h2><div class="wl" id="wl"></div>
+      <h2 style="font-size:12px;color:var(--dim);margin-top:8px">REWARD LEDGER (every contribution the brain logged, aggregated)</h2>
+      <div id="ledger" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)">waiting for first battle tick…</div>
+      <div id="decision_meta" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">decision provenance waits for the next tick…</div>
+      <div id="prediction" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">prediction telemetry waits for a validated tick…</div>
     </div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">WHAT THE MODEL IS THINKING (live equations)</h2>
       <div class="eq" id="eq">waiting for first battle tick…</div></div>
@@ -156,6 +161,7 @@ try{
  k_loss.textContent=m.losses&&m.losses.length?m.losses[m.losses.length-1].toFixed(4):'-';
  k_td.textContent=m.td_errors&&m.td_errors.length?m.td_errors[m.td_errors.length-1].toFixed(3):'-';
  k_wr.textContent=(m.win_rate!=null?m.win_rate+'%':'-');
+ if(m.record_source){document.getElementById('record_meta').textContent=m.record_source+' · lifetime '+m.wins_v+'-'+m.losses_v;}else{document.getElementById('record_meta').textContent='lifetime counters seeding — first match-end flush';}
  const erk=document.getElementById('k_wr');erk.style.color=(m.win_rate>=50?'#3fb950':'#f85149');
  line(c_loss,m.losses&&m.losses.slice(-120),'#3fb950');
  const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d29922');
@@ -197,6 +203,15 @@ try{
   '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
   '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85149">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
   '<div style="margin-top:4px;color:#8b949e">'+gm.towers_destroyed_recent+' towers destroyed · '+gm.enemy_pushes_faced_recent+' pushes faced recently</div>'}
+ if(m.reward_totals){const rt=m.reward_totals;const top=Object.entries(rt).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,9);
+  document.getElementById('ledger').innerHTML=top.map(([e,v])=>{const c=v>0?'#3fb950':(v<0?'#f85149':'#8b949e');
+   return '<div style="display:flex;gap:6px;margin:1px 0"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e+'</span><b style="color:'+c+'">'+(v>0?'+':'')+v+'</b></div>'}).join('')}
+ if(m.decision){const d=m.decision;const oc=d.origin==='rules_referee'?'#d29922':(d.origin==='prefrontal_veto'?'#f85149':'#58a6ff');
+  document.getElementById('decision_meta').innerHTML='chosen <b style="color:'+oc+'">'+d.action+'</b> by <b style="color:'+oc+'">'+d.origin+'</b>'+
+   (d.rule_note&&d.rule_note!=='net'?' · rule: '+d.rule_note:'')+' · masked '+d.masked_actions+' · vetoes '+(d.vetoed_actions||[]).length+' · elixir '+d.elixir+' · lane '+(d.lane||'-')}
+ if(m.prediction){const p=m.prediction;document.getElementById('prediction').innerHTML=
+  'world model ('+p.n_scored+' scored ticks, 1-tick horizon): tower-HP MAE <b>'+p.tower_hp_mae+'</b> · elixir MAE <b>'+p.elixir_mae+'</b>'+
+  (p.predictedTowerHP?' · predicted L/R towers <b>'+p.predictedTowerHP.enemy_left+'/'+p.predictedTowerHP.enemy_right+'</b> vs observed next tick':'')}
  if(m.thinking){
  eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\n target = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\n chosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\n top3 = ${JSON.stringify(m.thinking.q_values_top3)}\n ${m.thinking.equation}\n ${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
