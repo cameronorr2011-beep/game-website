@@ -53,9 +53,11 @@ canvas{width:100%;height:130px;margin:4px 0}
 .wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
 .pill{display:inline-block;background:#212a35;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px}
 .dopa{height:230px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
-.dopa div{display:flex;justify-content:space-between;padding:3px 6px;border-bottom:1px solid #1d2530;border-radius:4px}
+.dopa div{display:flex;align-items:center;gap:6px;padding:3px 6px;border-bottom:1px solid #1d2530;border-radius:4px}
 .dopa div:nth-child(odd){background:#141a22}
+.dopa .bar{display:inline-block;height:9px;border-radius:2px;min-width:2px}
 .dopa .pos{color:var(--ok);font-weight:800}.dopa .neg{color:var(--bad);font-weight:800}
+.painlist div{padding:2px 6px;font-size:11px;font-family:Consolas,monospace;color:#f0883e}
 .dopa .ev{color:var(--txt);flex:1;margin-left:8px}.dopa .t{color:var(--dim);width:70px}
 .dopa .big{font-size:13px;border-left:3px solid var(--yel)}
 .opp{font-size:12px;color:var(--dim)}.opp b{color:var(--txt)}
@@ -73,6 +75,8 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div id="vision" style="font-size:12px;color:var(--dim)">waiting…</div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">⚡ LIVE DOPAMINE FEED (events as they hit the brain)</h2>
       <div class="dopa" id="dopa"><div style="color:var(--dim)">waiting for first reward…</div></div>
+      <div style="font-size:10px;color:var(--dim);margin:4px 0 2px">bars scale to the largest |dopamine| in view — red = punishment, gold = pain memory</div>
+      <div class="painlist" id="painlist"></div>
       <div class="rules"><b style="color:var(--yel)">GAME RULES the brain is taught:</b>
         <li>⚔️ spell finisher → enemy tower ≤32% HP gets shot, not dropped at bridge</li>
         <li>🛡️ commit discipline → never bridge-drop tanks without support elixir</li>
@@ -155,7 +159,12 @@ try{
    const w=Math.round(4+Math.abs(v)/mx*36);
    return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0"><span style="width:88px;color:'+(v>=0?'#3fb950':'#f85149')+'">'+nm+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+(v>=0?'#3fb950':'#f85149')+';border-radius:2px"></span><b style="color:#e6edf3">'+v.toFixed(2)+'</b></div>'}).join('')}
  if(m.dopamine_events&&m.dopamine_events.length){const de=document.getElementById('dopa');
-  de.innerHTML=m.dopamine_events.slice(-40).reverse().map(e=>'<div'+(Math.abs(e.amount)>=3?' class="big"':'')+'><span class="t">'+e.t+'</span><span class="ev">'+e.event+'</span><span class="'+(e.amount>=0?'pos':'neg')+'">'+(e.amount>=0?'+':'')+e.amount+'</span></div>').join('')}
+  const view=m.dopamine_events.slice(-40);const mx=Math.max(1,...view.map(e=>Math.abs(e.amount)));
+  de.innerHTML=view.reverse().map(e=>{const w=Math.max(2,Math.round(Math.abs(e.amount)/mx*Math.min(120,de.clientWidth*0.18)));
+   const col=e.amount>0?'#3fb950':(e.amount<0?'#f85149':'#d29922');
+   return '<div><span class="t">'+e.t+'</span><span class="bar" style="width:'+w+'px;background:'+col+'"></span><span class="ev">'+e.event+'</span><span class="'+(e.amount>=0?'pos':'neg')+'">'+(e.amount>=0?'+':'')+e.amount+'</span></div>'}).join('')}
+ if(m.pain_channels_top&&m.pain_channels_top.length){const pl=document.getElementById('painlist');
+  pl.innerHTML='Σ pain memory (LTD): '+m.pain_channels_top.map(p=>'<div>channel '+p.slot+','+p.spot+' avg '+p.avg+'</div>').join('')}
  if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}
  if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
   '<div style="font-size:20px;font-weight:800;color:#d29922">'+gm.games_remembered+' games remembered</div>'+

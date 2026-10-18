@@ -373,13 +373,12 @@ def groq_deck_builder(player_deck=None):
         return {"deck": None, "critique": f"architect unavailable: {err}", "source": "groq_unavailable"}
 
 
-def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
-    """The Groq OSS model acts simultaneously as PUNISHER and MENTOR.
-    PUNISHER: returns reward_delta (negative or small positive) that is ADDED
-      to the dopamine signal for the move.
-    MENTOR: returns recommended_spot + critique. The recommended action is
-      remembered in the replay buffer as an imitation memory (mentor loss) so
-      the Q-network learns to agree with the coach over time.
+def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
+    """GROQ IS THE REWARD GOVERNOR ON EVERY TICK: it gets the FULL CONTEXT
+    (elixir, towers, HP-mass, lane threats, desperation, hand, opponent pushes,
+    pain channels, game memory) and decides the final dopamine with that
+    context — fixing flat shaped rewards that punish e.g. casts that look bad
+    but were NECESSARY at low tower HP (desperation rocket on a cheap barrel).
     Returns dict: {agree, reward_delta, recommended_spot, critique, source}
     """
     out = {"agree": None, "reward_delta": None, "recommended_spot": None,
@@ -400,16 +399,25 @@ def groq_mentor_review(state_desc, played_spot, prev_reward, img=None):
         except Exception:
             gmline, best, avoid = "", [], []
         prompt = (
-            "You are the NeuroML AI Coach for a Clash Royale RL agent. You are both its PUNISHER and its MENTOR.\n"
+            "You are NeuroML's REWARD GOVERNOR for a Clash Royale RL agent."
+            " You judge every single play with FULL CONTEXT and assign the final dopamine.\n"
             f"Agent's game memory: {gmline or 'no history yet (first games)'}\n"
             + (f"Spots that historically paid best: {best}\nSpots that historically lost dopamine: {avoid}\n" if best or avoid else "")
-            + f"Battle state: {state_desc}\n"
+            + f"FULL CONTEXT: {state_desc}\n"
             + f"The agent just played: {played_spot}\n"
-            + f"Local reward signal was: {prev_reward:+.2f}\n\n"
+            + f"Local shaped reward was: {prev_reward:+.2f}\n\n"
             + "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
-            + '{"reward_delta": <float -1.5..+0.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 20 words, coaching tone: punish mistakes AND teach the fix>"}\n\n'
-            + "Rules: defending the threatened lane and not leaking elixir are good; "
-            + "playing into the empty lane at max elixir or ignoring a big push is bad.\n"
+            + '{"reward_delta": <float -2.5..+1.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 22 words>"}\n\n'
+            + "JUDGMENT PRINCIPLES:\n"
+            + "- Desperation is allowed: at low king-HP or against a pushed-away tower,"
+            + " expensive spells at cheap troops CAN be correct — judge by necessity, not by elixir math alone.\n"
+            + "- Punish wasting elixir on nothing (hits empty lane, overdefense of a single cheap troop).\n"
+            + "- Reward counter-pushes (attacking the lane the enemy did NOT commit to).\n"
+            + "- Reward targeting the LOWER-HP enemy tower for finishing pressure.\n"
+            + "- Reward kiting: cheap troops placed center to drag heavy attackers away.\n"
+            + "- DO NOT punish cheap-card cycling when up on elixir and no threat.\n\n"
+            + "You MUST judge differently when the context changes — an identical play can be genius"
+            + " at 1 tower HP or terrible at full towers.\n"
         )
         content = prompt
         # gpt-oss-120b text-only: the structured state_desc already carries full vision
@@ -532,6 +540,30 @@ def tower_healths(img):
     }
 
 
+COUNTER_TABLE = {
+    # card -> cards that BEAT it for less elixir (positive elixir trade)
+    "valkyrie": ["minipekka", "musketeer", "archers"],
+    "giant": ["minipekka", "cannon", "tesla", "skeletons"],
+    "hogrider": ["cannon", "tesla", "valkyrie", "skeletons"],
+    "minipekka": ["skeletons", "cannon"],
+    "musketeer": ["skeletons", "fireball"],
+    "knight": ["minipekka", "musketeer"],
+    "archers": ["fireball", "arrows"],
+    "wizard": ["fireball", "skeletons"],
+    "minions": ["arrows", "zap", "musketeer"],
+    "bomber": ["fireball"],
+    "balloon": ["musketeer", "archers", "tesla"],
+    "prince": ["skeletons", "minions"],
+}
+AIR_UNITS = {"minions", "balloon", "baby_dragon", "mega_minion", "bats"}
+
+
+def counters_available(hand_deck, threat_name):
+    """Returns which slots in hand hold a card that counters the threat."""
+    good = COUNTER_TABLE.get(threat_name.lower(), [])
+    return [i for i, c in enumerate(hand_deck) if c in good]
+
+
 def scan_arena_vision(img):
     """Full-vision scan of active troop/building health bars across the arena."""
     enemy_left = 0
@@ -557,6 +589,13 @@ def scan_arena_vision(img):
                     ally_left += 1
                 else:
                     ally_right += 1
+    # air detection: flying units have no shadow band
+    air = 0
+    for y in range(480, 1650, 10):
+        for x in range(150, 950, 10):
+            r, g, b = img.getpixel((x, y))
+            if r > 175 and g > 175 and b > 120 and g - r < 25 and b - g < 25:
+                air += 1
     return {
         "enemy_left": enemy_left,
         "enemy_right": enemy_right,
@@ -564,6 +603,12 @@ def scan_arena_vision(img):
         "enemy_bridge_r": enemy_bridge_r,
         "ally_left": ally_left,
         "ally_right": ally_right,
+        "air_threat": air,
+        # HP-mass proxy: bigger bar areas ≈ tank champions; counters/kite decisions use this
+        "enemy_hp_mass_l": round(enemy_left * 2.6, 1),
+        "enemy_hp_mass_r": round(enemy_right * 2.6, 1),
+        "ally_hp_mass_l": round(ally_left * 2.6, 1),
+        "ally_hp_mass_r": round(ally_right * 2.6, 1),
     }
 
 
@@ -838,7 +883,62 @@ def classify(img):
     return "unknown"
 
 
-def lane_variances(img):
+HIPPOCAMPUS_FILE = "hippocampus.jsonl"
+_hippo_lock = threading.Lock()
+
+def hippocampal_write(entry):
+    """Long-term memory archive: append every rich transition to a monotonic
+    .jsonl. Unlike ml_replay.json (bounded), this grows unbounded — it is the
+    path to GB-scale memory. Read back with random retrievals when training."""
+    try:
+        with _hippo_lock:
+            with open(HIPPOCAMPUS_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+def hippocampal_sample(k=32):
+    """Randomly sample k past experiences from the archive for consolidation
+    (like pamięci sleep replay). Falls back silently when the file is small."""
+    try:
+        import random as _r
+        with _hippo_lock:
+            size = os.path.getsize(HIPPOCAMPUS_FILE)
+            with open(HIPPOCAMPUS_FILE, "rb") as f:
+                picks = []
+                for _ in range(k):
+                    pos = max(0, _r.randrange(int(size * 0.9)))
+                    f.seek(pos)
+                    f.readline()   # partial line
+                    line = f.readline()
+                    if line:
+                        picks.append(json.loads(line))
+                return picks
+    except Exception:
+        return []
+
+
+def judge_match_result(img):
+    """AUTHORITATIVE WIN/LOSS judge: reads the crown ribbon strip across THREE
+    y-bands and the score strip; the winner's ribbon is BRIGHT SATURATED color
+    while the loser's is desaturated/dark. Requires a clear margin; defaults to
+    LOSS when unclear (a false WIN poisons the reward signal far worse)."""
+    bands = [(y0, [(x, y) for y in range(y0, y0 + 40, 8) for x in range(200, 880, 40)])
+             for y0 in (1370, 1410, 1450)]
+    reds, blues = 0, 0
+    for _, cells in bands:
+        for (x, y) in cells:
+            r, g, b = img.getpixel((x, y))
+            sat = max(r, g, b) - min(r, g, b)
+            if r > 140 and sat > 60 and r > b + 30:
+                reds += 1
+            elif b > 140 and sat > 60 and b > r + 30:
+                blues += 1
+    if reds >= blues + 8:
+        return "LOSS"     # red ribbon dominates = we lost
+    if blues >= reds + 8:
+        return "WIN"
+    return "LOSS"         # unclear → never claim a false win
     """Fast lane variance on a downsampled crop (抽样 40×80 grid instead of full 400×400).
     ~6ms instead of ~600ms."""
     import statistics
@@ -885,6 +985,50 @@ OPPONENT_VOCAB = [
 ]
 
 SPOT_TO_ACTION.update({n: i for i, n in enumerate(SPOT_NAMES)})
+
+
+# ============================================================
+# SYNAPTIC PAIN CHANNELS — Hebbian tags on (card_slot, spot) that get
+# sensitivity-reduced after painful outcomes, so the same mistake fires less.
+# Analogy: long-term depression (LTD) at the synaptic channel level.
+# ============================================================
+PAIN_FILE = "pain_channels.json"
+
+def _load_pain_channels():
+    try:
+        return {(int(k.split(',')[0]), int(k.split(',')[1])): float(v)
+                for k, v in json.load(open(PAIN_FILE)).items()}
+    except Exception:
+        return {}
+
+def _save_pain_channels(ch):
+    try:
+        json.dump({f"{k[0]},{k[1]}": round(v, 3) for k, v in list(ch.items())[-400:]},
+                  open(PAIN_FILE, "w"))
+    except Exception:
+        pass
+
+def pain_stimulus(base_reward, slot, spot, pain_channels):
+    """Pain gate: a channel that recently averaged strongly negative gets its
+    baseline activation scaled down (like LTD), so repeat mistakes feel more
+    painful AND fire less. Returns (effective_reward, pain_event_or_None)."""
+    key = (slot, spot)
+    historic = pain_channels.get(key)
+    if historic is None:
+        return base_reward, None
+    pain_factor = min(1.0, max(0.25, 1.0 + historic / 8.0))   # deep pain → up to ×4 sensitivity
+    if pain_factor < 0.99 and base_reward < -0.05:
+        boosted = base_reward / pain_factor
+        label = f"🔥 PAIN channel {slot},{spot} (avg {historic:+.1f}) amplifies this mistake"
+        return boosted, (label, boosted - base_reward)
+    return base_reward, None
+
+def record_pain(ch, slot, spot, reward):
+    """EMA update of the channel's pain memory each tick it fires."""
+    key = (slot, spot)
+    old = ch.get(key, 0.0)
+    ch[key] = old * 0.92 + reward * 0.08
+    return ch
 
 
 def q_state_fired(q_state):
@@ -1479,6 +1623,7 @@ def main():
     opponent_towers_prev = None
     last_fg_note = 0.0
     user_saw_clash = None
+    pain_channels = _load_pain_channels()
 
     while True:
         try:
@@ -1635,6 +1780,8 @@ def main():
                             log(f"SPELL VALUE: {_spell_name} {_v} -> +{_bonus:.2f}")
                         else:
                             _punish = -1.2
+                            record_pain(pain_channels, _slot_i, _spot_i, _punish)
+                            _save_pain_channels(pain_channels)
                             reward += _punish
                             _events.append((f"🚫 WASTED SPELL {_spell_name} — hit nothing", _punish))
                             log(f"SPELL WASTED: {_spell_name} hit nothing -> {_punish:+.2f}")
@@ -1721,6 +1868,10 @@ def main():
                     reward = min(reward, dmg_punish)
                     _events.append(("🛑 my tower took damage", dmg_punish))
                     _events.append(("⛔ good events censored — tower damage dominates this tick", 0.0))
+                    # SYNAPTIC PAIN: this (slot,spot) channel gets an LTD tag —
+                    # repeating the same play will hurt more and be avoided sooner.
+                    record_pain(pain_channels, slot, spot_i, dmg_punish)
+                    _save_pain_channels(pain_channels)
 
                 # ---- PUNISHMENTS (always their OWN negative event, never green) ----
                 # CYCLING AMNESTY: leaking while deliberately cycling cheap cards
@@ -1824,13 +1975,24 @@ def main():
                     "elixir": mlxir,
                 }
                 # Dopamine events — every labeled signal, good AND bad, shown
-                # separately so the feed never turns bad into green
+                # separately so the feed never turns bad into green.
+                # Pain channels are shown as their own red channel-level rows so
+                # LTD is VISIBLE, not hidden.
                 _dlog = _metrics.setdefault("dopamine_events", [])
                 for lbl, amt in _events:
                     _dlog.append({"t": time.strftime("%H:%M:%S"),
                                   "event": f"{lbl} · {spot_n} (elixir {mlxir})",
                                   "amount": round(amt, 2)})
+                _p = pain_channels.get((slot, spot_i))
+                if _p is not None and _p < -0.6:
+                    _dlog.append({"t": time.strftime("%H:%M:%S"),
+                                  "event": f"🔥 pain channel {slot},{spot_n} avg {_p:+.2f} (LTD active)",
+                                  "amount": 0.0})
                 _metrics["dopamine_events"] = _dlog[-80:]
+                _metrics["pain_channels_top"] = [
+                    {"slot": k[0], "spot": SPOT_NAMES[k[1]] if k[1] < 5 else k[1], "avg": round(v, 2)}
+                    for k, v in sorted(pain_channels.items(), key=lambda x: x[1])[:6]
+                ]
                 metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish,
                                vision=vision_snapshot,
                                mentor=(None if mentor is None else {
@@ -1841,6 +2003,21 @@ def main():
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
+                    # HIPPOCAMPAL ARCHIVE: every rich transition stored forever
+                    hippocampal_write({
+                        "t": time.time(), "s": prev_state, "a": prev_action,
+                        "r": round(reward, 3), "s2": state_s, "done": False,
+                        "elixir": mlxir, "lane": lane, "spot": spot_n,
+                    })
+                    # Consolidation: stir in 8 random old memories occasionally
+                    if tick_in_match % 30 == 0 and len(brain.buffer) >= brain.batch:
+                        for _mem in hippocampal_sample(8):
+                            try:
+                                brain._push_per([_mem["s"], int(_mem["a"]), float(_mem["r"]),
+                                                 _mem.get("s2", _mem["s"]), bool(_mem.get("done")), 1],
+                                                init_prio=1.2)
+                            except Exception:
+                                pass
                     if mentor is not None and mentor.get("recommended_spot") is not None:
                         rec_action = (prev_action // 5) * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
                         brain._push_per([prev_state, rec_action, 0.6, state_s, False, 1],
@@ -1858,15 +2035,21 @@ def main():
                 mentor = None
                 if not leaking and time.time() >= mentor_cooldown:
                     mentor_cooldown = time.time() + 22  # stay under free-tier rate limit
+                    _desperate = towers["ally_king"] <= 0.35
+                    _low_t = min(towers["enemy_left"], towers["enemy_right"])
                     state_desc = (
                         f"elixir={mlxir}, lane_threat={lane}, "
                         f"enemy_units(E:{arena['enemy_left']}/{arena['enemy_right']}, "
                         f"bridges {arena['enemy_bridge_l']}/{arena['enemy_bridge_r']}), "
+                        f"air_threat={arena.get('air_threat', 0)}, "
                         f"tower_hp(me {towers['ally_left']:.1f}/{towers['ally_right']:.1f}/{towers['ally_king']:.1f}, "
                         f"enemy {towers['enemy_left']:.1f}/{towers['enemy_right']:.1f}), "
-                        f"affordable_slots={affordable_slots}, phase={phase}"
+                        f"DESPERATION={'YES' if _desperate else 'no'}, "
+                        f"weakest_enemy_tower={'L' if towers['enemy_left'] <= towers['enemy_right'] else 'R'}(HP {_low_t:.2f}), "
+                        f"hand_deck={hand_deck}, affordable_slots={affordable_slots}, phase={phase}, "
+                        f"recent_creeps={len(opp_memory_store.get('recent_opponents', []))}"
                     )
-                    mentor = groq_mentor_review(state_desc, spot_n, reward, img)
+                    mentor = groq_reward_governor(state_desc, spot_n, reward, img)
                     if mentor["source"] == "groq_oss_coach":
                         # PUNISHER: blend coach verdict into dopamine signal
                         if mentor["reward_delta"] is not None:
@@ -1928,15 +2111,8 @@ def main():
                 prev_towers = None
                 from PIL import Image as _I
                 _img = _I.open(png).convert("RGB")
-                _band = [_img.getpixel((x, y)) for y in (1400, 1440) for x in range(240, 880, 60)]
-                _red = sum(1 for r, g, b in _band if r > 150 and r > b + 50 and g < 110)
-                _blue = sum(1 for r, g, b in _band if b > 140 and b > r + 40)
-                if _red >= _blue:
-                    dopamine = -4.0
-                    _verdict = "LOSS"
-                else:
-                    dopamine = 4.0   # win dopamine: was 3.0 — now richer for the celebratory spike
-                    _verdict = "WIN"
+                _verdict = judge_match_result(_img)
+                dopamine = 4.0 if _verdict == "WIN" else -4.5
                 # ---- DOPAMINE EVENT STREAM (the UI's live dopamine feed) ----
                 _dlog = _metrics.setdefault("dopamine_events", [])
                 _dlog.append({"t": time.strftime("%H:%M:%S"), "event": f"MATCH {_verdict}", "amount": dopamine})
@@ -1980,6 +2156,12 @@ def main():
                 dig = distill_match(_verdict, match_stats)
                 _metrics["game_memory"] = dig
                 log(f"GAME MEMORY distilled: {dig.get('one_line', '')}")
+                # Episode-final hippocampal write with the verdict dopamine
+                hippocampal_write({"t": time.time(), "episode_end": _verdict,
+                                   "dopamine": dopamine,
+                                   "stats": {"ticks": match_stats["ticks"],
+                                             "towers_down": match_stats["towers_down"],
+                                             "towers_lost": match_stats["towers_lost"]}})
                 # Re-evaluate deck every 5th match — adaptation built in
                 _matches_seen = int(_metrics.get("matches", 0) or 0) + 1
                 _metrics["matches"] = _matches_seen
@@ -2073,16 +2255,18 @@ def main():
                     stuck_since = None
                     time.sleep(5)
                     continue
-                if back_streak < 2:
-                    log(f"unknown -> BACK ({back_streak + 1}/2)")
-                    sh(["shell", "input", "keyevent", "KEYCODE_BACK"])
-                    back_streak += 1
-                    time.sleep(3)
-                else:
-                    log("unknown -> OK center probe")
+                # FULL CLICK ACCESS: the bot may press any in-game control it needs
+                # (BACK, OK, Battle, chest buttons…). The old "only 2 BACKs" cap is
+                # intentionally lifted because safety lives in the user-gate above
+                # (never acts unless the USER opened Clash) and the unknown-screen
+                # detection — not in a BACK counter that stranded games.
+                log(f"unknown -> BACK ({back_streak + 1}/unlimited)")
+                sh(["shell", "input", "keyevent", "KEYCODE_BACK"])
+                back_streak += 1
+                if back_streak % 3 == 0:
+                    log("unknown -> OK center probe (periodic)")
                     tap(*OK_CENTER)
                     time.sleep(2.5)
-                    back_streak = 0
         except Exception as e:
             import traceback
             log(f"loop error: {type(e).__name__}: {e!r} {traceback.format_exc(limit=2)}")
