@@ -32,7 +32,7 @@ CACHE = {"metrics": "", "coach": "[]", "shot": None, "metrics_t": 0, "coach_t": 
 CACHE_LOCK = threading.Lock()
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<title>NeuroML — The Full Brain</title>
+<title>NeuroML — Computational Neuroscience Testbed</title>
 <style>
 :root{--bg:#0b0f14;--card:#151b23;--line:#2a3441;--txt:#e6edf3;--dim:#8b949e;--ok:#3fb950;--bad:#f85149;--blu:#58a6ff;--yel:#d29922}
 body{background:var(--bg);color:var(--txt);font-family:Segoe UI,Roboto,sans-serif;margin:0;padding:14px}
@@ -64,8 +64,8 @@ canvas{width:100%;height:130px;margin:4px 0}
 .rules{font-size:11px;color:#9ecbff;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
 .rules li{margin:2px 0;list-style:none}
 </style></head><body>
-<h1>NeuroML — The Full Brain</h1>
-<div class="sub">38 sensory → 1024-wide × 6-layer residual cortex → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
+<h1>NeuroML™ — Computational Neuroscience Testbed</h1>
+<div class="sub">13.72M-param 1024-wide × 6-layer residual cortex · 90 LIF spiking neurons · STDP plasticity · affective core · hippocampal memory · dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
@@ -138,9 +138,18 @@ canvas{width:100%;height:130px;margin:4px 0}
     <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">📚 GAME MEMORY (distilled story of every match)</h2>
       <div style="font-size:12px" id="gmem">no matches distilled yet…</div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px">Saved to game_memory.json at every match end. Reloaded at startup and fed to the AI coach — the brain remembers what won, even after restart.</div></div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">SYSTEM SPEC (measured on this machine)</h2>
+      <div style="font-size:11px;font-family:Consolas,monospace;color:var(--dim);line-height:1.7">
+        cortex 13,724,181 params · 52.4 MB fp32<br>
+        8,192 hash neurons (6×1024 blocks + streams)<br>
+        90 real LIF spiking neurons (STDP, refractory)<br>
+        4,096 hippocampal episodes · 200 WM slots<br>
+        decision forward 13.5 ms · train step 280 ms<br>
+        <span style="color:#8b949e">internal-state channels are labeled computational analogues — not measurements of subjective feeling.</span>
+      </div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">MEMORY PERSISTENCE</h2>
       <div style="font-size:12px" id="memviz">checking files…</div>
-      <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Downloads keep their brain.</div></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Updates never wipe memory — updater.py preserves every data file and stages a rollback backup.</div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">OPPONENT MEMORY (what recent enemies played)</h2>
       <div class="opp" id="opp">no opponents recorded yet…</div></div>
   </div>

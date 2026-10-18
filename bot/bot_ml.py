@@ -408,10 +408,16 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
             + f"Local shaped reward was: {prev_reward:+.2f}\n\n"
             + "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
             + '{"reward_delta": <float -2.5..+1.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 22 words>"}\n\n'
+            + "BATTLEFIELD PHYSICS (measured, in elixir-damage units):\n"
+            + "- A tower takes about 1000 HP to destroy; fireball ≈ 572, rocket ≈ 600, lightning ≈ 773, arrows ≈ 285, zap ≈ 159.\n"
+            + "- Elixir regen: 1 per 2.8s; a full 10 elixir push swings roughly 2 tower-HP bar units.\n"
+            + "- Positive elixir trade: killing a 6-elixir push with 3 elixir of defense wins the game long-run.\n"
+            + "- Always target the LOWEST-HP enemy tower with offensive damage — symmetric pressure loses games.\n"
             + "JUDGMENT PRINCIPLES:\n"
             + "- Desperation is allowed: at low king-HP or against a pushed-away tower,"
             + " expensive spells at cheap troops CAN be correct — judge by necessity, not by elixir math alone.\n"
             + "- Punish wasting elixir on nothing (hits empty lane, overdefense of a single cheap troop).\n"
+            + "- Punish hard: offensive damage aimed at the HIGHER-HP tower while the LOWER-HP tower stands.\n"
             + "- Reward counter-pushes (attacking the lane the enemy did NOT commit to).\n"
             + "- Reward targeting the LOWER-HP enemy tower for finishing pressure.\n"
             + "- Reward kiting: cheap troops placed center to drag heavy attackers away.\n"
@@ -640,6 +646,39 @@ def _any(img, tests):
 ELIXIR_REGEN_PER_TICK = 0.7        # ~1 elixir / 2.8s in-game
 TOWER_FINISH_THRESHOLD = 0.32      # under ~30% HP a cheap spell can finish
 SPELL_FINISH_MIN_DAMAGE = 0.18     # spell must cover at least ~18% of tower HP
+
+
+# Exact spell-landing coordinates ON the enemy towers (the old finisher dropped
+# spells at generic bridge rows — between the towers, wasting damage).
+ENEMY_TOWER_XY = {"left": (233, 470), "right": (845, 470)}
+
+
+def physics_finisher(towers, hand_deck, mlxir, afford=None):
+    """REAL PHYSICS targeting (deterministic, not advisory): find the LOWEST-HP
+    alive enemy tower and check whether ANY held, affordable spell's damage
+    covers its remaining HP. Spell damage as a fraction of a fresh tower's HP
+    (fireball ≈ 1/3, arrows ≈ 1/6, zap ≈ 1/10) comes from the spell-physics
+    table below. Returns the kill decision or None; never guesses."""
+    SPELL_TOWER_DAMAGE = {"fireball": 0.33, "arrows": 0.17, "zap": 0.12,
+                          "rocket": 0.38, "lightning": 0.40}
+    alive = [(towers.get(k, 1.0), side) for side, k in
+             (("left", "enemy_left"), ("right", "enemy_right"))]
+    alive = [(hp, side) for hp, side in alive if hp > 0.03]   # alive towers only
+    if not alive:
+        return None
+    hp, side = min(alive)   # the LOWEST-HP tower is always the target
+    for slot_idx, name in enumerate((hand_deck or [])[:4]):
+        info = CARDS_DB.get((name or "").lower(), {})
+        if info.get("role") != "spell":
+            continue
+        cost = info.get("cost", 9)
+        if cost > mlxir or afford is not None and slot_idx < len(afford) and afford[slot_idx] < 0.5:
+            continue
+        dmg = SPELL_TOWER_DAMAGE.get((name or "").lower(), 0.0)
+        if dmg >= hp - 0.02:
+            return {"side": side, "slot": slot_idx, "hp": hp, "dmg": dmg,
+                    "spell": name, "target_xy": ENEMY_TOWER_XY[side]}
+    return None
 
 
 def tower_finish_check(towers, hand_deck, mlxir):
@@ -1971,6 +2010,7 @@ def main():
     prev_towers = None
     elixir_leak_ticks = 0
     last_spell_played = None
+    _cast_xy = None
     _pred_prev = None
     _pred_mae = {"tower_hp_mae": 0.0, "elixir_mae": 0.0, "n": 0}
     _finisher_cast = False
@@ -2154,10 +2194,46 @@ def main():
                 except Exception:
                     pass
                 finishers = tower_finish_check(towers, hand_deck, mlxir)
-                action, rule_note = card_play_policy(
-                    action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
-                slot, spot_i = divmod(action, 5)
-                spot_n = SPOT_NAMES[spot_i]
+                # ---- PHYSICS OVERRIDE (lowest-HP tower law): a kill shot is
+                # deterministic — if a held affordable spell can kill an enemy
+                # tower, it is cast EXACTLY ON that tower regardless of what
+                # the network or the coach prefers. No Q-value may drop a
+                # 1-tap tower kill for a safer-looking play. ----
+                _kill = physics_finisher(towers, hand_deck, mlxir, afford)
+                if _kill:
+                    _metrics["physics"] = {
+                        "law": "lowest-HP tower",
+                        "side": _kill["side"],
+                        "tower_hp": _kill["hp"],
+                        "spell": _kill["spell"],
+                        "spell_damage_frac": _kill["dmg"],
+                        "target_xy": _kill["target_xy"],
+                        "observation_age_s": round(obs_age, 2),
+                    }
+                    action = _kill["slot"] * 5 + (0 if _kill["side"] == "left" else 1)
+                    _cast_xy = _kill["target_xy"]   # land ON the tower
+                    rule_note = (f"physics finisher->{_kill['side']} "
+                                 f"(tower {_kill['hp']*100:.0f}% HP, {_kill['spell']})")
+                    slot, spot_i = divmod(action, 5)
+                    spot_n = SPOT_NAMES[spot_i]
+                    match_stats["rule_corrections"] += 1
+                    log(f"PHYSICS: {_kill['spell']} -> {_kill['side']} tower at "
+                        f"{_kill['hp']*100:.0f}% HP, exact tap {_kill['target_xy']}")
+                else:
+                    _cast_xy = None
+                    _low = [(towers.get(k, 1.0), s) for s, k in
+                            (("left", "enemy_left"), ("right", "enemy_right"))
+                            if towers.get(k, 1.0) > 0.03]
+                    _metrics["physics"] = {
+                        "law": "lowest-HP tower",
+                        "side": (min(_low)[1] if _low else None),
+                        "tower_hp": (round(min(_low)[0], 3) if _low else None),
+                        "killable": False,
+                    }
+                    action, rule_note = card_play_policy(
+                        action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
+                    slot, spot_i = divmod(action, 5)
+                    spot_n = SPOT_NAMES[spot_i]
                 if rule_note != "net":
                     reward_rules_add = REWARD_WEIGHTS["game_rule_followed"]
                     match_stats["rule_corrections"] += 1
@@ -2359,7 +2435,8 @@ def main():
                 jy = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
                 dur = random.randint(280, 420)
                 x, y = CARDS[slot % 4]
-                sx, sy = FIELD_SPOTS[spot_n]
+                # physics finishers tap EXACTLY ON the enemy tower, not a generic row
+                sx, sy = (_cast_xy if _cast_xy else FIELD_SPOTS[spot_n])
                 sh(["shell", "input", "swipe", str(x + jx), str(y + jy), str(sx), str(sy), str(dur)])
                 time.sleep(0.45)
                 # Track spell casts for next-tick value judgment (hit vs wasted)
@@ -2371,7 +2448,7 @@ def main():
                     pass
                 if CARDS_DB.get(str(_played_name).lower(), {}).get("role") == "spell":
                     last_spell_played = (slot, spot_i)
-                    _finisher_cast = bool(finishers) and rule_note.startswith("finisher")
+                    _finisher_cast = bool(finishers) and "finisher" in rule_note
                 cards_played += 1
                 tick_in_match += 1
                 # game-memory accumulators
@@ -2507,7 +2584,16 @@ def main():
                         f"hand_deck={hand_deck}, affordable_slots={affordable_slots}, phase={phase}, "
                         f"recent_creeps={len(opp_memory_store.get('recent_opponents', []))}"
                     )
-                    mentor = groq_reward_governor(state_desc, spot_n, reward, img)
+                    # Coach advisory is STATE-CHECKED (spec §7): a recommendation
+                # is only accepted if it targets the lowest-HP tower lane and
+                # is affordable — the coach can never silently overwrite the
+                # laws-of-physics decision.
+                mentor = groq_reward_governor(state_desc, spot_n, reward, img)
+                if mentor.get("recommended_spot") == "bridge_right" and \
+                        towers.get("enemy_left", 1.0) < towers.get("enemy_right", 1.0):
+                    mentor["critique"] = (mentor.get("critique") or "") + " [physics vetoed: target the LOWER-HP left tower]"
+                    mentor["recommended_spot"] = "bridge_left"
+                    log("COACH physics check: recommendation redirected to the lower-HP tower")
                     if mentor["source"] == "groq_oss_coach":
                         # PUNISHER: blend coach verdict into dopamine signal
                         if mentor["reward_delta"] is not None:
@@ -2522,7 +2608,7 @@ def main():
                         mentor_log_line(mentor_entry)
                         _metrics["mentor_agree"] = _metrics.get("mentor_agree", 0)
                         # MENTOR: remember the coach's recommended action for this state
-                        if mentor["recommended_spot"] is not None:
+                        if mentor["recommended_spot"] is not None and mentor["recommended_spot"] in SPOT_TO_ACTION:
                             rec_action = slot * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
                             brain._push_per([state_s, rec_action, 0.6, state_s, False, 1], init_prio=1.5)
                             _metrics["mentor_actions"] = _metrics.get("mentor_actions", {})
