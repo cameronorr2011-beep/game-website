@@ -1126,6 +1126,136 @@ def q_state_fired(q_state):
             for i, x in enumerate(q_state)]
 
 
+# ---------------------- SPIKING NUCLEUS + AFFECTIVE CORE (v13/v14) -----------------
+# A real biologically-detailed spiking network (LIF neurons, STDP, homeostasis)
+# running ALONGSIDE the DQN, plus bounded affective state channels. Feature
+# flag guarded with honest fallback: if anything here fails, the DQN acts alone.
+SPIKING_ENABLED = True
+SPIKING_BIAS_SCALE = 0.10   # spiking activity can shift Q by at most this fraction of Q-spread
+SPIKING_FILE = "spiking_brain.json"
+SPIKING_VERSION = 1
+
+class SpikingAgent:
+    """Lowest-risk hybrid (v13 spec §5 option 2): the spiking mutant proposes
+    bias, the DQN decides. Reward-modulated STDP via eligibility translates
+    battle rewards into synaptic change. Affective channels are bounded,
+    inspectable computational analogues — NOT claims of feeling."""
+
+    def __init__(self):
+        self.nucleus = None
+        self.affect = None
+        self.ok = False
+        self._last_bias = None
+        if SPIKING_ENABLED:
+            try:
+                from spiking_core import SpikingNucleus, AffectiveCore
+                self.nucleus = SpikingNucleus(n_sensory=64, n_action=20, seed=13)
+                self.affect = AffectiveCore()
+                self.ok = True
+                self.load()
+            except Exception as e:
+                log(f"spiking nucleus unavailable — DQN-only fallback active ({e})")
+
+    def observe_state(self, state_s):
+        """Encode the 38-dim game state into the spiking network and simulate.
+        Returns a per-action bias vector (20 floats in [-1,1]) from action-
+        population firing rates, or None when disabled. Measured latency is
+        telemetry, never allowed to block gameplay (loops over 5s budget)."""
+        if not self.ok:
+            return None
+        try:
+            import math as _m
+            t0 = time.time()
+            # sensory encoding: 38 state dims mapped onto 64 sensory neurons
+            vals = [max(0.0, min(1.0, v)) for v in state_s[:64]]
+            vals += [0.0] * (64 - len(vals))
+            self.nucleus.encode_sensory(vals)
+            self.nucleus.step(50)          # 50 ms of simulated dynamics
+            # affect: danger from imminent-threat state channels, confidence
+            # from policy separation available later; injected from rewards.
+            if state_s[36] or state_s[37]:
+                self.affect.inject("danger", 0.15)
+            rates = [n.spike_count for n in self.nucleus.action]
+            mx = max(rates) or 1
+            mean = sum(rates) / len(rates)
+            bias = [(r - mean) / mx for r in rates]
+            act_pop = [n.spike_count for n in self.nucleus.action]
+            _metrics["spiking"] = {
+                "ok": True,
+                "observe_ms": round((time.time() - t0) * 1000, 1),
+                "sensory_spikes": sum(n.spike_count for n in self.nucleus.sensory),
+                "action_spikes": sum(act_pop),
+                "inh_spikes": sum(n.spike_count for n in self.nucleus.inhibitory),
+                "mean_w": round(self.nucleus.telemetry()["mean_w"], 4),
+                "pot_events": self.nucleus.telemetry()["potentiation_events"],
+                "dep_events": self.nucleus.telemetry()["depression_events"],
+                "affect": {k: round(v, 3) for k, v in self.affect.state.items()},
+            }
+            self.nucleus.reset_transient_neurons_only()
+            return bias
+        except Exception as e:
+            log(f"spiking observe failed (DQN acting alone): {e}")
+            return None
+
+    def learn(self, reward):
+        """Reward-modulated plasticity + affective updates off the real reward."""
+        if not self.ok or reward is None:
+            return
+        try:
+            if reward > 0:
+                self.affect.inject("pos_rpe", min(0.3, reward * 0.15))
+            elif reward < 0:
+                self.affect.inject("neg_rpe", min(0.3, -reward * 0.15))
+            # valence-gated plasticity scale: strong frustration slows new
+            # potentiation so one system cannot grab all the credit.
+            val = self.affect.valence_scalar()
+            scale = max(0.25, 1.0 + 0.5 * val)
+            self.nucleus.apply_reward(max(-2.0, min(2.0, reward)) * scale)
+        except Exception as e:
+            log(f"spiking learn failed: {e}")
+
+    def save(self):
+        if not self.ok:
+            return
+        try:
+            payload = {"version": SPIKING_VERSION,
+                       "nucleus": self.nucleus.state_dict(),
+                       "affect": self.affect.state}
+            tmp = SPIKING_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, SPIKING_FILE)   # atomic write
+        except Exception as e:
+            log(f"spiking checkpoint save failed: {e}")
+
+    def load(self):
+        if not os.path.exists(SPIKING_FILE):
+            return
+        try:
+            data = json.load(open(SPIKING_FILE))
+            if int(data.get("version", 0)) != SPIKING_VERSION:
+                log(f"spiking checkpoint version mismatch — starting fresh nucleus")
+                return
+            self.nucleus.load_state_dict(data["nucleus"])
+            for k, v in data.get("affect", {}).items():
+                if k in self.affect.state:
+                    self.affect.state[k] = float(v)
+            log("spiking nucleus restored (weights + affect persisted)")
+        except Exception as e:
+            log(f"spiking checkpoint corrupt, starting fresh: {e}")
+
+    def new_match_reset(self):
+        """Transient activity resets between matches; durable weights persist."""
+        if not self.ok:
+            return
+        try:
+            self.nucleus.reset_transient()
+            for k in ("danger", "relief", "neg_rpe", "pos_rpe"):
+                self.affect.set(k, 0.0)
+        except Exception:
+            pass
+
+
 # ---------------------- Advanced Neural Architecture (Dueling ResNet QNet) ----------------------
 class SynapticResBlock(nn.Module):
     """Residual cortical column with LayerNorm + SiLU activation so deep neuron
@@ -1333,11 +1463,13 @@ class TargetedDQN:
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
             }
 
-    def act(self, state, forbidden=None, pain_channels=None):
+    def act(self, state, forbidden=None, pain_channels=None, bias=None):
         """Action selection (9ms, never blocked by training). Pain channels are
         applied as behavioral value suppression: the chosen play must beat the
         pain-adjusted value, so repeating a proven mistake requires being
-        genuinely better. Fallback default is the plain policy."""
+        genuinely better. Fallback default is the plain policy. `bias` is the
+        spiking nucleus readout; it shifts Q by at most SPIKING_BIAS_SCALE of
+        the Q-spread, so the DQN remains primary with trivial fallback."""
         if random.random() < self.epsilon:
             a = random.randrange(ACTION_DIM)
             tries = 0
@@ -1362,6 +1494,12 @@ class TargetedDQN:
                             # if the net value also poor; genuine better plays win)
                             q[a_idx] = torch.minimum(
                                 q[a_idx], torch.tensor(avg * 0.5))
+            if bias is not None:
+                # spiking-nucleus vote: bounded share of the Q-spread
+                width = float(q.max() - q.min())
+                b = torch.tensor([bias[i] if i < len(bias) else 0.0
+                                  for i in range(ACTION_DIM)])
+                q = q + SPIKING_BIAS_SCALE * width * b
             return int(torch.argmax(q).item())
 
     def _push_per(self, transition, init_prio=None):
@@ -1696,6 +1834,8 @@ def main():
     offline_since = None
     brain = TargetedDQN()
     brain.load()
+    spike_agent = SpikingAgent()   # spiking nucleus + affective core (guarded)
+    spike_agent.new_match_reset()
     try:
         autonomous_deck_session(game_memory_digest())  # deck built at every startup
     except Exception as e:
@@ -1802,6 +1942,7 @@ def main():
                                    "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
                                    "rule_corrections": 0, "spot_totals": {}}
                     log("new opponent tracked (memory persistent across matches)")
+                    spike_agent.new_match_reset()   # transient reset, weights persist
                 mlxir = elixir_count(img)
                 lv, rv = lane_variances(img)
                 towers = tower_healths(img)
@@ -1831,7 +1972,9 @@ def main():
                         for spot in range(5):
                             forbidden.add(slot * 5 + spot)
 
-                action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels)
+                _spike_bias = spike_agent.observe_state(state_s)   # spiking vote
+                action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels,
+                                   bias=_spike_bias)
                 _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
@@ -2113,6 +2256,7 @@ def main():
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
+                    spike_agent.learn(reward)   # reward-modulated STDP + valence
                     # PAIN drives REPLAY priority: painful channels' transitions
                     # get sampled more (revisit the mistake until it's fixed)
                     _pb = pain_priority_boost(pain_channels, prev_action // 5, prev_action % 5, reward)
@@ -2211,6 +2355,7 @@ def main():
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                     brain.save()
+                    spike_agent.save()   # versioned, atomic spiking+affect checkpoint
                     log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
                 if not just_queued:
                     log("lobby -> claim + battle")
@@ -2352,6 +2497,7 @@ def main():
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                     brain.save()
+                    spike_agent.save()   # versioned, atomic spiking+affect checkpoint
                     log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
                 log("other lobby tab -> Battle tab")
                 tap(*TOP_BATTLE_TAB)

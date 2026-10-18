@@ -119,6 +119,14 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div id="motor" style="font-size:10px;font-family:Consolas,monospace;margin-top:2px"></div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) dopamine baseline: <span id="vs" style="color:var(--yel)">-</span>
        · advantage spread <span id="asp" style="color:var(--yel)">-</span></div></div>
+    <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">SPIKING NUCLEUS — real LIF neurons + STDP (v13 hybrid)</h2>
+      <div style="font-size:11px;color:var(--dim)">64 sensory → 20 action LIF neurons · leak, threshold, refractory, adaptation · reward-modulated STDP with eligibility</div>
+      <canvas id="c_spike" width=330 height=110 style="height:100px"></canvas>
+      <div style="font-size:10px;color:var(--dim);margin:2px 0 6px">action-population spike counts per decision tick (telemetry, sampled)</div>
+      <div style="font-size:11px;font-family:Consolas,monospace" id="spk">waiting…</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:6px">INTERNAL STATE CHANNELS (computational analogues — bounded, decaying; these are <i>not</i> measurements of subjective feeling)</div>
+      <div id="affect" style="font-size:10px;font-family:Consolas,monospace;margin-top:3px"></div>
+    </div>
     <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">📚 GAME MEMORY (distilled story of every match)</h2>
       <div style="font-size:12px" id="gmem">no matches distilled yet…</div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px">Saved to game_memory.json at every match end. Reloaded at startup and fed to the AI coach — the brain remembers what won, even after restart.</div></div>
@@ -169,6 +177,17 @@ try{
  if(m.pain_channels_top&&m.pain_channels_top.length){const pl=document.getElementById('painlist');
   pl.innerHTML='Σ pain memory (LTD): '+m.pain_channels_top.map(p=>'<div>channel '+p.slot+','+p.spot+' avg '+p.avg+'</div>').join('')}
  if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}
+ if(m.spiking&&m.spiking.ok){
+  window._spkHist=window._spkHist||[];window._spkHist.push(m.spiking.action_spikes||0);if(window._spkHist.length>80)window._spkHist.shift();
+  line(document.getElementById('c_spike'),window._spkHist,'#9370db');
+  document.getElementById('spk').innerHTML=
+   'observe '+m.spiking.observe_ms+'ms · sensory spikes '+m.spiking.sensory_spikes+' · motor spikes '+m.spiking.action_spikes+' · inhib '+m.spiking.inh_spikes+'<br>'+
+   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85149">'+m.spiking.dep_events+'</b>';
+  const aff=m.spiking.affect||{};
+  document.getElementById('affect').innerHTML=Object.entries(aff).map(([k,v])=>{
+   const w=Math.round(v*54);const col=(k.startsWith('neg')||k==='danger'||k==='frustration')?'#f85149':(k==='confidence'?'#58a6ff':'#3fb950');
+   return '<div style="display:flex;align-items:center;gap:5px;margin:1px 0"><span style="width:86px;color:var(--dim)">'+k+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+col+';border-radius:2px"></span>'+v.toFixed(3)+'</div>'}).join('');
+ } else if(m.spiking){document.getElementById('spk').textContent='nucleus offline — DQN fallback active'}
  if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
   '<div style="font-size:20px;font-weight:800;color:#d29922">'+gm.games_remembered+' games remembered</div>'+
   '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
