@@ -37,13 +37,20 @@
 
   <div class="card">
     <h2 style="margin-top:0">Download</h2>
-    <p><strong>The app (code)</strong> is a small ~50 KB zip containing launchers, the brain and the
-    dashboard. <code>install.bat</code> fetches Python + torch so you don't have to.</p>
+    <p><strong>The app</strong> is a small ~80 KB zip containing launchers, the full brain code
+    (DQN cortex + spiking nucleus), the AI Coach dashboard, plus updater &amp; federated tools.
+    <code>install.bat</code> fetches Python + torch so you don't have to — and it also auto-fetches
+    a pretrained brain whenever one is published on the Releases page. If it can't find one,
+    you start with a fresh brain that learns live from its first match — nothing is faked.</p>
     <a class="btn" href="/NeuroMLCR.zip" download>Download NeuroMLCR.zip (app)</a>
     <a class="btn ghost" href="https://github.com/cameronorr2011-beep/game-website">Source on GitHub</a>
-    <p style="margin-top:16px"><strong>The pretrained brain</strong> is a separate ~52 MB file
-    (<code>ml_policy.pt</code> — the trained DQN weights), plus replay memory that can grow to
-    hundreds of MB or more. It's not inside the small zip.</p>
+    <p style="margin-top:16px"><strong>The pretrained brain</strong> is a separate checkpoint:</p>
+    <table>
+      <tr><td><code>ml_policy.pt</code></td><td>DQN policy + target weights — ~100 MB total (13.7 M params fp32, two networks)</td></tr>
+      <tr><td><code>spiking_brain.json</code></td><td>LIF/STDP nucleus + affect state — a few MB</td></tr>
+    </table>
+    <p>Replay memory (<code>ml_replay.json</code>, up to 60 000 episodes) is personal training
+    experience and is not shared.</p>
     <p>Train it yourself from scratch: fresh installs learn live and write
     <code>ml_policy.pt</code> + <code>ml_replay.json</code> to their own folder within minutes.
     To publish instead, see <a href="https://github.com/cameronorr2011-beep/game-website#publish-the-pretrained-brain">“Publish the pretrained brain” in the README</a>.</p>
@@ -73,7 +80,8 @@
   <ol>
     <li>Unzip the download and <strong>double-click <code>install.bat</code></strong> — checks Python,
         installs torch + tools, downloads adb if missing. If Python is missing it opens the download
-        page for you (check “Add Python to PATH”, then rerun).</li>
+        page for you (check “Add Python to PATH”, then rerun). It also runs <code>fetch_brain.py</code>,
+        which pulls the pretrained brain automatically when one is published.</li>
     <li>Put your <code>groq_key.txt</code> (one line, starts with <code>gsk_</code>) in the folder.</li>
     <li>Double-click <code>connect_phone.bat</code> and follow the pairing prompts
         (same Wi-Fi, or Tailscale/ZeroTier/ port-forward for remote).</li>

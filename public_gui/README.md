@@ -20,6 +20,9 @@ so closing/reopening never loses progress.
 1. **Double-click `install.bat`** — checks Python, auto-installs torch + tools,
    and downloads adb if missing. If Python is missing it opens the download page
    for you (check "Add Python to PATH" during install, then rerun install.bat).
+   It also runs `fetch_brain.py`: when a pretrained brain is published on the
+   Releases page it downloads it; otherwise you start with a fresh brain that
+   learns from the first match.
 
 2. **Put `groq_key.txt` in this folder** — your free key from console.groq.com/keys
    (one line, starts with `gsk_`).
@@ -65,10 +68,15 @@ Works over mobile data, hotel Wi-Fi, school Wi-Fi, anything.
 
 ## Files in this folder
 
-- `install.bat` — one-click setup
+- `install.bat` — one-click setup (also fetches the pretrained brain when one is published)
+- `fetch_brain.py` — pulls `ml_policy.pt` (+ spiking nucleus state) from the Releases page;
+  keeps anything already on disk, never overwrites your brain
 - `connect_phone.bat` — phone pairing (same Wi-Fi or remote)
 - `NeuroMLCR.bat` — start the brain + dashboard
 - `dashboard.py` — AI Coach web dashboard (serves on port 8765)
-- `bot_ml.py`, `bot.py` — the RL brain (DQN) and the non-ML rule-based bot
-- `cards.json`, `bot_config.json`, `meta_decks.json` — game data
+- `bot_ml.py`, `bot.py` — the RL brain (DQN, 1024×6 residual cortex) and the non-ML bot
+- `spiking_core.py` — LIF/STDP nucleus + affective core used by the hybrid brain
+- `updater.py` — update code, never memory (`python updater.py --from-dir <fresh_copy>`)
+- `federated.py` — opt-in anonymized model export/apply
+- `cards.json`, `bot_config.json`, `meta_decks.json`, `my_deck.json` — game data
 - `groq_key.txt` — *you create this* with your free API key

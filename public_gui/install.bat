@@ -48,6 +48,9 @@ if errorlevel 1 (
 )
 echo [OK] adb ready.
 
+:: 3b. Pretrained brain (optional, no-op when nothing is published)
+python fetch_brain.py
+
 :: 4. Make bot_config.json if missing
 if not exist bot_config.json (
     echo {"device": "127.0.0.1:5555", "screen": {"w": 1080, "h": 2340}} > bot_config.json

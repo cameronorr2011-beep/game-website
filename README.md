@@ -21,7 +21,8 @@ forward 109 ms, train step **280 ms** — all far under the 5 s battle tick.
 ## Download the app
 
 **Download page: https://game-website-two-tau.vercel.app** — serves the ready-to-run
-`NeuroMLCR.zip` (~50 KB; `install.bat` fetches Python deps itself) plus the 5-step setup.
+`NeuroMLCR.zip` (~80 KB code: full v18 brain + updater + federated; `install.bat` fetches
+Python deps itself and auto-fetches published brain files) plus the 5-step setup.
 The site auto-deploys every push to `main` of this repository.
 
 Keep the served zip in sync after editing `public_gui/`:
@@ -30,11 +31,20 @@ Keep the served zip in sync after editing `public_gui/`:
 cd public_gui && rm -f NeuroMLCR.zip && zip -r NeuroMLCR.zip *.bat *.py *.json README.md && cp NeuroMLCR.zip ../public/NeuroMLCR.zip
 ```
 
+Keep `public_gui/` in sync with `bot/` (the public folder ships the same code):
+
+```bash
+cd bot && cp bot_ml.py dashboard.py federated.py updater.py spiking_core.py bot.py my_deck.json ../public_gui/
+```
+
 ## Publish the pretrained brain
 
-The code zip is intentionally tiny (~50 KB); the trained weights (`ml_policy.pt`,
-~52 MB) and replay memory (can reach GB scale) are not in git. To share a trained
-brain, host it as a GitHub Release asset (up to 2 GB each):
+The code zip is intentionally tiny (~80 KB); the trained brain
+(`ml_policy.pt`, policy+target checkpoint ≈ 100 MB, plus small
+`spiking_brain.json`) is not in git. To share a trained brain, host it as a
+GitHub Release asset (up to 2 GB each). Once published, players get it
+automatically: their `install.bat` runs `fetch_brain.py`, which downloads the
+latest Release copy — existing files are always kept, never overwritten.
 
 ```bash
 gh release create brains-v1 ml_policy.pt --title "NeuroML brain: keyboard v1" --notes "Trained on <devices/episodes>"

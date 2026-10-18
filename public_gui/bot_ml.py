@@ -408,10 +408,16 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
             + f"Local shaped reward was: {prev_reward:+.2f}\n\n"
             + "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
             + '{"reward_delta": <float -2.5..+1.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 22 words>"}\n\n'
+            + "BATTLEFIELD PHYSICS (measured, in elixir-damage units):\n"
+            + "- A tower takes about 1000 HP to destroy; fireball ≈ 572, rocket ≈ 600, lightning ≈ 773, arrows ≈ 285, zap ≈ 159.\n"
+            + "- Elixir regen: 1 per 2.8s; a full 10 elixir push swings roughly 2 tower-HP bar units.\n"
+            + "- Positive elixir trade: killing a 6-elixir push with 3 elixir of defense wins the game long-run.\n"
+            + "- Always target the LOWEST-HP enemy tower with offensive damage — symmetric pressure loses games.\n"
             + "JUDGMENT PRINCIPLES:\n"
             + "- Desperation is allowed: at low king-HP or against a pushed-away tower,"
             + " expensive spells at cheap troops CAN be correct — judge by necessity, not by elixir math alone.\n"
             + "- Punish wasting elixir on nothing (hits empty lane, overdefense of a single cheap troop).\n"
+            + "- Punish hard: offensive damage aimed at the HIGHER-HP tower while the LOWER-HP tower stands.\n"
             + "- Reward counter-pushes (attacking the lane the enemy did NOT commit to).\n"
             + "- Reward targeting the LOWER-HP enemy tower for finishing pressure.\n"
             + "- Reward kiting: cheap troops placed center to drag heavy attackers away.\n"
@@ -640,6 +646,39 @@ def _any(img, tests):
 ELIXIR_REGEN_PER_TICK = 0.7        # ~1 elixir / 2.8s in-game
 TOWER_FINISH_THRESHOLD = 0.32      # under ~30% HP a cheap spell can finish
 SPELL_FINISH_MIN_DAMAGE = 0.18     # spell must cover at least ~18% of tower HP
+
+
+# Exact spell-landing coordinates ON the enemy towers (the old finisher dropped
+# spells at generic bridge rows — between the towers, wasting damage).
+ENEMY_TOWER_XY = {"left": (233, 470), "right": (845, 470)}
+
+
+def physics_finisher(towers, hand_deck, mlxir, afford=None):
+    """REAL PHYSICS targeting (deterministic, not advisory): find the LOWEST-HP
+    alive enemy tower and check whether ANY held, affordable spell's damage
+    covers its remaining HP. Spell damage as a fraction of a fresh tower's HP
+    (fireball ≈ 1/3, arrows ≈ 1/6, zap ≈ 1/10) comes from the spell-physics
+    table below. Returns the kill decision or None; never guesses."""
+    SPELL_TOWER_DAMAGE = {"fireball": 0.33, "arrows": 0.17, "zap": 0.12,
+                          "rocket": 0.38, "lightning": 0.40}
+    alive = [(towers.get(k, 1.0), side) for side, k in
+             (("left", "enemy_left"), ("right", "enemy_right"))]
+    alive = [(hp, side) for hp, side in alive if hp > 0.03]   # alive towers only
+    if not alive:
+        return None
+    hp, side = min(alive)   # the LOWEST-HP tower is always the target
+    for slot_idx, name in enumerate((hand_deck or [])[:4]):
+        info = CARDS_DB.get((name or "").lower(), {})
+        if info.get("role") != "spell":
+            continue
+        cost = info.get("cost", 9)
+        if cost > mlxir or afford is not None and slot_idx < len(afford) and afford[slot_idx] < 0.5:
+            continue
+        dmg = SPELL_TOWER_DAMAGE.get((name or "").lower(), 0.0)
+        if dmg >= hp - 0.02:
+            return {"side": side, "slot": slot_idx, "hp": hp, "dmg": dmg,
+                    "spell": name, "target_xy": ENEMY_TOWER_XY[side]}
+    return None
 
 
 def tower_finish_check(towers, hand_deck, mlxir):
@@ -1042,6 +1081,97 @@ SPOT_TO_ACTION.update({n: i for i, n in enumerate(SPOT_NAMES)})
 # sensitivity-reduced after painful outcomes, so the same mistake fires less.
 # Analogy: long-term depression (LTD) at the synaptic channel level.
 # ============================================================
+# ============================================================
+# REWARD LEDGER helpers (spec §4): every contribution to the final reward is
+# logged; the per-tick net is the SUM of components — never a censoring min().
+# ============================================================
+
+def reward_totals_update(totals, events, dmg_punish=None):
+    """Aggregate per-event reward components into running totals. Returns the
+    same dict mutated. Tower damage is always recorded under its own key so
+    simultaneous good+bad events both appear (no censoring, no double-count:
+    each event row contributes exactly once)."""
+    for e, r in events:
+        if r != 0.0:
+            totals[e] = round(totals.get(e, 0.0) + r, 2)
+    if dmg_punish:
+        totals["ALL TOWER DAMAGE"] = round(totals.get("ALL TOWER DAMAGE", 0.0) + dmg_punish, 2)
+    return totals
+
+
+def seed_lifetime_record(metrics, mem=None):
+    """Seed the W/L record from the durable game-memory book so the dashboard
+    win/loss record survives restarts (fixes the 'session-only 100%' error).
+    Returns the number of verdict-bearing matches found."""
+    if mem is None:
+        mem = _load_game_memory()
+    ms = [m for m in mem.get("matches", []) if m.get("v") in ("WIN", "LOSS")]
+    w = sum(1 for m in ms if m["v"] == "WIN")
+    l = len(ms) - w
+    metrics["wins_v"] = w
+    metrics["losses_v"] = l
+    metrics["win_rate"] = round(100.0 * w / max(1, w + l), 1)
+    metrics["win_history"] = [1 if m["v"] == "WIN" else 0 for m in ms[-60:]]
+    metrics["lifetime_games"] = len(ms)
+    metrics["record_source"] = "game_memory.json lifetime record (seeded at startup)"
+    return len(ms)
+
+
+# ============================================================
+# DETERMINISTIC REFEREE — the sole authority on pain and dopamine (v18).
+# Replaces the Groq damage-punisher with strict physics rules that cost zero
+# inference tokens and can never be talked into a wrong verdict.
+# ============================================================
+def referee_pain(dmg_info, ally_alive, tick):
+    """Deterministic tower-damage punishment from measurable state only.
+    Rules (each logged in the ledger by the caller, none invented):
+      R1 proportional:  -4 * hp_drop  (a full-loss tick scales with damage)
+      R2 tower loss:    -1.6 per fallen tower, escalated by threat: losing a
+                        tower while only 2 stand (king next) is 2x worse
+      R3 phase urgency: late-match damage (tick>45) while the king is alive
+                        weighs +25% — an endgame lapse decides the outcome
+      R4 floor/ceiling: clamp to [-3.5, -0.5]; never silent, never extreme
+    Returns (punish, source)."""
+    hp_drop = max(0.0, float(dmg_info.get("ally_hp_drop", 0.0)))
+    towers_lost = max(0, int(dmg_info.get("ally_towers_lost", 0)))
+    p = 4.0 * hp_drop + 1.6 * towers_lost
+    if towers_lost > 0 and ally_alive <= 1 + towers_lost:
+        p += 1.6 * towers_lost          # R2 king-next escalation
+    if tick > 45 and dmg_info.get("ally_king", 1.0) > 0.0:
+        p *= 1.25                        # R3 endgame urgency
+    p = max(-3.5, min(-0.5, -p))
+    return round(p, 2), "referee_rules"
+
+
+_MENTOR_PATTERNS = {"finish": ("finish", "finishing", "last hit", "kill the tower"),
+                    "defend": ("defend", "defense", "protect"),
+                    "elixir": ("elixir", "cycle", "save"),
+                    "counter": ("counter-push", "counterpush", "opposite lane")}
+
+def interpret_mentor(mentor, towers, mlxir):
+    """STRUCTURAL MENTOR INTERPRETER (the ML 'understands' Groq here): parse
+    the free-text critique into directives, check each against the CURRENT
+    measured state, and write an accept/reject verdict with a reason. The
+    interpreter can only ever NUDGE metadata — it never changes rewards or
+    actions by itself; laws (physics_finisher / referee) keep ownership."""
+    text = (mentor.get("critique") or "").lower()
+    intents = {k: any(p in text for p in pats) for k, pats in _MENTOR_PATTERNS.items()}
+    accepted, reason = False, "n/a"
+    if intents["finish"]:
+        low = min([towers.get("enemy_left", 1.0), towers.get("enemy_right", 1.0)])
+        if low <= TOWER_FINISH_THRESHOLD:
+            accepted, reason = True, "critique=finish aligns with lowest-HP law"
+        else:
+            accepted, reason = False, "critique=finish but no tower in finish range"
+    elif intents["defend"]:
+        accepted = True; reason = "critique=defend is always legal"
+    elif intents["elixir"] and mlxir <= 4:
+        accepted, reason = True, "critique=save consistent with low elixir"
+    elif intents["counter"]:
+        accepted, reason = True, "critique=counter aligned with counter-push shaping"
+    return {"intents": intents, "accepted": accepted, "reason": reason}
+
+
 PAIN_FILE = "pain_channels.json"
 
 def _load_pain_channels():
@@ -1081,6 +1211,26 @@ def record_pain(ch, slot, spot, reward):
     return ch
 
 
+# ---------------------- CONFIGURABLE REWARD WEIGHTS (spec §4) ----------------------
+# Every shaped dopamine term lives here so the reward function can be tuned
+# without touching the loop. All values are dopamine units per event.
+REWARD_WEIGHTS = {
+    "correct_lane_defense": 0.8,
+    "spent_at_max_elixir": 0.4,
+    "elixir_economy_9plus": 0.25,
+    "counterpush_opposite_lane": 0.6,
+    "tower_advantage_held": 0.3,
+    "game_rule_followed": 0.35,
+    "enemy_troop_kill_per_px": 0.1,
+    "enemy_troop_kill_cap": 1.5,
+    "spell_connected": 0.3,
+    "spell_wasted": -1.2,
+    "wrong_lane_defense": -0.6,
+    "leak_per_tick": 0.1,
+    "cycling_amnesty": 0.15,
+    "play_with_no_threat": -0.2,
+    "tower_lost_per_tower": -2.5,
+}
 PAIN_VETO_THRESHOLD = -0.55   # avg channel pain beyond this = behavioral doubt
 
 def pain_forbidden(ch, slot, spot, net_q):
@@ -1126,6 +1276,204 @@ def q_state_fired(q_state):
             for i, x in enumerate(q_state)]
 
 
+# ---------------------- SPIKING NUCLEUS + AFFECTIVE CORE (v13/v14) -----------------
+# A real biologically-detailed spiking network (LIF neurons, STDP, homeostasis)
+# running ALONGSIDE the DQN, plus bounded affective state channels. Feature
+# flag guarded with honest fallback: if anything here fails, the DQN acts alone.
+SPIKING_ENABLED = True
+SPIKING_BIAS_SCALE = 0.10   # spiking activity can shift Q by at most this fraction of Q-spread
+SPIKING_FILE = "spiking_brain.json"
+SPIKING_VERSION = 1
+
+class SpikingAgent:
+    """Lowest-risk hybrid (v13 spec §5 option 2): the spiking mutant proposes
+    bias, the DQN decides. Reward-modulated STDP via eligibility translates
+    battle rewards into synaptic change. Affective channels are bounded,
+    inspectable computational analogues — NOT claims of feeling."""
+
+    def __init__(self):
+        self.nucleus = None
+        self.affect = None
+        self.ok = False
+        self._last_bias = None
+        self._last_state = None   # cached state vec for hippocampal storage
+        self.vetoed = set()       # action indices the prefrontal cortex vetoes
+        if SPIKING_ENABLED:
+            try:
+                from spiking_core import (SpikingNucleus, AffectiveCore,
+                                          PrefrontalCortex, HippocampalIndex)
+                self.nucleus = SpikingNucleus(n_sensory=64, n_action=20, seed=13)
+                self.affect = AffectiveCore()
+                self.cortex = PrefrontalCortex()      # working memory + vetoes
+                self.hippo = HippocampalIndex()        # episodic similarity recall
+                self.ok = True
+                self.load()
+            except Exception as e:
+                log(f"spiking nucleus unavailable — DQN-only fallback active ({e})")
+
+    def observe_state(self, state_s):
+        """Encode the 38-dim game state into the spiking network and simulate.
+        Returns a per-action bias vector (20 floats in [-1,1]) from action-
+        population firing rates, or None when disabled. Measured latency is
+        telemetry, never allowed to block gameplay (loops over 5s budget)."""
+        if not self.ok:
+            return None
+        try:
+            t0 = time.time()
+            # passive valence decay each decision tick so channels reach an
+            # equilibrium between injection and decay instead of saturating
+            self.affect.decay_step()
+            was_danger = self.affect.state["danger"]
+            # sensory encoding: 38 state dims mapped onto 64 sensory neurons
+            vals = [max(0.0, min(1.0, v)) for v in state_s[:64]]
+            vals += [0.0] * (64 - len(vals))
+            self._last_state = vals
+            # PREFRONTAL DELIBERATION (bounded, tested): working-memory veto
+            # rules + one hippocampal similarity recall, inside a wall-clock
+            # budget so it can never block the decision tick.
+            plan = {"vetoes": {}, "recalled": [], "over_budget": False}
+            try:
+                plan = self.cortex.consult(vals, self.hippo, budget_ms=2.0)
+                self.vetoed = {slot * 5 + (spot % 5)
+                               for (slot, spot) in plan.get("vetoes", {})
+                               if slot * 5 + (spot % 5) < 20}
+            except Exception as e:
+                self.vetoed = set()
+                _metrics.setdefault("spiking_errors", []).append(
+                    f"cortex: {e}")
+            self.nucleus.encode_sensory(vals)
+            # v18 structural-state channels (bounded, cross-coupled):
+            try:
+                rec = (plan.get("recalled") or [])
+                sim = rec[0]["similarity"] if rec else 0.0
+                self.affect.set("curiosity", self.affect._clamp(1.0 - sim))
+                threat = max(state_s[36], state_s[37]) if len(state_s) > 37 else 0.0
+                if threat > 0.4:
+                    self.affect.inject("pressure", 0.12)   # opponent can punish soon
+            except Exception:
+                pass
+            self.nucleus.step(50)          # 50 ms of simulated dynamics
+            # affect: danger from imminent-threat state channels, confidence
+            # from policy separation available later; injected from rewards.
+            if state_s[36] or state_s[37]:
+                self.affect.inject("danger", 0.15)
+            elif was_danger > 0.3:
+                # threat resolved: relief-like signal (v14 spec: relief on
+                # resolution of previously-high danger)
+                self.affect.inject("relief", 0.25)
+            rates = [n.spike_count for n in self.nucleus.action]
+            mx = max(rates) or 1
+            mean = sum(rates) / len(rates)
+            bias = [(r - mean) / mx for r in rates]
+            # ruled-out plays get the strongest possible negative vote; the
+            # main loop additionally excludes them from consideration via
+            # forbidden (bounded so valid alternatives always remain).
+            for a_idx in self.vetoed:
+                if a_idx < len(bias):
+                    bias[a_idx] = -1.0
+            act_pop = [n.spike_count for n in self.nucleus.action]
+            _metrics["spiking"] = {
+                "ok": True,
+                "observe_ms": round((time.time() - t0) * 1000, 1),
+                "sensory_spikes": sum(n.spike_count for n in self.nucleus.sensory),
+                "action_spikes": sum(act_pop),
+                "inh_spikes": sum(n.spike_count for n in self.nucleus.inhibitory),
+                "mean_w": round(self.nucleus.telemetry()["mean_w"], 4),
+                "pot_events": self.nucleus.telemetry()["potentiation_events"],
+                "dep_events": self.nucleus.telemetry()["depression_events"],
+                "affect": {k: round(v, 3) for k, v in self.affect.state.items()},
+                "cortex": {
+                    "working_memory": len(self.cortex.memory),
+                    "vetoes": len(self.vetoed),
+                    "deliberations": self.cortex.deliberations,
+                    "over_budget": int(bool(plan.get("over_budget"))),
+                    "recall": [r["outcome"] for r in plan.get("recalled", [])],
+                    "hippo_size": len(self.hippo.memories),
+                    "recalls_served": self.hippo.recalls_served,
+                },
+            }
+            self.nucleus.reset_transient_neurons_only()
+            return bias
+        except Exception as e:
+            log(f"spiking observe failed (DQN acting alone): {e}")
+            return None
+
+    def learn(self, reward, action=None):
+        """Reward-modulated plasticity + affective updates off the real reward.
+        Also writes the (slot, spot, outcome) into prefrontal working memory
+        (veto evidence) and the played state+outcome into the hippocampus."""
+        if not self.ok or reward is None:
+            return
+        try:
+            if action is not None:
+                self.cortex.observe(action // 5, action % 5, reward)
+                if self._last_state is not None:
+                    self.hippo.store(list(self._last_state), reward)
+            if reward > 0:
+                self.affect.inject("pos_rpe", min(0.3, reward * 0.15))
+            elif reward < 0:
+                self.affect.inject("neg_rpe", min(0.3, -reward * 0.15))
+            # momentum: the recent-trend channel (EMA of reward signs), not a
+            # win-counter — it shapes persistence of current strategy.
+            self.affect.state["momentum"] = self.affect._clamp(
+                self.affect.state["momentum"] * 0.97 + 0.2 * max(-1.0, min(1.0, reward)),)
+            # valence-gated plasticity scale: strong frustration slows new
+            # potentiation so one system cannot grab all the credit.
+            val = self.affect.valence_scalar()
+            scale = max(0.25, 1.0 + 0.5 * val)
+            self.nucleus.apply_reward(max(-2.0, min(2.0, reward)) * scale)
+        except Exception as e:
+            log(f"spiking learn failed: {e}")
+
+    def save(self):
+        if not self.ok:
+            return
+        try:
+            payload = {"version": SPIKING_VERSION,
+                       "nucleus": self.nucleus.state_dict(),
+                       "affect": self.affect.state,
+                       "cortex": {"memory": list(self.cortex.memory)},
+                       "hippo": self.hippo.memories[-self.hippo.max_memories:]}
+            tmp = SPIKING_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(payload, f)
+            os.replace(tmp, SPIKING_FILE)   # atomic write
+        except Exception as e:
+            log(f"spiking checkpoint save failed: {e}")
+
+    def load(self):
+        if not os.path.exists(SPIKING_FILE):
+            return
+        try:
+            data = json.load(open(SPIKING_FILE))
+            if int(data.get("version", 0)) != SPIKING_VERSION:
+                log(f"spiking checkpoint version mismatch — starting fresh nucleus")
+                return
+            self.nucleus.load_state_dict(data["nucleus"])
+            for k, v in data.get("affect", {}).items():
+                if k in self.affect.state:
+                    self.affect.state[k] = float(v)
+            # durable reasoning state: veto evidence + episodic index restore
+            for slot, spot, o in data.get("cortex", {}).get("memory", []):
+                self.cortex.observe(int(slot), int(spot), float(o))
+            for s, o in data.get("hippo", []):
+                self.hippo.store(list(map(float, s)), float(o))
+            log(f"spiking nucleus restored (weights + affect + cortex {len(self.cortex.memory)} memories + hippo {len(self.hippo.memories)})")
+        except Exception as e:
+            log(f"spiking checkpoint corrupt, starting fresh: {e}")
+
+    def new_match_reset(self):
+        """Transient activity resets between matches; durable weights persist."""
+        if not self.ok:
+            return
+        try:
+            self.nucleus.reset_transient()
+            for k in ("danger", "relief", "neg_rpe", "pos_rpe"):
+                self.affect.set(k, 0.0)
+        except Exception:
+            pass
+
+
 # ---------------------- Advanced Neural Architecture (Dueling ResNet QNet) ----------------------
 class SynapticResBlock(nn.Module):
     """Residual cortical column with LayerNorm + SiLU activation so deep neuron
@@ -1144,71 +1492,107 @@ class SynapticResBlock(nn.Module):
         return self.act(x + h)
 
 
+# ============================================================
+# MODEL PROFILES (scalable capacity, honestly counted / v18):
+#   compact   768 x 5  ≈ 7.5M params
+#   standard  1024 x 6 ≈ 13.7M params
+#   advanced  1280 x 10 ≈ 34-35M params (30-40M target band)
+# Chosen with NEUROML_PROFILE env var; parameter counts are computed from the
+# instantiated modules (never from hardcoded claims) and the active profile
+# plus its measured sizes are published to _metrics for the dashboard.
+# ============================================================
+QNET_PROFILES = {
+    "compact": (768, 5),
+    "standard": (1024, 6),
+    "advanced": (1280, 10),
+}
+
+
+def param_report(net):
+    """Honest trainable-parameter report from the instantiated modules:
+    totals per class of layer, FP32 size in MB, split policy-stream totals."""
+    trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    sensory = sum(p.numel() for n, p in net.named_parameters() if n.startswith("sensory."))
+    cortical = sum(p.numel() for n, p in net.named_parameters() if n.startswith("cortex"))
+    streams = sum(p.numel() for n, p in net.named_parameters()
+                  if n.startswith(("value_stream.", "advantage_stream.")))
+    return {"profile": getattr(net, "profile", "?"),
+            "trainable_params": trainable,
+            "sensory_params": sensory,
+            "cortical_params": cortical,
+            "stream_params": streams,
+            "fp32_mb": round(trainable * 4 / 1024 / 1024, 1),
+            "depth": getattr(net, "depth", 0)}
+
+
 class QNet(nn.Module):
-    """Dueling Surge-Neuron Architecture v4 (measured-loads cortex):
-      - Sensory Input Stem (38 -> 768 + LayerNorm + SiLU)
-      - 5 Residual Synaptic Cortical Blocks (768 -> 768)  ≈ 11.8M cortical synapses
-      - Limbic State-Value stream V(s): 768 -> 384 -> 1
-      - Motor Action-Advantage stream A(s,a): 384 -> 20
+    """Dueling Surge-Neuron Architecture v5-deep (bigger, measured):
+      - Sensory Input Stem (38 -> 1024 + LayerNorm + SiLU)
+      - 6 Residual Synaptic Cortical Blocks (1024 -> 1024) ≈ 12.6M cortical synapses
+      - Limbic State-Value stream V(s): 1024 -> 512 -> 1
+      - Motor Action-Advantage stream A(s,a): 512 (rolled off) -> 20
       - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
-    6.26M trainable parameters ≈ 50 MB fp32 checkpoint. MEASURED on this CPU:
-    single forward 7.7ms (action selection never blocks), batch-128 forward
-    79ms, train step ≈ 6s but only every 2nd tick, overlapping the phonée
-    screencap pipeline. Capacity is REAL: deck-synergy and counter
-    representations need this width at 38-dim state inputs.
+    ≈ 13.6M trainable parameters ≈ 100 MB fp32 checkpoint. MEASURED on this CPU:
+    single forward ≈ double-digit ms (action selection never blocks), train
+    step a few hundred ms — a fraction of the 5s battle tick. Deeper + wider
+    cortex for richer deck-synergy / counter representations at 38-dim state.
+    Migration: v4-checkpoint sensory stem is partially copied; the new columns
+    then learn fast via warm training over the persisted replay buffer.
     """
-    WIDE = 768
-    NARROW = 384
+    WIDE = 1024
+    NARROW = 512
 
     def __init__(self):
         super().__init__()
-        W = self.WIDE
+        import os as _os
+        self.profile = _os.environ.get("NEUROML_PROFILE", "standard")
+        wide, depth = QNET_PROFILES[self.profile]
+        self.W = wide          # instance width (WIDE/NARROW kept for older code)
+        self.depth = depth
+        W = wide
         self.sensory = nn.Sequential(
             nn.Linear(STATE_DIM, W),
             nn.LayerNorm(W),
             nn.SiLU(),
         )
-        self.cortex1 = SynapticResBlock(W)
-        self.cortex2 = SynapticResBlock(W)
-        self.cortex3 = SynapticResBlock(W)
-        self.cortex4 = SynapticResBlock(W)
-        self.cortex5 = SynapticResBlock(W)
+        # depth-scaled cortical columns, names cortex1..cortexN so checkpoint
+        # keys stay migration-stable across profiles
+        for i in range(1, depth + 1):
+            setattr(self, f"cortex{i}", SynapticResBlock(W))
 
-        # Limbic State-Value stream V(s)
+        # Limbic State-Value stream V(s): wide -> wide//2 -> 1
         self.value_stream = nn.Sequential(
-            nn.Linear(W, self.NARROW),
-            nn.LayerNorm(self.NARROW),
+            nn.Linear(W, wide // 2),
+            nn.LayerNorm(wide // 2),
             nn.SiLU(),
-            nn.Linear(self.NARROW, 1),
+            nn.Linear(wide // 2, 1),
         )
-        # Motor Action-Advantage stream A(s,a)
+        # Motor Action-Advantage stream A(s,a): wide//2 -> 20
         self.advantage_stream = nn.Sequential(
-            nn.Linear(W, self.NARROW),
-            nn.LayerNorm(self.NARROW),
+            nn.Linear(W, wide // 2),
+            nn.LayerNorm(wide // 2),
             nn.SiLU(),
-            nn.Linear(self.NARROW, ACTION_DIM),
+            nn.Linear(wide // 2, ACTION_DIM),
         )
 
     def forward_streams(self, x):
         single = x.dim() == 1
         if single:
             x = x.unsqueeze(0)
-        h0 = self.sensory(x)
-        h1 = self.cortex1(h0)
-        h2 = self.cortex2(h1)
-        h3 = self.cortex3(h2)
-        h4 = self.cortex4(h3)
-        h5 = self.cortex5(h4)
-        v_hid = self.value_stream[:-1](h5)
-        a_hid = self.advantage_stream[:-1](h5)
+        h = self.sensory(x)
+        hides = []
+        for i in range(1, self.depth + 1):
+            h = getattr(self, f"cortex{i}")(h)
+            hides.append(h)
+        v_hid = self.value_stream[:-1](h)
+        a_hid = self.advantage_stream[:-1](h)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
-            return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
-                    h2.squeeze(0), h3.squeeze(0), h4.squeeze(0),
-                    h5.squeeze(0), v_hid.squeeze(0))
-        return q, v, a, h1, h2, h3, h4, h5, v_hid
+            return (q.squeeze(0), v.squeeze(0), a.squeeze(0),
+                    *[t.squeeze(0) for t in hides], v_hid.squeeze(0))
+        return q, v, a, *hides, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1219,7 +1603,7 @@ TRAIN_LOG = open("training.log", "a", buffering=1, encoding="utf-8", errors="rep
 MENTOR_LOG = open("mentor.log", "a", buffering=1, encoding="utf-8", errors="replace")
 COACH_FILE = "ai_coach.jsonl"
 _metrics = {
-    "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
+    "architecture": "Dueling-Double-DQN (1024×6 resnet depth) + PER + 3-Step + Groq-VLM",
     "steps": 0,
     # Seed the game-memory digest so the dashboard shows it even before the
     # first distill of this session (distill_match refreshes it every match end).
@@ -1286,6 +1670,11 @@ class TargetedDQN:
         self.policy = QNet()
         self.target = QNet()
         self.target.load_state_dict(self.policy.state_dict())
+        # honest capacity report (publish + log so claims are always measured)
+        _metrics["param_report"] = param_report(self.policy)
+        pr = _metrics["param_report"]
+        log(f"model profile '{pr['profile']}': {pr['trainable_params']:,} params "
+            f"({pr['fp32_mb']} MB fp32, depth {pr['depth']})")
         self.optim = optim.AdamW(self.policy.parameters(), lr=8e-4, weight_decay=1e-4)
         # GB-scale memory: 120k transitions × ~0.5 KB heavy states ≈ up to ~60 MB
         # in RAM, replay JSON dumps to disk every checkpoint so DOWNLOADERS and
@@ -1309,13 +1698,8 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, h3, h4, h5, v_hid = self.policy.forward_streams(x)
-            return {
-                "layer1_mean": round(h1.abs().mean().item(), 3),
-                "layer2_mean": round(h2.abs().mean().item(), 3),
-                "layer3_mean": round(h3.abs().mean().item(), 3),
-                "layer4_mean": round(h4.abs().mean().item(), 3),
-                "layer5_mean": round(h5.abs().mean().item(), 3),
+            q, v, a, *hides, v_hid = self.policy.forward_streams(x)
+            rep = {
                 "limbic_mean": round(v_hid.abs().mean().item(), 3),
                 "state_value_V": round(v.item(), 3),
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
@@ -1323,21 +1707,23 @@ class TargetedDQN:
                 "output_value": round(q.max().item(), 3),
                 # FULL-depth per-neuron activations (dashboard draws live brain)
                 "sensory_neurons": q_state_fired(q_state),
-                "layer1_neurons": [round(v_, 3) for v_ in h1.tolist()],
-                "layer2_neurons": [round(v_, 3) for v_ in h2.tolist()],
-                "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
-                "layer4_neurons": [round(v_, 3) for v_ in h4.tolist()],
-                "layer5_neurons": [round(v_, 3) for v_ in h5.tolist()],
                 "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
                 "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
+                "depth": len(hides),
             }
+            for i, h in enumerate(hides, 1):
+                rep[f"layer{i}_mean"] = round(h.abs().mean().item(), 3)
+                rep[f"layer{i}_neurons"] = [round(v_, 3) for v_ in h.tolist()]
+            return rep
 
-    def act(self, state, forbidden=None, pain_channels=None):
+    def act(self, state, forbidden=None, pain_channels=None, bias=None):
         """Action selection (9ms, never blocked by training). Pain channels are
         applied as behavioral value suppression: the chosen play must beat the
         pain-adjusted value, so repeating a proven mistake requires being
-        genuinely better. Fallback default is the plain policy."""
+        genuinely better. Fallback default is the plain policy. `bias` is the
+        spiking nucleus readout; it shifts Q by at most SPIKING_BIAS_SCALE of
+        the Q-spread, so the DQN remains primary with trivial fallback."""
         if random.random() < self.epsilon:
             a = random.randrange(ACTION_DIM)
             tries = 0
@@ -1362,6 +1748,12 @@ class TargetedDQN:
                             # if the net value also poor; genuine better plays win)
                             q[a_idx] = torch.minimum(
                                 q[a_idx], torch.tensor(avg * 0.5))
+            if bias is not None:
+                # spiking-nucleus vote: bounded share of the Q-spread
+                width = float(q.max() - q.min())
+                b = torch.tensor([bias[i] if i < len(bias) else 0.0
+                                  for i in range(ACTION_DIM)])
+                q = q + SPIKING_BIAS_SCALE * width * b
             return int(torch.argmax(q).item())
 
     def _push_per(self, transition, init_prio=None):
@@ -1475,7 +1867,7 @@ class TargetedDQN:
 
     def save(self):
         torch.save({
-            "arch": "dueling_resnet_v4_measured",
+            "arch": "dueling_resnet_v5_deep",
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
@@ -1492,11 +1884,11 @@ class TargetedDQN:
             try:
                 ckpt = torch.load("ml_policy.pt")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v4_measured":
+                if ckpt.get("arch") == "dueling_resnet_v5_deep":
                     self.policy.load_state_dict(ckpt["policy"])
                     self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v4 (768×5) brain, epsilon={self.epsilon:.2f}")
-                elif ckpt.get("arch") in ("dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
+                    log(f"loaded Dueling-ResNet v5-deep (1024×6) brain, epsilon={self.epsilon:.2f}")
+                elif ckpt.get("arch") in ("dueling_resnet_v4_measured", "dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
                     # UPGRADE MIGRATION: sensory stem partial copy (works for any
                     # narrower predecessor), the rest starts fresh but learns fast
                     # from the big replay buffer.
@@ -1514,7 +1906,7 @@ class TargetedDQN:
                         except Exception:
                             pass
                     self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated {ckpt.get('arch')} sensory weights into v4 brain, epsilon={self.epsilon:.2f}")
+                    log(f"migrated {ckpt.get('arch')} sensory stem into v5-deep (1024×6) cortex; warm-training from replay, epsilon={self.epsilon:.2f}")
                 else:
                     log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
@@ -1696,6 +2088,8 @@ def main():
     offline_since = None
     brain = TargetedDQN()
     brain.load()
+    spike_agent = SpikingAgent()   # spiking nucleus + affective core (guarded)
+    spike_agent.new_match_reset()
     try:
         autonomous_deck_session(game_memory_digest())  # deck built at every startup
     except Exception as e:
@@ -1717,12 +2111,21 @@ def main():
     prev_towers = None
     elixir_leak_ticks = 0
     last_spell_played = None
+    _cast_xy = None
+    _pred_prev = None
+    _pred_mae = {"tower_hp_mae": 0.0, "elixir_mae": 0.0, "n": 0}
     _finisher_cast = False
     train_loss_ma = None
     cards_played = 0
     mentor_cooldown = 0.0
     opp_memory_store = _load_opponent_memory()
     game_memory = _load_game_memory()
+    # LIFETIME RECORD SEED: the W/L counters start from the durable game-memory
+    # book instead of from zero on every restart (dashboard honesty fix).
+    _seeded = seed_lifetime_record(_metrics, game_memory)
+    if _seeded:
+        log(f"lifetime record seeded: {_metrics['wins_v']}-{_metrics['losses_v']} "
+            f"over {_seeded} tracked matches ({_metrics['win_rate']}%)")
     match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
                    "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
                    "rule_corrections": 0, "spot_totals": {}}
@@ -1760,6 +2163,10 @@ def main():
 
             # ---- gate passed: USER opened Clash — play ----
             png = screenshot()
+            png_ts = os.path.getmtime(png) if os.path.exists(png) else time.time()
+            obs_age = time.time() - png_ts
+            _metrics["observation_ts"] = round(png_ts, 2)
+            _metrics["observation_age_ms"] = round(obs_age * 1000, 0)
             from PIL import Image
             img = Image.open(png).convert("RGB")
             state = classify(img)
@@ -1796,17 +2203,55 @@ def main():
                 stuck_since = None
                 back_streak = 0
                 just_queued = False
+                if obs_age > 12.0:
+                    # STALE OBSERVATION GUARD (spec P1§1): an old frame is not
+                    # a battlefield — acting on it would tap blind into the
+                    # past. Skip the shot; the screencap refreshes next loop.
+                    log(f"stale observation ({obs_age:.1f}s old > 12s) — skip shot")
+                    _metrics["stale_observations"] = int(_metrics.get("stale_observations", 0)) + 1
+                    time.sleep(1.0)
+                    continue
                 if opponent is None:
                     opponent = opponent_new_match()
                     match_stats = {"reward_total": 0.0, "ticks": 0, "cards_played": 0,
                                    "pushes_faced": 0, "towers_down": 0, "towers_lost": 0,
                                    "rule_corrections": 0, "spot_totals": {}}
                     log("new opponent tracked (memory persistent across matches)")
+                    spike_agent.new_match_reset()   # transient reset, weights persist
                 mlxir = elixir_count(img)
                 lv, rv = lane_variances(img)
                 towers = tower_healths(img)
                 arena = scan_arena_vision(img)
                 afford = hand_affordability(img, mlxir)
+
+                # ---- PREDICTIVE WORLD MODEL (one-tick horizon, honestly
+                # scored): the model persists tower HP (nothing changed it) and
+                # regenerates elixir (~0.7/tick); the NEXT tick's observation
+                # is scored against it so prediction error is real data. ----
+                _pn = _pred_mae["n"] + 1
+                if _pred_prev is not None:
+                    pe_tower = (abs(towers["ally_left"] - _pred_prev["ally_left"]) +
+                                abs(towers["ally_right"] - _pred_prev["ally_right"]) +
+                                abs(towers["enemy_left"] - _pred_prev["enemy_left"]) +
+                                abs(towers["enemy_right"] - _pred_prev["enemy_right"]))
+                    pe_elixir = abs(min(10, max(0, mlxir)) - _pred_prev["elixir"])
+                    _pred_mae["tower_hp_mae"] = round(
+                        _pred_mae["tower_hp_mae"] * (1 - 1 / _pn) + pe_tower / _pn, 4)
+                    _pred_mae["elixir_mae"] = round(
+                        _pred_mae["elixir_mae"] * (1 - 1 / _pn) + pe_elixir / _pn, 4)
+                    _pred_mae["n"] = _pn
+                    _metrics["prediction"] = {
+                        "horizon_ticks": 1,
+                        "n_scored": _pn,
+                        "predictedTowerHP": {k: round(v, 3) for k, v in _pred_prev.items() if k != "elixir"},
+                        "tower_hp_mae": _pred_mae["tower_hp_mae"],
+                        "elixir_mae": _pred_mae["elixir_mae"],
+                    }
+                _pred_prev = {
+                    "ally_left": towers["ally_left"], "ally_right": towers["ally_right"],
+                    "enemy_left": towers["enemy_left"], "enemy_right": towers["enemy_right"],
+                    "elixir": min(10, mlxir + 0.7),
+                }
 
                 if arena["enemy_left"] > arena["enemy_right"] + 4 or arena["enemy_bridge_l"] >= 3:
                     lane = "left"
@@ -1831,7 +2276,13 @@ def main():
                         for spot in range(5):
                             forbidden.add(slot * 5 + spot)
 
-                action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels)
+                _spike_bias = spike_agent.observe_state(state_s)   # spiking vote
+                # prefrontal vetoes join the forbidden set, bounded so valid
+                # alternatives always remain for the DQN to choose from
+                if spike_agent.vetoed and len(forbidden) + len(spike_agent.vetoed) < 12:
+                    forbidden |= spike_agent.vetoed
+                action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels,
+                                   bias=_spike_bias)
                 _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
@@ -1844,16 +2295,68 @@ def main():
                 except Exception:
                     pass
                 finishers = tower_finish_check(towers, hand_deck, mlxir)
-                action, rule_note = card_play_policy(
-                    action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
-                slot, spot_i = divmod(action, 5)
-                spot_n = SPOT_NAMES[spot_i]
+                # ---- PHYSICS OVERRIDE (lowest-HP tower law): a kill shot is
+                # deterministic — if a held affordable spell can kill an enemy
+                # tower, it is cast EXACTLY ON that tower regardless of what
+                # the network or the coach prefers. No Q-value may drop a
+                # 1-tap tower kill for a safer-looking play. ----
+                _kill = physics_finisher(towers, hand_deck, mlxir, afford)
+                if _kill:
+                    _metrics["physics"] = {
+                        "law": "lowest-HP tower",
+                        "side": _kill["side"],
+                        "tower_hp": _kill["hp"],
+                        "spell": _kill["spell"],
+                        "spell_damage_frac": _kill["dmg"],
+                        "target_xy": _kill["target_xy"],
+                        "observation_age_s": round(obs_age, 2),
+                    }
+                    action = _kill["slot"] * 5 + (0 if _kill["side"] == "left" else 1)
+                    _cast_xy = _kill["target_xy"]   # land ON the tower
+                    rule_note = (f"physics finisher->{_kill['side']} "
+                                 f"(tower {_kill['hp']*100:.0f}% HP, {_kill['spell']})")
+                    slot, spot_i = divmod(action, 5)
+                    spot_n = SPOT_NAMES[spot_i]
+                    match_stats["rule_corrections"] += 1
+                    log(f"PHYSICS: {_kill['spell']} -> {_kill['side']} tower at "
+                        f"{_kill['hp']*100:.0f}% HP, exact tap {_kill['target_xy']}")
+                else:
+                    _cast_xy = None
+                    _low = [(towers.get(k, 1.0), s) for s, k in
+                            (("left", "enemy_left"), ("right", "enemy_right"))
+                            if towers.get(k, 1.0) > 0.03]
+                    _metrics["physics"] = {
+                        "law": "lowest-HP tower",
+                        "side": (min(_low)[1] if _low else None),
+                        "tower_hp": (round(min(_low)[0], 3) if _low else None),
+                        "killable": False,
+                    }
+                    action, rule_note = card_play_policy(
+                        action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
+                    slot, spot_i = divmod(action, 5)
+                    spot_n = SPOT_NAMES[spot_i]
                 if rule_note != "net":
-                    reward_rules_add = 0.35  # following learned game rules is smart play
+                    reward_rules_add = REWARD_WEIGHTS["game_rule_followed"]
                     match_stats["rule_corrections"] += 1
                     log(f"RULES: {rule_note} slot={slot} spot={spot_n}")
                 else:
                     reward_rules_add = 0.0
+                # ---- DECISION PROVENANCE (who chose this play, and why): the
+                # policy may be overridden by the rules referee, the pain
+                # channels, the prefrontal vetoes or an unaffordable-slot mask
+                # — the final choice is always recorded with its origin so no
+                # component can silently select an action. ----
+                _metrics["decision"] = {
+                    "t": time.strftime("%H:%M:%S"),
+                    "action": f"slot{slot}.{spot_n}",
+                    "origin": ("dqn_policy" if rule_note == "net" and not spike_agent.vetoed
+                               else "rules_referee" if rule_note != "net"
+                               else "prefrontal_veto"),
+                    "rule_note": rule_note,
+                    "masked_actions": int(_metrics.get("masked_actions", 0) or len(forbidden)),
+                    "vetoed_actions": sorted(spike_agent.vetoed),
+                    "elixir": mlxir, "lane": lane,
+                }
                 # game memory: accumulate per-spot dopamine totals
                 _st = match_stats["spot_totals"].setdefault(spot_n, [0.0, 0])
                 match_stats["spot_totals"][spot_n] = [round(_st[0], 3), _st[1] + 1]
@@ -1884,12 +2387,12 @@ def main():
                         _hit_tower = (_el_tower_drop + _er_tower_drop) >= 0.03
                         if _hit_units or _hit_tower or _finisher_cast:
                             _v = "damaged units" if _hit_units else ("chipped enemy tower" if _hit_tower else "finisher attempt")
-                            _bonus = 0.3
+                            _bonus = REWARD_WEIGHTS["spell_connected"]
                             reward += _bonus
                             _events.append((f"✨ spell connected: {_v}", _bonus))
                             log(f"SPELL VALUE: {_spell_name} {_v} -> +{_bonus:.2f}")
                         else:
-                            _punish = -1.2
+                            _punish = REWARD_WEIGHTS["spell_wasted"]
                             record_pain(pain_channels, _slot_i, _spot_i, _punish)
                             _save_pain_channels(pain_channels)
                             reward += _punish
@@ -1913,7 +2416,7 @@ def main():
                             "ally_right": towers["ally_right"],
                             "ally_king": towers["ally_king"],
                         }
-                        dmg_punish, dmg_source = groq_damage_punishment(dmg_info, img)
+                        dmg_punish, dmg_source = referee_pain(dmg_info, towers.get("ally_alive", 3), tick_in_match)
                         reward += dmg_punish
                         match_stats["towers_lost"] += int(ally_lost)
                         log(
@@ -1935,31 +2438,34 @@ def main():
                 # ---- RICH DOPAMINE SHAPING (each item logged as its OWN
                 # dopamine event so the feed never shows a bad behavior green) ----
                 # (_events was created above for spell tracking — reuse it)
-                if dmg_punish is None:
+                # SIMULTANEOUS ACCOUNTING (spec §4): reward shaping runs on BOTH
+                # tower-hit and clean ticks; the damage punishment is then ADDED
+                # on top so neither signal is ever censored or double-counted.
+                if True:
                     # 1) correct-lane defense
                     if lane:
                         if (lane == "left" and spot_n in ("left_defend", "bridge_left")) or \
                            (lane == "right" and spot_n in ("right_defend", "bridge_right")):
-                            reward += 0.8
-                            _events.append(("✅ correct lane defense", 0.8))
+                            reward += REWARD_WEIGHTS["correct_lane_defense"]
+                            _events.append(("✅ correct lane defense", REWARD_WEIGHTS["correct_lane_defense"]))
                     # 2) spend at max elixir
                     if mlxir >= 10 and "center_back" not in spot_n and "bridge" in spot_n:
-                        reward += 0.4
-                        _events.append(("✅ spent at max elixir", 0.4))
+                        reward += REWARD_WEIGHTS["spent_at_max_elixir"]
+                        _events.append(("✅ spent at max elixir", REWARD_WEIGHTS["spent_at_max_elixir"]))
                     # 3) elixir discipline: playing at 9-10 elixir is good economy
                     if mlxir >= 9:
-                        reward += 0.25
-                        _events.append(("✅ elixir economy (played at 9+)", 0.25))
+                        reward += REWARD_WEIGHTS["elixir_economy_9plus"]
+                        _events.append(("✅ elixir economy (played at 9+)", REWARD_WEIGHTS["elixir_economy_9plus"]))
                     # 4) proactive counter-push: attacking the opposite lane when enemy commits
                     if arena["enemy_left"] + arena["enemy_right"] >= 8 and "bridge" in spot_n:
                         opposite = arena["enemy_right"] if arena["enemy_left"] >= arena["enemy_right"] else arena["enemy_left"]
                         if opposite <= 2:
-                            reward += 0.6
-                            _events.append(("✅ counter-push other lane", 0.6))
+                            reward += REWARD_WEIGHTS["counterpush_opposite_lane"]
+                            _events.append(("✅ counter-push other lane", REWARD_WEIGHTS["counterpush_opposite_lane"]))
                     # 5) counter-threshold rewards (visible dopamine when ahead)
                     if towers["enemy_alive"] < towers["ally_alive"]:
-                        reward += 0.3
-                        _events.append(("✅ tower advantage held", 0.3))
+                        reward += REWARD_WEIGHTS["tower_advantage_held"]
+                        _events.append(("✅ tower advantage held", REWARD_WEIGHTS["tower_advantage_held"]))
                     # 6) RULES dopamine: playing by the law of the game is rewarded
                     if reward_rules_add:
                         reward += reward_rules_add
@@ -1970,18 +2476,28 @@ def main():
                     e_units_now = arena["enemy_left"] + arena["enemy_right"]
                     e_death = max(0, e_units_prev - e_units_now)
                     if e_death >= 4:
-                        kill_dopamine = min(1.5, round(e_death * 0.1, 2))
+                        kill_dopamine = min(REWARD_WEIGHTS["enemy_troop_kill_cap"], round(e_death * REWARD_WEIGHTS["enemy_troop_kill_per_px"], 2))
                         reward += kill_dopamine
                         _events.append((f"💀 killed {e_death}px of enemy troops", kill_dopamine))
                         log(f"ENEMY TROOPS KILLED ({e_death}px bars fell) -> dopamine +{kill_dopamine:.2f}")
-                else:
-                    reward = min(reward, dmg_punish)
-                    _events.append(("🛑 my tower took damage", dmg_punish))
-                    _events.append(("⛔ good events censored — tower damage dominates this tick", 0.0))
+                if dmg_punish is not None:
+                    # the damage punishment STACKS on the earned shaping above
+                    reward += dmg_punish
+                    _events.append(("\U0001f6d1 my tower took damage", dmg_punish))
                     # SYNAPTIC PAIN: this (slot,spot) channel gets an LTD tag —
                     # repeating the same play will hurt more and be avoided sooner.
                     record_pain(pain_channels, slot, spot_i, dmg_punish)
                     _save_pain_channels(pain_channels)
+
+                # ---- REWARD LEDGER: every component of this tick's reward in
+                # the machine ledger + team-total aggregates (no censoring) ----
+                _rl = _metrics.setdefault("reward_ledger", [])
+                _comp = [{"e": e, "r": round(r_, 3)} for e, r_ in _events if r_ != 0.0]
+                _rl.append({"t": time.strftime("%H:%M:%S"), "spot": spot_n,
+                            "components": _comp, "net": round(reward, 3),
+                            "tower_damage": dmg_punish})
+                _metrics["reward_ledger"] = _rl[-60:]
+                reward_totals_update(_metrics.setdefault("reward_totals", {}), _events, dmg_punish)
 
                 # ---- PUNISHMENTS (always their OWN negative event, never green) ----
                 # CYCLING AMNESTY: leaking while deliberately cycling cheap cards
@@ -1990,36 +2506,38 @@ def main():
                 cheap_in_hand = sum(1 for i in range(4) if state_s[7 + i] > 0.5) >= 2
                 cycling_ok = leaking and cheap_in_hand and not lane
                 if mlxir <= 2 and lane is None:
-                    reward -= 0.2
-                    _events.append(("🔻 wasted elixir nowhere (played with no threat)", -0.2))
+                    reward += REWARD_WEIGHTS["play_with_no_threat"]
+                    _events.append(("🔻 wasted elixir nowhere (played with no threat)", REWARD_WEIGHTS["play_with_no_threat"]))
                 if leaking and not cycling_ok:
                     elixir_leak_ticks += 1
-                    leak_punish = 0.1 * elixir_leak_ticks
+                    leak_punish = REWARD_WEIGHTS["leak_per_tick"] * elixir_leak_ticks
                     reward -= leak_punish
                     _events.append((f"💧 ELIXIR LEAK #{elixir_leak_ticks}", -leak_punish))
                 elif leaking and cycling_ok:
                     elixir_leak_ticks = 0
-                    _events.append(("♻️ cycling cheap cards at max elixir (allowed)", 0.15))
+                    _events.append(("♻️ cycling cheap cards at max elixir (allowed)", REWARD_WEIGHTS["cycling_amnesty"]))
                 else:
                     elixir_leak_ticks = 0
                 # dropped tower this tick = pure red event even if kills happened
                 if prev_towers is not None:
                     _tl = max(0, prev_towers["ally_alive"] - towers["ally_alive"])
                     if _tl > 0:
-                        _events.append((f"💀 LOST {_tl} TOWER(S)", -2.5 * _tl))
-                # incorrect lane defense = red
-                if lane and dmg_punish is None:
+                        _events.append((f"💀 LOST {_tl} TOWER(S)", REWARD_WEIGHTS["tower_lost_per_tower"] * _tl))
+                # incorrect lane defense = red (still valid on tower-hit ticks:
+                # the defender's CHOICE not to defend the lane is a real error)
+                if lane:
                     if (lane == "left" and spot_n in ("right_defend", "bridge_right")) or \
                        (lane == "right" and spot_n in ("left_defend", "bridge_left")):
-                        reward -= 0.6
-                        _events.append(("❌ defended the WRONG lane", -0.6))
+                        reward += REWARD_WEIGHTS["wrong_lane_defense"]
+                        _events.append(("❌ defended the WRONG lane", REWARD_WEIGHTS["wrong_lane_defense"]))
 
                 # Humanized swipe: tiny jitter on start point + variable duration
                 jx = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
                 jy = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
                 dur = random.randint(280, 420)
                 x, y = CARDS[slot % 4]
-                sx, sy = FIELD_SPOTS[spot_n]
+                # physics finishers tap EXACTLY ON the enemy tower, not a generic row
+                sx, sy = (_cast_xy if _cast_xy else FIELD_SPOTS[spot_n])
                 sh(["shell", "input", "swipe", str(x + jx), str(y + jy), str(sx), str(sy), str(dur)])
                 time.sleep(0.45)
                 # Track spell casts for next-tick value judgment (hit vs wasted)
@@ -2031,7 +2549,7 @@ def main():
                     pass
                 if CARDS_DB.get(str(_played_name).lower(), {}).get("role") == "spell":
                     last_spell_played = (slot, spot_i)
-                    _finisher_cast = bool(finishers) and rule_note.startswith("finisher")
+                    _finisher_cast = bool(finishers) and "finisher" in rule_note
                 cards_played += 1
                 tick_in_match += 1
                 # game-memory accumulators
@@ -2113,6 +2631,7 @@ def main():
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
+                    spike_agent.learn(reward, action=prev_action)   # STDP + valence + prefrontal/hippocampal memory
                     # PAIN drives REPLAY priority: painful channels' transitions
                     # get sampled more (revisit the mistake until it's fixed)
                     _pb = pain_priority_boost(pain_channels, prev_action // 5, prev_action % 5, reward)
@@ -2149,6 +2668,8 @@ def main():
                         log(f"checkpoint saved: buffer={len(brain.buffer)} loss={train_loss_ma:.4f}")
 
                 # ---- AI Coach (Punisher + Mentor) reviews every move ----
+                # (mentor_cooldown is honored inside the governor so state_desc
+                # is always defined when the advisory path runs)
                 mentor = None
                 if not leaking and time.time() >= mentor_cooldown:
                     mentor_cooldown = time.time() + 22  # stay under free-tier rate limit
@@ -2166,12 +2687,29 @@ def main():
                         f"hand_deck={hand_deck}, affordable_slots={affordable_slots}, phase={phase}, "
                         f"recent_creeps={len(opp_memory_store.get('recent_opponents', []))}"
                     )
+                    # Coach advisory is STATE-CHECKED (spec §7): a recommendation
+                    # is only accepted if it targets the lowest-HP tower lane and
+                    # is affordable — the coach can never silently overwrite the
+                    # laws-of-physics decision.
                     mentor = groq_reward_governor(state_desc, spot_n, reward, img)
+                    if mentor.get("recommended_spot") == "bridge_right" and \
+                            towers.get("enemy_left", 1.0) < towers.get("enemy_right", 1.0):
+                        mentor["critique"] = (mentor.get("critique") or "") + " [physics vetoed: target the LOWER-HP left tower]"
+                        mentor["recommended_spot"] = "bridge_left"
+                        log("COACH physics check: recommendation redirected to the lower-HP tower")
                     if mentor["source"] == "groq_oss_coach":
-                        # PUNISHER: blend coach verdict into dopamine signal
+                        # ADVISORY-ONLY MENTOR: Groq sees the context and
+                        # critiques, but the DETERMINISTIC REFEREE owns every
+                        # dopamine and pain signal. The delta is logged, never
+                        # applied (saves Groq tokens; no model inference in the
+                        # reward path). The v18 deterministic referee and the
+                        # structural rules ARE the pain/dopamine authority.
+                        _mentor_intent = interpret_mentor(mentor, towers, mlxir)
+                        _metrics["mentor_intent"] = _mentor_intent
+                        _metrics["groq_tokens_saved_ticks"] = int(_metrics.get("groq_tokens_saved_ticks", 0)) + 1
                         if mentor["reward_delta"] is not None:
-                            reward += mentor["reward_delta"]
-                            log(f"COACH review: {mentor['critique']} (reward_delta={mentor['reward_delta']:+.2f})")
+                            log(f"COACH advisory (NOT applied): {mentor['critique']} "
+                                f"(suppressed delta {mentor['reward_delta']:+.2f})")
                         mentor_entry = {
                             "played": spot_n, "critique": mentor.get("critique"),
                             "reward_delta": mentor.get("reward_delta"),
@@ -2181,7 +2719,7 @@ def main():
                         mentor_log_line(mentor_entry)
                         _metrics["mentor_agree"] = _metrics.get("mentor_agree", 0)
                         # MENTOR: remember the coach's recommended action for this state
-                        if mentor["recommended_spot"] is not None:
+                        if mentor["recommended_spot"] is not None and mentor["recommended_spot"] in SPOT_TO_ACTION:
                             rec_action = slot * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
                             brain._push_per([state_s, rec_action, 0.6, state_s, False, 1], init_prio=1.5)
                             _metrics["mentor_actions"] = _metrics.get("mentor_actions", {})
@@ -2211,6 +2749,7 @@ def main():
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                     brain.save()
+                    spike_agent.save()   # versioned, atomic spiking+affect checkpoint
                     log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
                 if not just_queued:
                     log("lobby -> claim + battle")
@@ -2289,6 +2828,7 @@ def main():
                     except Exception as e:
                         log(f"deck re-eval note: {e}")
                 brain.save()
+                spike_agent.save()   # durable STDP weights + affect persisted at real match end
                 log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
@@ -2352,6 +2892,7 @@ def main():
                     prev_action = None
                     brain.epsilon = max(0.05, brain.epsilon * 0.985)
                     brain.save()
+                    spike_agent.save()   # versioned, atomic spiking+affect checkpoint
                     log(f"match memory flushed: buffer={len(brain.buffer)} eps={brain.epsilon:.3f}")
                 log("other lobby tab -> Battle tab")
                 tap(*TOP_BATTLE_TAB)

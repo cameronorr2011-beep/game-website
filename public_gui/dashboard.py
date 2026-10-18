@@ -32,7 +32,7 @@ CACHE = {"metrics": "", "coach": "[]", "shot": None, "metrics_t": 0, "coach_t": 
 CACHE_LOCK = threading.Lock()
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<title>NeuroML — The Full Brain</title>
+<title>NeuroML — Computational Neuroscience Testbed</title>
 <style>
 :root{--bg:#0b0f14;--card:#151b23;--line:#2a3441;--txt:#e6edf3;--dim:#8b949e;--ok:#3fb950;--bad:#f85149;--blu:#58a6ff;--yel:#d29922}
 body{background:var(--bg);color:var(--txt);font-family:Segoe UI,Roboto,sans-serif;margin:0;padding:14px}
@@ -46,8 +46,8 @@ h1{margin:0 0 2px;font-size:20px}.sub{color:var(--dim);font-size:12px;margin-bot
 .kpi div span{display:block;font-size:10px;color:var(--dim);font-weight:400}
 canvas{width:100%;height:130px;margin:4px 0}
 .eq{font-family:Cascadia Code,Consolas,monospace;font-size:12px;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;color:#9ecbff;white-space:pre-wrap}
-.brain{display:flex;gap:6px;align-items:center;justify-content:center}.brain .layer{display:grid;grid-template-columns:repeat(16,1fr);gap:2px}
-.dot{width:8px;height:8px;border-radius:50%;transition:background .2s}
+.brain{display:flex;gap:6px;align-items:center;justify-content:center}.brain .layer{display:grid;grid-template-columns:repeat(96,1fr);gap:1px}
+.dot{width:4px;height:4px;border-radius:50%;transition:background .12s}
 .coach{height:210px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
 .coach div{padding:3px 0;border-bottom:1px solid #212a35}.pun{color:var(--bad)}.men{color:var(--blu)}.ok{color:var(--ok)}
 .wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
@@ -64,8 +64,8 @@ canvas{width:100%;height:130px;margin:4px 0}
 .rules{font-size:11px;color:#9ecbff;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
 .rules li{margin:2px 0;list-style:none}
 </style></head><body>
-<h1>NeuroML — The Full Brain</h1>
-<div class="sub">38 sensory neurons → 2×128 cortical → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
+<h1>NeuroML™ — Computational Neuroscience Testbed</h1>
+<div class="sub">13.72M-param 1024-wide × 6-layer residual cortex · 90 LIF spiking neurons · STDP plasticity · affective core · hippocampal memory · dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
@@ -90,11 +90,16 @@ canvas{width:100%;height:130px;margin:4px 0}
         <div><span>LOSS (MA)</span><span id="k_loss">-</span></div>
         <div><span>TD ERROR</span><span id="k_td">-</span></div>
         <div><span>BUFFER</span><span id="k_buf">-</span></div>
-        <div><span>WIN RATE</span><span id="k_wr">-</span></div>
+        <div><span>WIN RATE (lifetime)</span><span id="k_wr">-</span></div>
       </div>
+      <div id="record_meta" style="font-size:10px;color:var(--dim);margin:4px 0">-</div>
       <h2 style="font-size:12px;color:var(--dim)">LOSS CURVE</h2><canvas id="c_loss" width=780 height=130></canvas>
       <h2 style="font-size:12px;color:var(--dim)">EXTREME REWARD HISTORY (tower dmg / wins / losses)</h2><canvas id="c_rw" width=780 height=130></canvas>
-      <h2 style="font-size:12px;color:var(--dim)">WIN / LOSS RECORD (last 60)</h2><div class="wl" id="wl"></div>
+      <h2 style="font-size:12px;color:var(--dim)">WIN / LOSS RECORD (lifetime, last 60 — green=win, red=loss)</h2><div class="wl" id="wl"></div>
+      <h2 style="font-size:12px;color:var(--dim);margin-top:8px">REWARD LEDGER (every contribution the brain logged, aggregated)</h2>
+      <div id="ledger" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)">waiting for first battle tick…</div>
+      <div id="decision_meta" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">decision provenance waits for the next tick…</div>
+      <div id="prediction" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">prediction telemetry waits for a validated tick…</div>
     </div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">WHAT THE MODEL IS THINKING (live equations)</h2>
       <div class="eq" id="eq">waiting for first battle tick…</div></div>
@@ -102,29 +107,49 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div class="coach" id="feed">waiting…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 512-wide × 4 cortical MASSIVE brain</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 1024-wide × 6-layer cortex (each dot = one real neuron, layer6 = deepest)</h2>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation this tick · 🔴 red = negative activation · dark = quiet neuron</div>
       <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — what each pixel-scan reports)</div>
-      <div id="senses" style="display:grid;grid-template-columns:repeat(2,1fr);gap:1px;font-size:10px;font-family:Consolas,monospace;margin:4px 0"></div>
+      <div id="senses" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;font-size:9px;font-family:Consolas,monospace;margin:4px 0"></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 1 — pattern extraction (first signal mixes)</div>
-      <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 2 — battlefield concepts (pushes, weaknesses form here)</div>
-      <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 3 — deep composition (synergies, trades)</div>
-      <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 4 — decision abstraction (before value/choice split)</div>
-      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(96,1fr)"></div></div>
+      <div style="font-size:11px;color:var(--dim)">DEEP CORTEX (layers 5–6 — abstract decision evidence, feeds V/A)</div>
+      <div class="brain"><div class="layer" id="deepcortex" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">LIMBIC — "how good is this situation" interneurons (feeds V(s))</div>
-      <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage of each of the 20 moves (top = chosen)</div>
       <div id="motor" style="font-size:10px;font-family:Consolas,monospace;margin-top:2px"></div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) dopamine baseline: <span id="vs" style="color:var(--yel)">-</span>
        · advantage spread <span id="asp" style="color:var(--yel)">-</span></div></div>
+    <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">SPIKING NUCLEUS — real LIF neurons + STDP (v13 hybrid)</h2>
+      <div style="font-size:11px;color:var(--dim)">64 sensory → 20 action LIF neurons · leak, threshold, refractory, adaptation · reward-modulated STDP with eligibility</div>
+      <canvas id="c_spike" width=330 height=110 style="height:100px"></canvas>
+      <div style="font-size:10px;color:var(--dim);margin:2px 0 6px">action-population spike counts per decision tick (telemetry, sampled)</div>
+      <div style="font-size:11px;font-family:Consolas,monospace" id="spk">waiting…</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:6px">INTERNAL STATE CHANNELS (computational analogues — bounded, decaying; these are <i>not</i> measurements of subjective feeling)</div>
+      <div id="affect" style="font-size:10px;font-family:Consolas,monospace;margin-top:3px"></div>
+    </div>
     <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">📚 GAME MEMORY (distilled story of every match)</h2>
       <div style="font-size:12px" id="gmem">no matches distilled yet…</div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px">Saved to game_memory.json at every match end. Reloaded at startup and fed to the AI coach — the brain remembers what won, even after restart.</div></div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">SYSTEM SPEC (measured on this machine)</h2>
+      <div style="font-size:11px;font-family:Consolas,monospace;color:var(--dim);line-height:1.7">
+        cortex 13,724,181 params · 52.4 MB fp32<br>
+        8,192 hash neurons (6×1024 blocks + streams)<br>
+        90 real LIF spiking neurons (STDP, refractory)<br>
+        4,096 hippocampal episodes · 200 WM slots<br>
+        decision forward 13.5 ms · train step 280 ms<br>
+        <span style="color:#8b949e">internal-state channels are labeled computational analogues — not measurements of subjective feeling.</span>
+      </div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">MEMORY PERSISTENCE</h2>
       <div style="font-size:12px" id="memviz">checking files…</div>
-      <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Downloads keep their brain.</div></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Updates never wipe memory — updater.py preserves every data file and stages a rollback backup.</div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">OPPONENT MEMORY (what recent enemies played)</h2>
       <div class="opp" id="opp">no opponents recorded yet…</div></div>
   </div>
@@ -145,13 +170,14 @@ try{
  k_loss.textContent=m.losses&&m.losses.length?m.losses[m.losses.length-1].toFixed(4):'-';
  k_td.textContent=m.td_errors&&m.td_errors.length?m.td_errors[m.td_errors.length-1].toFixed(3):'-';
  k_wr.textContent=(m.win_rate!=null?m.win_rate+'%':'-');
+ if(m.record_source){document.getElementById('record_meta').textContent=m.record_source+' · lifetime '+m.wins_v+'-'+m.losses_v;}else{document.getElementById('record_meta').textContent='lifetime counters seeding — first match-end flush';}
  const erk=document.getElementById('k_wr');erk.style.color=(m.win_rate>=50?'#3fb950':'#f85149');
  line(c_loss,m.losses&&m.losses.slice(-120),'#3fb950');
  const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d29922');
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
  heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);
- heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.limbic_neurons,'l3',1.5);
+ heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.layer6_neurons||n.layer5_neurons||n.layer3_neurons,'deepcortex',1.5);heat(n.limbic_neurons,'l3',1.5);
  if(n.sensory_neurons){const se=document.getElementById('senses');
   if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
   else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))}}
@@ -169,11 +195,32 @@ try{
  if(m.pain_channels_top&&m.pain_channels_top.length){const pl=document.getElementById('painlist');
   pl.innerHTML='Σ pain memory (LTD): '+m.pain_channels_top.map(p=>'<div>channel '+p.slot+','+p.spot+' avg '+p.avg+'</div>').join('')}
  if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}
+ if(m.spiking&&m.spiking.ok){
+  window._spkHist=window._spkHist||[];window._spkHist.push(m.spiking.action_spikes||0);if(window._spkHist.length>80)window._spkHist.shift();
+  line(document.getElementById('c_spike'),window._spkHist,'#9370db');
+  document.getElementById('spk').innerHTML=
+   'observe '+m.spiking.observe_ms+'ms · sensory spikes '+m.spiking.sensory_spikes+' · motor spikes '+m.spiking.action_spikes+' · inhib '+m.spiking.inh_spikes+'<br>'+
+   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85149">'+m.spiking.dep_events+'</b>'+
+   (m.spiking.cortex?('<br><span style="color:#9370db">prefrontal deliberation</span>: working memory '+m.spiking.cortex.working_memory+' · vetoes <b style="color:#f85149">'+m.spiking.cortex.vetoes+'</b> · recalls served '+m.spiking.cortex.recalls_served+' · hippocampus '+m.spiking.cortex.hippo_size+' episodes'+(m.spiking.cortex.over_budget?' · <b style="color:#f85149">budget over-run detected</b>':'')):'');
+  const aff=m.spiking.affect||{};
+  document.getElementById('affect').innerHTML=Object.entries(aff).map(([k,v])=>{
+   const w=Math.round(v*54);const col=(k.startsWith('neg')||k==='danger'||k==='frustration')?'#f85149':(k==='confidence'?'#58a6ff':'#3fb950');
+   return '<div style="display:flex;align-items:center;gap:5px;margin:1px 0"><span style="width:86px;color:var(--dim)">'+k+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+col+';border-radius:2px"></span>'+v.toFixed(3)+'</div>'}).join('');
+ } else if(m.spiking){document.getElementById('spk').textContent='nucleus offline — DQN fallback active'}
  if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
   '<div style="font-size:20px;font-weight:800;color:#d29922">'+gm.games_remembered+' games remembered</div>'+
   '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
   '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85149">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
   '<div style="margin-top:4px;color:#8b949e">'+gm.towers_destroyed_recent+' towers destroyed · '+gm.enemy_pushes_faced_recent+' pushes faced recently</div>'}
+ if(m.reward_totals){const rt=m.reward_totals;const top=Object.entries(rt).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,9);
+  document.getElementById('ledger').innerHTML=top.map(([e,v])=>{const c=v>0?'#3fb950':(v<0?'#f85149':'#8b949e');
+   return '<div style="display:flex;gap:6px;margin:1px 0"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e+'</span><b style="color:'+c+'">'+(v>0?'+':'')+v+'</b></div>'}).join('')}
+ if(m.decision){const d=m.decision;const oc=d.origin==='rules_referee'?'#d29922':(d.origin==='prefrontal_veto'?'#f85149':'#58a6ff');
+  document.getElementById('decision_meta').innerHTML='chosen <b style="color:'+oc+'">'+d.action+'</b> by <b style="color:'+oc+'">'+d.origin+'</b>'+
+   (d.rule_note&&d.rule_note!=='net'?' · rule: '+d.rule_note:'')+' · masked '+d.masked_actions+' · vetoes '+(d.vetoed_actions||[]).length+' · elixir '+d.elixir+' · lane '+(d.lane||'-')}
+ if(m.prediction){const p=m.prediction;document.getElementById('prediction').innerHTML=
+  'world model ('+p.n_scored+' scored ticks, 1-tick horizon): tower-HP MAE <b>'+p.tower_hp_mae+'</b> · elixir MAE <b>'+p.elixir_mae+'</b>'+
+  (p.predictedTowerHP?' · predicted L/R towers <b>'+p.predictedTowerHP.enemy_left+'/'+p.predictedTowerHP.enemy_right+'</b> vs observed next tick':'')}
  if(m.thinking){
  eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\n target = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\n chosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\n top3 = ${JSON.stringify(m.thinking.q_values_top3)}\n ${m.thinking.equation}\n ${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
@@ -196,10 +243,31 @@ setInterval(mem,5000);mem();
 
 
 def metrics():
+    """Serve ml_metrics.json, backfilled from training.log history when the
+    current-run curves are too short to draw an honest trend."""
     try:
-        return open("ml_metrics.json", encoding="utf-8").read()
+        m = json.load(open("ml_metrics.json", encoding="utf-8"))
     except Exception:
         return "{}"
+    try:
+        losses = m.get("losses") or []
+        if len(losses) < 60:
+            # training.log format: [ t ] step | loss=..| eps=..| buffer=.
+            hist = []
+            with open("training.log", encoding="utf-8") as f:
+                for line in f:
+                    i = line.find("loss=")
+                    if i >= 0:
+                        try:
+                            hist.append(float(line[i + 5:].split()[0].rstrip(",")))
+                        except (ValueError, IndexError):
+                            pass
+            if hist:
+                m["losses"] = hist[-120:]
+                m["losses_backfilled_from"] = "training.log"
+    except Exception:
+        pass
+    return json.dumps(m)
 
 
 def coach():
