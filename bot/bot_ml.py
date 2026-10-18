@@ -1324,27 +1324,76 @@ def foreground_app():
 AUTONOMOUS_DECK_FILE = "my_deck.json"
 
 
-def autonomous_deck_session():
-    """Once per startup: ask Groq's Deck Architect to read the live meta and
-    either confirm or redesign the deck. Writes my_deck.json so the state
-    builder uses real card costs. NEVER touches in-game Deck Edit."""
-    player_deck = None
+def _local_meta_deck(stats):
+    """Deck-understanding fallback: pick the best 8-card meta deck from
+    meta_decks.json matched to the agent's OWN memory (its recent winrate and
+    what beat it), with anti-beatdown backup selection when it lost recently.
+    Works with zero Groq — the agent can always build decks."""
+    try:
+        meta = json.load(open("meta_decks.json"))
+        decks = meta.get("top_meta_decks") or []
+    except Exception:
+        decks = [{"cards": ["hogrider", "musketeer", "ice_golem", "cannon",
+                            "skeletons", "minions", "fireball", "zap"],
+                  "name": "builtin-fallback", "style": "cycle", "avg_elixir": 3.0}]
+    # memory-aware pick: if losses recently outweight wins, prefer a CONTROL deck
+    recent = (stats or {}).get("recent_winrate", 50.0)
+    scored = []
+    for d in decks:
+        s = 1.0
+        cards = [c.lower() for c in d.get("cards", [])]
+        if len(cards) < 6:
+            continue
+        has_spell = any(c in ("fireball", "arrows", "zap", "poison") for c in cards)
+        has_building = any(c in ("cannon", "tesla", "inferno_tower", "bomb_tower") for c in cards)
+        if recent < 45.0:
+            # losing → favor defense-included control decks
+            s += 0.6 * (int(has_spell) + int(has_building)) / 2
+        else:
+            # winning → keep cycle pressure
+            s += 0.4 if d.get("style") == "cycle" else 0.0
+        s += 0.2 * int(sum(1 for c in cards if c in CARDS_DB) >= 6)
+        scored.append((s, d))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if scored:
+        return scored[0][1]
+    return decks[0] if decks else None
+
+
+def autonomous_deck_session(gm_stats=None):
+    """Once per startup AND on every 5th match end: build the deck.
+
+    Two builders cooperate:
+      1. Groq Deck Architect (live meta awareness)
+      2. Local meta matcher (always works, no key needed; picks from the real
+         fetched meta list, memory-aware)
+    NEVER touches in-game Deck Edit (ToS) — but the deck file that drives
+    play policy is always freshly built either way.
+    """
     try:
         player_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck")
     except Exception:
         player_deck = None
+    chosen, critique, source = None, "", ""
     r = groq_deck_builder(player_deck)
     if r.get("deck") and len(r["deck"]) >= 6:
+        chosen, critique, source = r["deck"][:8], r.get("critique", ""), "groq"
+    else:
+        d = _local_meta_deck(gm_stats)
+        if d:
+            chosen, critique, source = d["cards"][:8], d.get("name", "") + " (local meta match)", "local"
+    if chosen and len(chosen) >= 6:
         try:
-            json.dump({"deck": r["deck"], "critique": r.get("critique"),
+            json.dump({"deck": chosen, "critique": critique,
+                       "built_by": source,
                        "updated": time.strftime("%Y-%m-%d %H:%M")},
                       open(AUTONOMOUS_DECK_FILE, "w"), indent=1)
-            log(f"DECK ARCHITECT confirmed/rebuilt deck: {r['deck']} ({r.get('critique', '')[:60]})")
+            log(f"DECK ARCHITECT ({source}) built deck: {chosen} ({critique[:60]})")
         except Exception:
             pass
     else:
-        log(f"deck architect unavailable this session ({r.get('source')}) — keeping prior deck")
-    return r
+        log("deck architect could not build any deck (no meta + no groq) — keeping prior")
+    return {"deck": chosen, "source": source}
 
 
 def main():
@@ -1353,7 +1402,7 @@ def main():
     brain = TargetedDQN()
     brain.load()
     try:
-        autonomous_deck_session()  # autonomous deck evaluation at every startup
+        autonomous_deck_session(game_memory_digest())  # deck built at every startup
     except Exception as e:
         log(f"deck session note: {e}")
     # Warm-train 3 steps on restored replay memories so new Dueling head aligns immediately
@@ -1835,17 +1884,29 @@ def main():
                 dig = distill_match(_verdict, match_stats)
                 _metrics["game_memory"] = dig
                 log(f"GAME MEMORY distilled: {dig.get('one_line', '')}")
+                # Re-evaluate deck every 5th match — adaptation built in
+                _matches_seen = int(_metrics.get("matches", 0) or 0) + 1
+                _metrics["matches"] = _matches_seen
+                if _matches_seen % 5 == 0:
+                    try:
+                        autonomous_deck_session(dig)
+                        log("deck re-evaluated from game memory (every 5 matches)")
+                    except Exception as e:
+                        log(f"deck re-eval note: {e}")
                 brain.save()
                 log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
-                # ---- PLAY AGAIN: after OK the game shows one of several screens
-                # depending on match type. Screenshot, classify, and act on what
-                # is ACTUALLY there instead of blind-tapping the same spot:
+                # ---- PLAY AGAIN: classify what the game ACTUALLY shows after OK
+                # and keep re-checking through transitions instead of standing
+                # down on the first unclear frame:
                 #   result  -> more dialogs; keep dismissing and re-check
-                #   lobby   -> the classic post-match lobby: press Battle again
-                #   battle/other -> matchmaking is already loading; hands off
-                for _retry in range(4):
+                #   lobby   -> classic post-match lobby: press Battle again
+                #   unknown -> transient transition; wait 3s and look again
+                #   battle  -> matchmaking loading: hands off, loop takes over
+                #   unknown -> transition; wait 3s and look again
+                _pa_t0 = time.time()
+                while time.time() - _pa_t0 < 20:
                     _re = sh(["exec-out", "screencap", "-p"], timeout=15)
                     if _re.returncode != 0 or not _re.stdout:
                         break
@@ -1865,9 +1926,14 @@ def main():
                         tick_in_match = 0
                         log("play again: Battle pressed from post-match lobby")
                         break
-                    # battle/popup/other: matchmaking or transition underway
-                    log(f"play again: next screen '{nxt}' — standing down, loop takes over")
-                    break
+                    if nxt == "battle":
+                        # matchmaking started on its own — just wait for it to resolve
+                        log("play again: matchmaking already loading — hands off")
+                        break
+                    # unknown/popup: transition — wait a beat and look again
+                    time.sleep(3)
+                else:
+                    pass
 
             elif state == "popup":
                 stuck_since = stuck_since or now
