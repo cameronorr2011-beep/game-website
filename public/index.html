@@ -18,6 +18,7 @@
        padding:14px 28px;border-radius:10px;font-size:1.05rem}
   .btn:hover{filter:brightness(1.1)}
   .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent);margin-left:12px}
+  .btn.secondary{background:var(--panel);color:var(--accent);border:1px solid var(--accent);margin-top:8px}
   ol li{margin:10px 0}
   code{background:#0a1017;border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:.92em;color:var(--accent2)}
   a{color:var(--accent)}
@@ -36,11 +37,29 @@
 
   <div class="card">
     <h2 style="margin-top:0">Download</h2>
-    <p>The app is a small (~50 KB, instant) zip containing everything except Python itself —
-    <code>install.bat</code> fetches the rest.</p>
-    <a class="btn" href="/NeuroMLCR.zip" download>Download NeuroMLCR.zip</a>
+    <p><strong>The app (code)</strong> is a small ~50 KB zip containing launchers, the brain and the
+    dashboard. <code>install.bat</code> fetches Python + torch so you don't have to.</p>
+    <a class="btn" href="/NeuroMLCR.zip" download>Download NeuroMLCR.zip (app)</a>
     <a class="btn ghost" href="https://github.com/cameronorr2011-beep/game-website">Source on GitHub</a>
+    <p style="margin-top:16px"><strong>The pretrained brain</strong> is a separate ~52 MB file
+    (<code>ml_policy.pt</code> — the trained DQN weights), plus replay memory that can grow to
+    hundreds of MB or more. It's not inside the small zip.</p>
+    <p>Train it yourself from scratch: fresh installs learn live and write
+    <code>ml_policy.pt</code> + <code>ml_replay.json</code> to their own folder within minutes.
+    To publish instead, see <a href="https://github.com/cameronorr2011-beep/game-website#publish-the-pretrained-brain">“Publish the pretrained brain” in the README</a>.</p>
+    <a class="btn secondary" href="https://github.com/cameronorr2011-beep/game-website/releases">Releases (model files live here)</a>
   </div>
+
+  <h2>If the zip won't extract</h2>
+  <p>Windows Explorer sometimes blocks freshly-downloaded zips. In order of votes:</p>
+  <ol>
+    <li>Make sure the file finished downloading (~50 KB check size) — then right-click it →
+        <strong>Extract All…</strong> (don't use “Open with Navigate into”).</li>
+    <li>Or extract in Terminal/PowerShell, which does not consult Chromium's quarantine:
+        <code>tar -xf NeuroMLCR.zip</code></li>
+    <li>Extracted <code>.bat</code> files: if Windows Defender marks them “unknown publisher”,
+        right-click → Properties → tick <strong>Unblock</strong>, and confirm before running.</li>
+  </ol>
 
   <h2>What you need</h2>
   <table>

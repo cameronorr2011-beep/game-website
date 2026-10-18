@@ -30,6 +30,21 @@ Keep the served zip in sync after editing `public_gui/`:
 cd public_gui && rm -f NeuroMLCR.zip && zip -r NeuroMLCR.zip *.bat *.py *.json README.md && cp NeuroMLCR.zip ../public/NeuroMLCR.zip
 ```
 
+## Publish the pretrained brain
+
+The code zip is intentionally tiny (~50 KB); the trained weights (`ml_policy.pt`,
+~52 MB) and replay memory (can reach GB scale) are not in git. To share a trained
+brain, host it as a GitHub Release asset (up to 2 GB each):
+
+```bash
+gh release create brains-v1 ml_policy.pt --title "NeuroML brain: keyboard v1" --notes "Trained on <devices/episodes>"
+```
+
+Players then skip training-from-scratch by putting the downloaded `ml_policy.pt`
+in the same folder as `bot_ml.py` before running `NeuroMLCR.bat` — the loader
+picks it up automatically on launch. The stable always-newest URL is:
+`https://github.com/cameronorr2011-beep/game-website/releases/latest/download/ml_policy.pt`
+
 ## Install anywhere (phone hotspot, PC, no same-network requirement)
 
 Full source + releases: **https://github.com/cameronorr2011-beep/game-website**
