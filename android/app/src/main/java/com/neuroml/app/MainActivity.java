@@ -68,6 +68,13 @@ public class MainActivity extends Activity {
         brainSwitch.setTextColor(Color.WHITE);
         root.addView(brainSwitch);
 
+        TextView addr = new TextView(this);
+        addr.setText("Dashboard address: http://127.0.0.1:8765\n(reachable only on this phone, only while the brain runs)");
+        addr.setTextColor(Color.parseColor("#58a6ff"));
+        addr.setTextSize(12);
+        addr.setPadding(0, 0, 0, 8);
+        root.addView(addr);
+
         status = new TextView(this);
         status.setTextColor(Color.parseColor("#3fb950"));
         status.setTextSize(13);
@@ -90,14 +97,24 @@ public class MainActivity extends Activity {
             if (on) {
                 proceedToRun();
             } else {
-                Intent stop = new Intent(this, BrainService.class);
-                stop.setAction(BrainService.ACTION_STOP);
-                startService(stop);
-                status.setText("Stopping the brain…");
+                stopEverything();
             }
         });
 
         setContentView(new ScrollView(this) {{ addView(root); }});
+    }
+
+    /** Toggling OFF: stop the brain AND retire the screen-capture session
+     *  (its process is going down; a fresh one-time grant is requested on the
+     *  next start — Android security calls for that anyway). */
+    private void stopEverything() {
+        Intent stop = new Intent(this, BrainService.class);
+        stop.setAction(BrainService.ACTION_STOP);
+        startService(stop);
+        try { stopService(new Intent(this, CaptureService.class)); } catch (Exception ignored) { }
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean("capture_ready", false).apply();
+        status.setText("Brain stopped — nothing is playing. Toggle ON to start again.");
     }
 
     @Override
@@ -109,21 +126,22 @@ public class MainActivity extends Activity {
         brainSwitch.setChecked(running);
         brainSwitch.setOnCheckedChangeListener((CompoundButton sb, boolean on) -> {
             if (on) proceedToRun();
-            else {
-                Intent stop = new Intent(this, BrainService.class);
-                stop.setAction(BrainService.ACTION_STOP);
-                startService(stop);
-                status.setText("Stopping the brain…");
-            }
+            else stopEverything();
         });
         if (running) {
             status.setText("✓ Brain running — it plays the account signed in on this phone.\nDashboard: the in-app screen, or any browser at http://127.0.0.1:8765 while it runs.");
         }
     }
 
+    /** Cross-process capture readiness (CaptureService runs in :brain). */
+    private boolean captureReady() {
+        return getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean("capture_ready", false);
+    }
+
     /** Toggle ON or returning from a permission grant: run what's missing, in order. */
     private void proceedToRun() {
-        if (!CaptureService.ready()) {
+        if (!captureReady()) {
             status.setText(" Android needs your one-time OK to see the screen…");
             requestCapture();
             return;
@@ -192,7 +210,22 @@ public class MainActivity extends Activity {
         svc.putExtras(data); // MediaProjection result payload must reach the service
         startForegroundService(svc);
         status.setText("✓ Capture active — checking the tap service…");
-        proceedToRun();     // continue the chain: tap service → brain
+        // The capture service activates asynchronously (different process):
+        // poll its readiness flag, then continue the chain tap → brain.
+        pollCaptureReady(0);
+    }
+
+    private void pollCaptureReady(final int attempt) {
+        if (captureReady()) {
+            proceedToRun();
+            return;
+        }
+        if (attempt > 20) {
+            status.setText("Capture is taking long — tap BRAIN again in a moment");
+            return;
+        }
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                () -> pollCaptureReady(attempt + 1), 600);
     }
 
     /** bot data files (json) → filesDir so relative-path logic in bot_ml.py works. */

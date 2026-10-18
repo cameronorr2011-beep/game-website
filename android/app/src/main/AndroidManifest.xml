@@ -30,14 +30,18 @@
             android:exported="false"
             android:process=":brain" />
 
+        <!-- All bridged services live in the :brain process WITH Python, so the
+             Java↔Python bridge (static state) never crosses a process boundary. -->
         <service
             android:name=".CaptureService"
-            android:exported="false" />
+            android:exported="false"
+            android:process=":brain" />
 
         <service
             android:name=".TapAccessibilityService"
             android:exported="true"
             android:label="NeuroML brain tap service"
+            android:process=":brain"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

@@ -93,6 +93,9 @@ public class CaptureService extends Service {
                 @Override public void onStop() { releaseDisplay(); }
             }, readerHandler);
             captureRequested = true;
+            // Cross-process readiness flag: MainActivity (main process) reads this.
+            getSharedPreferences("nml", Context.MODE_PRIVATE)
+                    .edit().putBoolean("capture_ready", true).apply();
             Log.i(TAG, "capture ready");
         } catch (Exception e) {
             Log.e(TAG, "capture setup failed", e);
@@ -153,6 +156,8 @@ public class CaptureService extends Service {
 
     private void releaseDisplay() {
         captureRequested = false;
+        getSharedPreferences("nml", Context.MODE_PRIVATE)
+                .edit().putBoolean("capture_ready", false).apply();
         try { if (reader != null) reader.close(); } catch (Exception ignored) {}
         try { if (vdisplay != null) vdisplay.release(); } catch (Exception ignored) {}
         reader = null; vdisplay = null; latest = null;
