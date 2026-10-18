@@ -885,11 +885,40 @@ def classify(img):
 
 HIPPOCAMPUS_FILE = "hippocampus.jsonl"
 _hippo_lock = threading.Lock()
+brain_ref = [None]  # set by main() so hippocampal_write can enrich with Q/V/A
 
 def hippocampal_write(entry):
     """Long-term memory archive: append every rich transition to a monotonic
     .jsonl. Unlike ml_replay.json (bounded), this grows unbounded — it is the
-    path to GB-scale memory. Read back with random retrievals when training."""
+    path to GB-scale memory. Read back with random retrievals when training.
+    Rich-mode: every entry also carries the full 38-dim state vectors for BOTH
+    s and s2, towers, arena, elixir, verdict context and pain-channel state,
+    so each line is ~1.4 KB instead of ~0.1 KB — reach GB scale ~14× faster."""
+    try:
+        e = dict(entry)
+        q, v, a, h1, h2, h3, v_hid = brain_ref[0].policy.forward_streams(
+            torch.tensor(e["s"], dtype=torch.float32)) if brain_ref[0] else (None,)*7
+        if q is not None:
+            e["q_row"] = [round(v_, 4) for v_ in q.tolist()]
+            e["V_export"] = round(v.item(), 4)
+            e["advantages"] = [round(v_, 4) for v_ in a.tolist()]
+        e["ctx"] = {
+            "towers": e.pop("towers", None),
+            "arena": e.pop("arena", None),
+            "pain_avg": e.pop("pain_avg", None),
+        }
+        e["ctx"] = {k: v_ for k, v_ in e["ctx"].items() if v_ is not None}
+        with _hippo_lock:
+            with open(HIPPOCAMPUS_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(e) + "\n")
+    except Exception:
+        # never let memory archiving break the battle loop
+        try:
+            with _hippo_lock:
+                with open(HIPPOCAMPUS_FILE, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"minimal": True, **{k: entry.get(k) for k in ("t", "a", "r")}}) + "\n")
+        except Exception:
+            pass
     try:
         with _hippo_lock:
             with open(HIPPOCAMPUS_FILE, "a", encoding="utf-8") as f:
@@ -1624,6 +1653,7 @@ def main():
     last_fg_note = 0.0
     user_saw_clash = None
     pain_channels = _load_pain_channels()
+    brain_ref[0] = brain
 
     while True:
         try:
@@ -2008,6 +2038,8 @@ def main():
                         "t": time.time(), "s": prev_state, "a": prev_action,
                         "r": round(reward, 3), "s2": state_s, "done": False,
                         "elixir": mlxir, "lane": lane, "spot": spot_n,
+                        "towers": towers, "arena": arena,
+                        "pain_avg": pain_channels.get((slot, spot_i)),
                     })
                     # Consolidation: stir in 8 random old memories occasionally
                     if tick_in_match % 30 == 0 and len(brain.buffer) >= brain.batch:
