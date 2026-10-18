@@ -570,6 +570,126 @@ def _any(img, tests):
     return sum(1 for _ in range(1) if False) if False else None
 
 
+# ============================================================
+# GAME RULES OF CLASH ROYALE — the brain is taught the actual law
+# ============================================================
+ELIXIR_REGEN_PER_TICK = 0.7        # ~1 elixir / 2.8s in-game
+TOWER_FINISH_THRESHOLD = 0.32      # under ~30% HP a cheap spell can finish
+SPELL_FINISH_MIN_DAMAGE = 0.18     # spell must cover at least ~18% of tower HP
+
+
+def tower_finish_check(towers, hand_deck, mlxir):
+    """RULE: a spell held in hand must NOT be dropped at bridge when an enemy
+    tower is under finish range — instead route slots holding that spell as a
+    'finisher' so the play policy aims it AT THE TOWER (kill = 1000-2600 dmg)."""
+    finishers = []
+    for side, key in (("left", "enemy_left"), ("right", "enemy_right")):
+        hp = towers.get(key, 1.0)
+        if 0.0 < hp <= TOWER_FINISH_THRESHOLD:
+            for slot_idx, name in enumerate(hand_deck[:4]):
+                info = CARDS_DB.get(name, {})
+                if info.get("role") == "spell" and info.get("cost", 9) <= mlxir:
+                    # Rough damage coverage: fireball 33%, arrows 17%, zap 12% of avg tower HP
+                    dmg_est = {"fireball": 0.33, "arrows": 0.17, "zap": 0.12}.get(name, 0.0)
+                    if dmg_est >= hp - 0.02:
+                        finishers.append({"side": side, "slot": slot_idx,
+                                          "dmg": dmg_est, "tower_hp": hp})
+    return finishers
+
+
+def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, finishers=None):
+    """Knowledge-based veto/redirect layer ON TOP of the network choose:
+    the net proposes, the RULES referee. Returns possibly-corrected action.
+      - spell at bridge -> redirect to tower finisher if a finisher exists
+      - spell center_back (pointless) -> redirect to defense/finisher
+      - heavy tank at bridge when elixir < cost+1 (can't support) -> center_back
+      - cheap cycle card at bridge with no push and no threat -> defend instead
+    """
+    if not hand_deck:
+        return action, "net"
+    slot, spot_i = divmod(action, 5)
+    if slot >= len(hand_deck) or not afford or slot >= len(afford) or afford[slot] < 0.5:
+        return action, "net"
+    name = (hand_deck[slot] or "").lower()
+    info = CARDS_DB.get(name, {})
+    role = info.get("role", "support")
+    spot_n = SPOT_NAMES[spot_i]
+
+    # RULE 1: spell finisher — aim at the weak tower instead of a bridge drop
+    if role == "spell" and finishers:
+        f = min(finishers, key=lambda x: x["tower_hp"])
+        finish_spot = 0 if f["side"] == "left" else 1   # bridge_left/bridge_right rows hit tower area
+        return f["slot"] * 5 + finish_spot, f"finisher->{f['side']}"
+    # RULE 2: spells never "defend" — waste; prefer a finisher or center_back
+    if role == "spell" and spot_n in ("left_defend", "right_defend"):
+        return slot * 5 + 4, "spell_no_defend"   # center_back = cast mid-field (value)
+    # RULE 3: heavy commitment discipline — tank/win_condition needs elixir support
+    if role in ("tank", "win_condition") and spot_n.startswith("bridge"):
+        if mlxir < info.get("cost", 5) + 1:
+            return slot * 5 + 4, "commit discipline (needs support elixir)"
+    # RULE 4: cheap cycle: don't burn the cycle card at a bridge alone
+    if info.get("cost", 9) <= 2 and spot_n.startswith("bridge"):
+        threat = arena.get("enemy_bridge_l", 0) + arena.get("enemy_bridge_r", 0)
+        if threat == 0:
+            return slot * 5 + 4, "cheap-cycle discipline (save for defense)"
+    # RULE 5: buildings go at the center to pull pushes, never at the bridge
+    if role == "building" and spot_n.startswith("bridge"):
+        return slot * 5 + 4, "building pulls center"
+    return action, "net"
+
+
+# ============================================================
+# OPPONENT MEMORY — remember what the enemy played, across matches
+# ============================================================
+OPPONENT_MEMORY_FILE = "opponent_memory.json"
+
+
+def _load_opponent_memory():
+    try:
+        return json.load(open(OPPONENT_MEMORY_FILE))
+    except Exception:
+        return {"recent_opponents": [], "matches_total": 0}
+
+
+def _save_opponent_memory(mem):
+    try:
+        keep = mem.get("recent_opponents", [])[-30:]
+        mem["recent_opponents"] = keep
+        mem["matches_total"] = mem.get("matches_total", 0) + 1
+        json.dump(mem, open(OPPONENT_MEMORY_FILE, "w"), indent=1)
+    except Exception:
+        pass
+
+
+def opponent_new_match():
+    """Start tracking a fresh opponent."""
+    return {"cards_played": [], "elixir_spent": 0, "pushes": [], "start": time.time()}
+
+
+def opponent_observe(opp, arena_prev, arena_now, towers_prev, towers_now):
+    """Update the opponent model this match: it sees enemy troops crossing the
+    bridge (vision counts them) and enemy damage spikes (a play was made)."""
+    if not opp:
+        return
+    e_now = arena_now.get("enemy_left", 0) + arena_now.get("enemy_right", 0)
+    e_prev = (arena_prev or {}).get("enemy_left", 0) + (arena_prev or {}).get("enemy_right", 0)
+    # A wave coming over the bridge: units >6 in a lane the previous frame lacked
+    for side in ("left", "right"):
+        now_n = arena_now.get(f"enemy_{side}", 0)
+        prev_n = (arena_prev or {}).get(f"enemy_{side}", 0)
+        if now_n >= 6 and prev_n < now_n // 2:
+            opp["pushes"].append({"side": side, "size": now_n, "tick": time.time()})
+            opp["cards_played"].append("unknown")
+    if e_now - e_prev >= 5:
+        opp["cards_played"].append("unknown")
+    # enemy tower took big damage from us: they were distracted, commit
+    el = max(0.0, (towers_prev or {}).get("enemy_left", 1) - towers_now.get("enemy_left", 1))
+    er = max(0.0, (towers_prev or {}).get("enemy_right", 1) - towers_now.get("enemy_right", 1))
+    if el + er >= 0.08:
+        opp["elixir_spent"] += 2
+    return opp
+
+
 def classify(img):
     """Hard pixel-signature classifier calibrated on real screenshots.
     Order matters: most specific first."""
@@ -1153,6 +1273,10 @@ def main():
     train_loss_ma = None
     cards_played = 0
     mentor_cooldown = 0.0
+    opp_memory_store = _load_opponent_memory()
+    opponent = None
+    opponent_arena_prev = None
+    opponent_towers_prev = None
 
     while True:
         try:
@@ -1233,6 +1357,9 @@ def main():
                 stuck_since = None
                 back_streak = 0
                 just_queued = False
+                if opponent is None:
+                    opponent = opponent_new_match()
+                    log("new opponent tracked (memory persistent across matches)")
                 mlxir = elixir_count(img)
                 lv, rv = lane_variances(img)
                 towers = tower_healths(img)
@@ -1266,6 +1393,23 @@ def main():
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
                 mentor = None
+
+                # ---- GAME-KNOWLEDGE REFEREE (rules on top of the network) ----
+                hand_deck = []
+                try:
+                    hand_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
+                except Exception:
+                    pass
+                finishers = tower_finish_check(towers, hand_deck, mlxir)
+                action, rule_note = card_play_policy(
+                    action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
+                slot, spot_i = divmod(action, 5)
+                spot_n = SPOT_NAMES[spot_i]
+                if rule_note != "net":
+                    reward_rules_add = 0.35  # following learned game rules is smart play
+                    log(f"RULES: {rule_note} slot={slot} spot={spot_n}")
+                else:
+                    reward_rules_add = 0.0
 
                 # ---- Compute Dopamine / Punishment Signal ----
                 reward = 0.0
@@ -1324,6 +1468,20 @@ def main():
                     # 5) counter-threshold rewards (visible dopamine when ahead)
                     if towers["enemy_alive"] < towers["ally_alive"]:
                         reward += 0.3       # structural advantage bonus per tick
+                    # 6) RULES dopamine: playing by the law of the game is rewarded
+                    if reward_rules_add:
+                        reward += reward_rules_add
+                    # 7) TROOP-KILL DOPAMINE: vision sees enemy units die —
+                    #    big counts dropping = kills = real dopamine surge
+                    e_units_prev = opponent_arena_prev.get("enemy_left", 0) + \
+                        opponent_arena_prev.get("enemy_right", 0) if opponent_arena_prev else 0
+                    e_units_now = arena["enemy_left"] + arena["enemy_right"]
+                    e_death = max(0, e_units_prev - e_units_now)
+                    e_death_px = e_death * 3   # each count ≈ 3px of enemy-bar mass
+                    if e_death >= 4:
+                        kill_dopamine = min(1.5, round(e_death * 0.1, 2))
+                        reward += kill_dopamine
+                        log(f"ENEMY TROOPS KILLED ({e_death}px bars fell) -> dopamine +{kill_dopamine:.2f}")
                 else:
                     reward = min(reward, dmg_punish)
 
@@ -1389,6 +1547,13 @@ def main():
                     "affordable_slots": affordable_slots,
                     "elixir": mlxir,
                 }
+                # Dopamine event per tick — the UI's live dopamine feed
+                if abs(reward) >= 0.25:
+                    _dlog = _metrics.setdefault("dopamine_events", [])
+                    _dlog.append({"t": time.strftime("%H:%M:%S"),
+                                  "event": f"{spot_n} (elixir {mlxir})",
+                                  "amount": round(reward, 2)})
+                    _metrics["dopamine_events"] = _dlog[-80:]
                 metrics_append(None, reward=reward, action=action, dmg_punish=dmg_punish,
                                vision=vision_snapshot,
                                mentor=(None if mentor is None else {
@@ -1446,6 +1611,14 @@ def main():
                             _metrics["mentor_actions"][mentor["recommended_spot"]] = \
                                 _metrics["mentor_actions"].get(mentor["recommended_spot"], 0) + 1
 
+                # ---- OPPONENT MEMORY: observe their pushes and troop waves ----
+                opponent_observe(
+                    opponent, opponent_arena_prev, arena, opponent_towers_prev, towers)
+                opponent_arena_prev = arena
+                opponent_towers_prev = towers
+                opponent_arena_prev = arena
+                opponent_towers_prev = towers
+
                 prev_state = state_s
                 prev_action = action
                 prev_towers = towers
@@ -1487,6 +1660,25 @@ def main():
                 else:
                     dopamine = 4.0   # win dopamine: was 3.0 — now richer for the celebratory spike
                     _verdict = "WIN"
+                # ---- DOPAMINE EVENT STREAM (the UI's live dopamine feed) ----
+                _dlog = _metrics.setdefault("dopamine_events", [])
+                _dlog.append({"t": time.strftime("%H:%M:%S"), "event": f"MATCH {_verdict}", "amount": dopamine})
+                _metrics["dopamine_events"] = _dlog[-80:]
+                # ---- OPPONENT MEMORY: persist this opponent's habits ----
+                if opponent is not None:
+                    opp_memory_store.setdefault("recent_opponents", []).insert(0, {
+                        "when": time.strftime("%m-%d %H:%M"),
+                        "result": _verdict,
+                        "cards_seen": len(opponent.get("cards_played", [])),
+                        "pushes": opponent.get("pushes", [])[-8:],
+                    })
+                    opp_memory_store["recent_opponents"] = opp_memory_store["recent_opponents"][:30]
+                    _save_opponent_memory(opp_memory_store)
+                    _metrics["opponent_memory"] = {
+                        "known": len(opp_memory_store.get("recent_opponents", [])),
+                        "this_match_pushes": len(opponent.get("pushes", [])),
+                    }
+                    opponent = None
                 log(f"result screen ({_verdict}) -> dopamine {dopamine:+.1f}")
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, dopamine, prev_state, done=True)
@@ -1513,6 +1705,28 @@ def main():
                 if prev_state is None:  # reward already flushed; dismiss result fully
                     tap(*RESULT_OK)
                     time.sleep(2)
+                # ---- PLAY AGAIN: after OK, most post-game dialogs still show a
+                # rematch/start button in the same area — tap it so the next
+                # match starts straight from the result screen (not homepage). ----
+                _re = sh(["exec-out", "screencap", "-p"], timeout=15)
+                if _re.returncode == 0 and _re.stdout:
+                    try:
+                        _rimg = _I.open(io.BytesIO(_re.stdout)).convert("RGB")
+                        nxt = classify(_rimg)
+                        if nxt == "result":
+                            tap(*OK_CENTER)
+                            time.sleep(2)
+                            tap(*RESULT_OK)
+                        elif nxt == "lobby":
+                            just_queued = False   # fresh lobby path, queue again
+                        tap(*CLAIM_SPOT)
+                        time.sleep(1.5)
+                        tap(*BATTLE_BUTTON)
+                        just_queued = True
+                        tick_in_match = 0
+                        log("play again queued straight from result screen")
+                    except Exception:
+                        pass
 
             elif state == "popup":
                 stuck_since = stuck_since or now

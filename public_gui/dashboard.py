@@ -52,16 +52,32 @@ canvas{width:100%;height:130px;margin:4px 0}
 .coach div{padding:3px 0;border-bottom:1px solid #212a35}.pun{color:var(--bad)}.men{color:var(--blu)}.ok{color:var(--ok)}
 .wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
 .pill{display:inline-block;background:#212a35;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px}
+.dopa{height:230px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
+.dopa div{display:flex;justify-content:space-between;padding:3px 6px;border-bottom:1px solid #1d2530;border-radius:4px}
+.dopa div:nth-child(odd){background:#141a22}
+.dopa .pos{color:var(--ok);font-weight:800}.dopa .neg{color:var(--bad);font-weight:800}
+.dopa .ev{color:var(--txt);flex:1;margin-left:8px}.dopa .t{color:var(--dim);width:70px}
+.dopa .big{font-size:13px;border-left:3px solid var(--yel)}
+.opp{font-size:12px;color:var(--dim)}.opp b{color:var(--txt)}
+.rules{font-size:11px;color:#9ecbff;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
+.rules li{margin:2px 0;list-style:none}
 </style></head><body>
 <h1>NeuroML — The Full Brain</h1>
 <div class="sub">38 sensory neurons → 2×128 cortical → 128 limbic → dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
-<div class="grid">
+<div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
       <div class="phone"><img id="shot" src="/vision"></div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px">🔵 my tower HP · 🔴 enemy tower HP · 🟧 unit-scan zones · 🟪 elixir bar · 🟩 affordable card slot · <a href="/vision?fresh=1" target="_blank" style="color:#58a6ff">refresh now ↗</a></div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">VISION STATE</h2>
       <div id="vision" style="font-size:12px;color:var(--dim)">waiting…</div></div>
+    <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">⚡ LIVE DOPAMINE FEED (events as they hit the brain)</h2>
+      <div class="dopa" id="dopa"><div style="color:var(--dim)">waiting for first reward…</div></div>
+      <div class="rules"><b style="color:var(--yel)">GAME RULES the brain is taught:</b>
+        <li>⚔️ spell finisher → enemy tower ≤32% HP gets shot, not dropped at bridge</li>
+        <li>🛡️ commit discipline → never bridge-drop tanks without support elixir</li>
+        <li>🔁 cheap-cycle → 1-2 cost cards saved for defense</li>
+        <li>🏰 buildings pull center, never bridge</li></div></div>
   </div>
   <div>
     <div class="card">
@@ -92,6 +108,8 @@ canvas{width:100%;height:130px;margin:4px 0}
     <div class="card"><h2 style="font-size:12px;color:var(--dim)">MEMORY PERSISTENCE</h2>
       <div style="font-size:12px" id="memviz">checking files…</div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">All files reload automatically at bot start. Downloads keep their brain.</div></div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">OPPONENT MEMORY (what recent enemies played)</h2>
+      <div class="opp" id="opp">no opponents recorded yet…</div></div>
   </div>
 </div>
 <script>
@@ -115,7 +133,9 @@ async function poll(){try{
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
  heat(n.layer1_neurons,'l1',2);heat(n.layer2_neurons,'l2',2);heat(n.limbic_neurons,'l3',2);heat(n.advantage_neurons,'l4',2);
- if(m.thinking){eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\\ntarget = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\\nchosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\\ntop3 = ${JSON.stringify(m.thinking.q_values_top3)}\\n${m.thinking.equation}\\n${m.thinking.hud}`}
+ if(m.dopamine_events&&m.dopamine_events.length){const de=document.getElementById('dopa');
+  de.innerHTML=m.dopamine_events.slice(-40).reverse().map(e=>'<div'+(Math.abs(e.amount)>=3?' class="big"':'')+'><span class="t">'+e.t+'</span><span class="ev">'+e.event+'</span><span class="'+(e.amount>=0?'pos':'neg')+'">'+(e.amount>=0?'+':'')+e.amount+'</span></div>').join('')}
+ if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\\ntarget = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\\nchosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\\ntop3 = ${JSON.stringify(m.thinking.q_values_top3)}\\n${m.thinking.equation}\\n${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
   `my towers L/R/K: <b>${v.towers.ally_left}/${v.towers.ally_right}/${v.towers.ally_king}</b><br>`+
   `enemy towers L/R: <b style="color:#f85149">${v.towers.enemy_left}/${v.towers.enemy_right}</b><br>`+
