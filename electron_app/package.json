@@ -32,11 +32,11 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "NeuroML"
+      "shortcutName": "NeuroML",
+      "artifactName": "NeuroML-Windows-Setup.exe"
     },
     "portable": {
       "artifactName": "NeuroML-Windows-Portable.exe"
-    },
-    "nsisArtifactName": "NeuroML-Windows-Setup.exe"
+    }
   }
 }

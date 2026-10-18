@@ -40,10 +40,10 @@ chaquopy {
     defaultConfig {
         version "3.8"
         pip {
-            install "torch==1.8.1"   // full-size brain runtime from Chaquopy's Android wheel index
+            options("--extra-index-url", "https://chaquo.com/pypi-13.1")
+            install "torch==1.8.1"   // full-size brain runtime (cp38 arm64 Android wheel)
             install "Pillow"
             install "numpy"
-            options "--extra-index-url", "https://chaquo.com/pypi-13.1"
         }
     }
 }
@@ -74,21 +74,8 @@ tasks.register("copyBotData", Copy) {
 def copyBotPythonResolved = tasks.named("copyBotPython")
 def copyBotDataResolved = tasks.named("copyBotData")
 
-project.tasks.whenTaskAdded { t ->
-    if (t.name.startsWith("writePythonRequirements")
-            || t.name.startsWith("buildPython")
-            || t.name.startsWith("extractPython")
-            || t.name.startsWith("pickPythonVersion")
-            || t.name.startsWith("prepareComChaquo")
-            || t.name.startsWith("mergePiP")
-            || t.name.startsWith("mergePyAppAssets")
-            || t.name.startsWith("mergePython")
-            || t.name.startsWith("mergePyAssets")
-            || t.name.contains("Pip")
-            || t.name.contains("pyAssets")
-            || t.name.contains("chaquopy")) {
-        t.dependsOn copyBotPythonResolved, copyBotDataResolved
-    }
+tasks.named("preBuild") {
+    dependsOn copyBotPythonResolved, copyBotDataResolved
 }
 
 dependencies {
