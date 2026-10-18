@@ -46,8 +46,8 @@ h1{margin:0 0 2px;font-size:20px}.sub{color:var(--dim);font-size:12px;margin-bot
 .kpi div span{display:block;font-size:10px;color:var(--dim);font-weight:400}
 canvas{width:100%;height:130px;margin:4px 0}
 .eq{font-family:Cascadia Code,Consolas,monospace;font-size:12px;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;color:#9ecbff;white-space:pre-wrap}
-.brain{display:flex;gap:6px;align-items:center;justify-content:center}.brain .layer{display:grid;grid-template-columns:repeat(16,1fr);gap:2px}
-.dot{width:8px;height:8px;border-radius:50%;transition:background .2s}
+.brain{display:flex;gap:6px;align-items:center;justify-content:center}.brain .layer{display:grid;grid-template-columns:repeat(96,1fr);gap:1px}
+.dot{width:4px;height:4px;border-radius:50%;transition:background .12s}
 .coach{height:210px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
 .coach div{padding:3px 0;border-bottom:1px solid #212a35}.pun{color:var(--bad)}.men{color:var(--blu)}.ok{color:var(--ok)}
 .wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
@@ -102,19 +102,20 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div class="coach" id="feed">waiting…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 512-wide × 4 cortical MASSIVE brain</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 768-wide × 4 cortical brain (dot = one real neuron)</h2>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation this tick · 🔴 red = negative activation · dark = quiet neuron</div>
       <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — what each pixel-scan reports)</div>
-      <div id="senses" style="display:grid;grid-template-columns:repeat(2,1fr);gap:1px;font-size:10px;font-family:Consolas,monospace;margin:4px 0"></div>
+      <div id="senses" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;font-size:9px;font-family:Consolas,monospace;margin:4px 0"></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 1 — pattern extraction (first signal mixes)</div>
-      <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 2 — battlefield concepts (pushes, weaknesses form here)</div>
-      <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 3 — deep composition (synergies, trades)</div>
-      <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 4 — decision abstraction (before value/choice split)</div>
-      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">LIMBIC — "how good is this situation" interneurons (feeds V(s))</div>
-      <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(96,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage of each of the 20 moves (top = chosen)</div>
       <div id="motor" style="font-size:10px;font-family:Consolas,monospace;margin-top:2px"></div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) dopamine baseline: <span id="vs" style="color:var(--yel)">-</span>
@@ -182,7 +183,8 @@ try{
   line(document.getElementById('c_spike'),window._spkHist,'#9370db');
   document.getElementById('spk').innerHTML=
    'observe '+m.spiking.observe_ms+'ms · sensory spikes '+m.spiking.sensory_spikes+' · motor spikes '+m.spiking.action_spikes+' · inhib '+m.spiking.inh_spikes+'<br>'+
-   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85149">'+m.spiking.dep_events+'</b>';
+   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85149">'+m.spiking.dep_events+'</b>'+
+   (m.spiking.cortex?('<br><span style="color:#9370db">prefrontal deliberation</span>: working memory '+m.spiking.cortex.working_memory+' · vetoes <b style="color:#f85149">'+m.spiking.cortex.vetoes+'</b> · recalls served '+m.spiking.cortex.recalls_served+' · hippocampus '+m.spiking.cortex.hippo_size+' episodes'+(m.spiking.cortex.over_budget?' · <b style="color:#f85149">budget over-run detected</b>':'')):'');
   const aff=m.spiking.affect||{};
   document.getElementById('affect').innerHTML=Object.entries(aff).map(([k,v])=>{
    const w=Math.round(v*54);const col=(k.startsWith('neg')||k==='danger'||k==='frustration')?'#f85149':(k==='confidence'?'#58a6ff':'#3fb950');
@@ -215,10 +217,31 @@ setInterval(mem,5000);mem();
 
 
 def metrics():
+    """Serve ml_metrics.json, backfilled from training.log history when the
+    current-run curves are too short to draw an honest trend."""
     try:
-        return open("ml_metrics.json", encoding="utf-8").read()
+        m = json.load(open("ml_metrics.json", encoding="utf-8"))
     except Exception:
         return "{}"
+    try:
+        losses = m.get("losses") or []
+        if len(losses) < 60:
+            # training.log format: [ t ] step | loss=..| eps=..| buffer=.
+            hist = []
+            with open("training.log", encoding="utf-8") as f:
+                for line in f:
+                    i = line.find("loss=")
+                    if i >= 0:
+                        try:
+                            hist.append(float(line[i + 5:].split()[0].rstrip(",")))
+                        except (ValueError, IndexError):
+                            pass
+            if hist:
+                m["losses"] = hist[-120:]
+                m["losses_backfilled_from"] = "training.log"
+    except Exception:
+        pass
+    return json.dumps(m)
 
 
 def coach():

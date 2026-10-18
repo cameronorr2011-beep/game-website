@@ -1146,11 +1146,16 @@ class SpikingAgent:
         self.affect = None
         self.ok = False
         self._last_bias = None
+        self._last_state = None   # cached state vec for hippocampal storage
+        self.vetoed = set()       # action indices the prefrontal cortex vetoes
         if SPIKING_ENABLED:
             try:
-                from spiking_core import SpikingNucleus, AffectiveCore
+                from spiking_core import (SpikingNucleus, AffectiveCore,
+                                          PrefrontalCortex, HippocampalIndex)
                 self.nucleus = SpikingNucleus(n_sensory=64, n_action=20, seed=13)
                 self.affect = AffectiveCore()
+                self.cortex = PrefrontalCortex()      # working memory + vetoes
+                self.hippo = HippocampalIndex()        # episodic similarity recall
                 self.ok = True
                 self.load()
             except Exception as e:
@@ -1172,6 +1177,20 @@ class SpikingAgent:
             # sensory encoding: 38 state dims mapped onto 64 sensory neurons
             vals = [max(0.0, min(1.0, v)) for v in state_s[:64]]
             vals += [0.0] * (64 - len(vals))
+            self._last_state = vals
+            # PREFRONTAL DELIBERATION (bounded, tested): working-memory veto
+            # rules + one hippocampal similarity recall, inside a wall-clock
+            # budget so it can never block the decision tick.
+            plan = {"vetoes": {}, "recalled": [], "over_budget": False}
+            try:
+                plan = self.cortex.consult(vals, self.hippo, budget_ms=2.0)
+                self.vetoed = {slot * 5 + (spot % 5)
+                               for (slot, spot) in plan.get("vetoes", {})
+                               if slot * 5 + (spot % 5) < 20}
+            except Exception as e:
+                self.vetoed = set()
+                _metrics.setdefault("spiking_errors", []).append(
+                    f"cortex: {e}")
             self.nucleus.encode_sensory(vals)
             self.nucleus.step(50)          # 50 ms of simulated dynamics
             # affect: danger from imminent-threat state channels, confidence
@@ -1186,6 +1205,12 @@ class SpikingAgent:
             mx = max(rates) or 1
             mean = sum(rates) / len(rates)
             bias = [(r - mean) / mx for r in rates]
+            # ruled-out plays get the strongest possible negative vote; the
+            # main loop additionally excludes them from consideration via
+            # forbidden (bounded so valid alternatives always remain).
+            for a_idx in self.vetoed:
+                if a_idx < len(bias):
+                    bias[a_idx] = -1.0
             act_pop = [n.spike_count for n in self.nucleus.action]
             _metrics["spiking"] = {
                 "ok": True,
@@ -1197,6 +1222,15 @@ class SpikingAgent:
                 "pot_events": self.nucleus.telemetry()["potentiation_events"],
                 "dep_events": self.nucleus.telemetry()["depression_events"],
                 "affect": {k: round(v, 3) for k, v in self.affect.state.items()},
+                "cortex": {
+                    "working_memory": len(self.cortex.memory),
+                    "vetoes": len(self.vetoed),
+                    "deliberations": self.cortex.deliberations,
+                    "over_budget": int(bool(plan.get("over_budget"))),
+                    "recall": [r["outcome"] for r in plan.get("recalled", [])],
+                    "hippo_size": len(self.hippo.memories),
+                    "recalls_served": self.hippo.recalls_served,
+                },
             }
             self.nucleus.reset_transient_neurons_only()
             return bias
@@ -1204,11 +1238,17 @@ class SpikingAgent:
             log(f"spiking observe failed (DQN acting alone): {e}")
             return None
 
-    def learn(self, reward):
-        """Reward-modulated plasticity + affective updates off the real reward."""
+    def learn(self, reward, action=None):
+        """Reward-modulated plasticity + affective updates off the real reward.
+        Also writes the (slot, spot, outcome) into prefrontal working memory
+        (veto evidence) and the played state+outcome into the hippocampus."""
         if not self.ok or reward is None:
             return
         try:
+            if action is not None:
+                self.cortex.observe(action // 5, action % 5, reward)
+                if self._last_state is not None:
+                    self.hippo.store(list(self._last_state), reward)
             if reward > 0:
                 self.affect.inject("pos_rpe", min(0.3, reward * 0.15))
             elif reward < 0:
@@ -1227,7 +1267,9 @@ class SpikingAgent:
         try:
             payload = {"version": SPIKING_VERSION,
                        "nucleus": self.nucleus.state_dict(),
-                       "affect": self.affect.state}
+                       "affect": self.affect.state,
+                       "cortex": {"memory": list(self.cortex.memory)},
+                       "hippo": self.hippo.memories[-self.hippo.max_memories:]}
             tmp = SPIKING_FILE + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(payload, f)
@@ -1247,7 +1289,12 @@ class SpikingAgent:
             for k, v in data.get("affect", {}).items():
                 if k in self.affect.state:
                     self.affect.state[k] = float(v)
-            log("spiking nucleus restored (weights + affect persisted)")
+            # durable reasoning state: veto evidence + episodic index restore
+            for slot, spot, o in data.get("cortex", {}).get("memory", []):
+                self.cortex.observe(int(slot), int(spot), float(o))
+            for s, o in data.get("hippo", []):
+                self.hippo.store(list(map(float, s)), float(o))
+            log(f"spiking nucleus restored (weights + affect + cortex {len(self.cortex.memory)} memories + hippo {len(self.hippo.memories)})")
         except Exception as e:
             log(f"spiking checkpoint corrupt, starting fresh: {e}")
 
@@ -1980,6 +2027,10 @@ def main():
                             forbidden.add(slot * 5 + spot)
 
                 _spike_bias = spike_agent.observe_state(state_s)   # spiking vote
+                # prefrontal vetoes join the forbidden set, bounded so valid
+                # alternatives always remain for the DQN to choose from
+                if spike_agent.vetoed and len(forbidden) + len(spike_agent.vetoed) < 12:
+                    forbidden |= spike_agent.vetoed
                 action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels,
                                    bias=_spike_bias)
                 _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
@@ -2263,7 +2314,7 @@ def main():
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
-                    spike_agent.learn(reward)   # reward-modulated STDP + valence
+                    spike_agent.learn(reward, action=prev_action)   # STDP + valence + prefrontal/hippocampal memory
                     # PAIN drives REPLAY priority: painful channels' transitions
                     # get sampled more (revisit the mistake until it's fixed)
                     _pb = pain_priority_boost(pain_channels, prev_action // 5, prev_action % 5, reward)

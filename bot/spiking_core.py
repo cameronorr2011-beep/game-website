@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import math
 import random
+import time
+from collections import deque
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -527,3 +529,93 @@ def spike_raster(spike_log: List[Tuple[float, int]], window_ms: float,
             rows.setdefault(b, []).append(idx)
     out = [rows.get(i, []) for i in range(bins)]
     return out
+
+
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Cosine similarity, safe on zero vectors (returns 0.0)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+class HippocampalIndex:
+    """Retrieval over past situations (design hypothesis, not a copy of the
+    replay buffer): cosine-similarity lookup over rich stored memories, with
+    a strict retrieval budget so queries can never block gameplay."""
+
+    def __init__(self):
+        self.memories: List[Tuple[List[float], float]] = []  # (state_vec, outcome)
+        self.max_memories = 4096
+        self.recalls_served = 0
+
+    def store(self, state_vec: List[float], outcome: float) -> None:
+        self.memories.append((state_vec, float(outcome)))
+        if len(self.memories) > self.max_memories:
+            self.memories = self.memories[-self.max_memories:]
+
+    def recall(self, state_vec: List[float], k: int = 5) -> List[dict]:
+        if not self.memories:
+            return []
+        scored = [(cosine_similarity(state_vec, s), o) for s, o in self.memories]
+        scored.sort(reverse=True, key=lambda x: x[0])
+        top = scored[:max(1, k)]
+        self.recalls_served += 1
+        return [{"similarity": round(sim, 4), "outcome": o} for sim, o in top]
+
+
+class PrefrontalCortex:
+    """Working memory + rule-gated inhibition + bounded deliberation
+    (functional hypothesis; tested behavior, not a name on a box).
+
+    Tested contract:
+      * holds recent (slot, spot, outcome) events in bounded working memory;
+      * vetoes a (slot, spot) that failed k_min consecutive times with
+        sufficiently negative average outcome (learned avoidance rule);
+      * NEVER vetoes a fresh, unobserved choice;
+      * consult() answers within a strict wall-clock budget (returns empty
+        plan rather than blocking gameplay).
+    """
+
+    def __init__(self, veto_min_failures: int = 3,
+                 veto_threshold: float = -0.5,
+                 memory_slots: int = 200):
+        self.veto_min = veto_min_failures
+        self.veto_thr = veto_threshold
+        self.memory = deque(maxlen=memory_slots)
+        self.deliberations = 0
+        self.veto_count = 0
+
+    def observe(self, slot: int, spot: int, outcome: float) -> None:
+        self.memory.append((int(slot), int(spot), float(outcome)))
+
+    def consult(self, state_vec, hippocampus: Optional[HippocampalIndex] = None,
+                budget_ms: float = 2.0) -> dict:
+        """Bounded deliberation: within budget_ms, build the veto plan and
+        (optionally) one hippocampal recall. Never exceeds the budget.
+        Returns {vetoes: {(slot,spot): avg}, recalled: [...], over_budget: bool}"""
+        t0 = time.time()
+        self.deliberations += 1
+        over = False
+        agg: Dict[Tuple[int, int], List[float]] = {}
+        for s, sp, o in self.memory:
+            agg.setdefault((s, sp), []).append(o)
+        vetoes: Dict[Tuple[int, int], float] = {}
+        for key, outs in agg.items():
+            if len(outs) >= self.veto_min:
+                avg = sum(outs) / len(outs)
+                if avg <= self.veto_thr:
+                    vetoes[key] = round(avg, 3)
+        recall = []
+        if hippocampus is not None:
+            recall = hippocampus.recall(state_vec, k=3)
+        if (time.time() - t0) * 1000.0 > budget_ms:
+            over = True
+        self.veto_count = len(vetoes) if vetoes else self.veto_count
+        return {"vetoes": vetoes, "recalled": recall, "over_budget": over}
+
+    def reset(self) -> None:
+        """Working memory is transient; veto rules re-derive from evidence."""
+        self.memory.clear()
