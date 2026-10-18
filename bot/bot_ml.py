@@ -965,6 +965,14 @@ COACH_FILE = "ai_coach.jsonl"
 _metrics = {
     "architecture": "Dueling-Double-DQN + PER + 3-Step + Groq-VLM",
     "steps": 0,
+    # Seed the game-memory digest so the dashboard shows it even before the
+    # first distill of this session (distill_match refreshes it every match end).
+    "game_memory": {},
+    "opponent_memory": {"known": 0, "this_match_pushes": 0},
+    "dopamine_events": [],
+    "win_history": [],
+    "wins_v": 0,
+    "losses_v": 0,
     "losses": [],
     "td_errors": [],
     "epsilon": 0.35,
