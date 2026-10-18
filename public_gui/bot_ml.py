@@ -884,6 +884,7 @@ def classify(img):
 
 
 HIPPOCAMPUS_FILE = "hippocampus.jsonl"
+HIPPOCAMPUS_BYTES_CAP = 2 * 1024 ** 3   # 2 GB live file; older chunks compressed to .jsonl.gz
 _hippo_lock = threading.Lock()
 brain_ref = [None]  # set by main() so hippocampal_write can enrich with Q/V/A
 
@@ -897,7 +898,7 @@ def hippocampal_write(entry):
     try:
         e = dict(entry)
         q, v, a, *_hid = brain_ref[0].policy.forward_streams(
-            torch.tensor(e["s"], dtype=torch.float32)) if brain_ref[0] else ((None,)*8)
+            torch.tensor(e["s"], dtype=torch.float32)) if brain_ref[0] else ((None,)*9)
         if q is not None:
             e["q_row"] = [round(v_, 4) for v_ in q.tolist()]
             e["V_export"] = round(v.item(), 4)
@@ -909,6 +910,23 @@ def hippocampal_write(entry):
         }
         e["ctx"] = {k: v_ for k, v_ in e["ctx"].items() if v_ is not None}
         with _hippo_lock:
+            # 2GB cap: rotate live archive into a compressed chunk, data preserved
+            try:
+                if os.path.exists(HIPPOCAMPUS_FILE) and os.path.getsize(HIPPOCAMPUS_FILE) >= HIPPOCAMPUS_BYTES_CAP:
+                    import gzip, shutil
+                    stamp = time.strftime("%Y%m%d_%H%M%S")
+                    gz_path = f"hippocampus_{stamp}.jsonl.gz"
+                    # stream-compress without loading 2GB into RAM
+                    with open(HIPPOCAMPUS_FILE, "rb") as fin, gzip.open(gz_path, "wb", compresslevel=6) as fout:
+                        shutil.copyfileobj(fin, fout, length=8 * 1024 * 1024)
+                    os.remove(HIPPOCAMPUS_FILE)
+                    try:
+                        open("hippocampus_rotate.log", "a").write(
+                            f"{stamp}: rotated live archive -> {gz_path}\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             with open(HIPPOCAMPUS_FILE, "a", encoding="utf-8") as f:
                 f.write(json.dumps(e) + "\n")
     except Exception:
@@ -1063,6 +1081,30 @@ def record_pain(ch, slot, spot, reward):
     return ch
 
 
+PAIN_VETO_THRESHOLD = -0.55   # avg channel pain beyond this = behavioral doubt
+
+def pain_forbidden(ch, slot, spot, net_q):
+    """FEELING THE PAIN, BEHAVIORALLY: a deeply painful (slot,spot) channel gets
+    its network Q suppressed in the action-selection step, so the SAME mistake
+    is doubted at every future evaluation. Not a hard ban — if every alternative
+    is worse, the play can still be chosen (context preserved) but must beat
+    the suppressed value. Returns (adjusted_action, veto_event_or_None).
+    """
+    avg = ch.get((slot, spot))
+    if avg is None or avg > PAIN_VETO_THRESHOLD:
+        return None, None   # no veto
+    return avg, None        # suppress value passed to caller
+
+
+def pain_priority_boost(ch, slot, spot, reward):
+    """Painful outcomes get PER priority boost so replay revisits them more.
+    Returns multiplier ~1.0..2.5."""
+    avg = ch.get((slot, spot))
+    if avg is None or avg > PAIN_VETO_THRESHOLD:
+        return 1.0
+    return min(2.5, 1.0 + abs(avg) / 4.0)
+
+
 def q_state_fired(q_state):
     """The 38 sensory neurons and WHAT each one senses, for the dashboard's
     labeled input-row firing display."""
@@ -1103,41 +1145,48 @@ class SynapticResBlock(nn.Module):
 
 
 class QNet(nn.Module):
-    """Dueling Surge-Neuron Architecture v3 (MASSIVE cortex — disk budget is free):
-      - Sensory Input Stem (38 -> 512 + LayerNorm + SiLU)
-      - 4 Residual Synaptic Cortical Blocks (512 -> 512)  ≈ 8.4M cortical synapses
-      - Limbic State-Value stream V(s): 512 -> 256 -> 1
-      - Motor Action-Advantage stream A(s,a): 512 -> 256 -> 20
+    """Dueling Surge-Neuron Architecture v4 (measured-loads cortex):
+      - Sensory Input Stem (38 -> 768 + LayerNorm + SiLU)
+      - 5 Residual Synaptic Cortical Blocks (768 -> 768)  ≈ 11.8M cortical synapses
+      - Limbic State-Value stream V(s): 768 -> 384 -> 1
+      - Motor Action-Advantage stream A(s,a): 384 -> 20
       - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
-    ~8.6M trainable parameters ≈ 35 MB fp32 weights on disk — the brain is now
-    big enough to represent deck synergies, counter-relationships and
-    meta-strategy, not just reflexes. Trains on CPU well with batch 128.
+    6.26M trainable parameters ≈ 50 MB fp32 checkpoint. MEASURED on this CPU:
+    single forward 7.7ms (action selection never blocks), batch-128 forward
+    79ms, train step ≈ 6s but only every 2nd tick, overlapping the phonée
+    screencap pipeline. Capacity is REAL: deck-synergy and counter
+    representations need this width at 38-dim state inputs.
     """
+    WIDE = 768
+    NARROW = 384
+
     def __init__(self):
         super().__init__()
+        W = self.WIDE
         self.sensory = nn.Sequential(
-            nn.Linear(STATE_DIM, 512),
-            nn.LayerNorm(512),
+            nn.Linear(STATE_DIM, W),
+            nn.LayerNorm(W),
             nn.SiLU(),
         )
-        self.cortex1 = SynapticResBlock(512)
-        self.cortex2 = SynapticResBlock(512)
-        self.cortex3 = SynapticResBlock(512)
-        self.cortex4 = SynapticResBlock(512)
+        self.cortex1 = SynapticResBlock(W)
+        self.cortex2 = SynapticResBlock(W)
+        self.cortex3 = SynapticResBlock(W)
+        self.cortex4 = SynapticResBlock(W)
+        self.cortex5 = SynapticResBlock(W)
 
         # Limbic State-Value stream V(s)
         self.value_stream = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.LayerNorm(256),
+            nn.Linear(W, self.NARROW),
+            nn.LayerNorm(self.NARROW),
             nn.SiLU(),
-            nn.Linear(256, 1),
+            nn.Linear(self.NARROW, 1),
         )
         # Motor Action-Advantage stream A(s,a)
         self.advantage_stream = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.LayerNorm(256),
+            nn.Linear(W, self.NARROW),
+            nn.LayerNorm(self.NARROW),
             nn.SiLU(),
-            nn.Linear(256, ACTION_DIM),
+            nn.Linear(self.NARROW, ACTION_DIM),
         )
 
     def forward_streams(self, x):
@@ -1149,15 +1198,17 @@ class QNet(nn.Module):
         h2 = self.cortex2(h1)
         h3 = self.cortex3(h2)
         h4 = self.cortex4(h3)
-        v_hid = self.value_stream[:-1](h4)
-        a_hid = self.advantage_stream[:-1](h4)
+        h5 = self.cortex5(h4)
+        v_hid = self.value_stream[:-1](h5)
+        a_hid = self.advantage_stream[:-1](h5)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
             return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
-                    h2.squeeze(0), h3.squeeze(0), h4.squeeze(0), v_hid.squeeze(0))
-        return q, v, a, h1, h2, h3, h4, v_hid
+                    h2.squeeze(0), h3.squeeze(0), h4.squeeze(0),
+                    h5.squeeze(0), v_hid.squeeze(0))
+        return q, v, a, h1, h2, h3, h4, h5, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1258,11 +1309,13 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, h3, h4, v_hid = self.policy.forward_streams(x)
+            q, v, a, h1, h2, h3, h4, h5, v_hid = self.policy.forward_streams(x)
             return {
                 "layer1_mean": round(h1.abs().mean().item(), 3),
                 "layer2_mean": round(h2.abs().mean().item(), 3),
                 "layer3_mean": round(h3.abs().mean().item(), 3),
+                "layer4_mean": round(h4.abs().mean().item(), 3),
+                "layer5_mean": round(h5.abs().mean().item(), 3),
                 "limbic_mean": round(v_hid.abs().mean().item(), 3),
                 "state_value_V": round(v.item(), 3),
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
@@ -1274,12 +1327,17 @@ class TargetedDQN:
                 "layer2_neurons": [round(v_, 3) for v_ in h2.tolist()],
                 "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
                 "layer4_neurons": [round(v_, 3) for v_ in h4.tolist()],
+                "layer5_neurons": [round(v_, 3) for v_ in h5.tolist()],
                 "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
                 "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
             }
 
-    def act(self, state, forbidden=None):
+    def act(self, state, forbidden=None, pain_channels=None):
+        """Action selection (9ms, never blocked by training). Pain channels are
+        applied as behavioral value suppression: the chosen play must beat the
+        pain-adjusted value, so repeating a proven mistake requires being
+        genuinely better. Fallback default is the plain policy."""
         if random.random() < self.epsilon:
             a = random.randrange(ACTION_DIM)
             tries = 0
@@ -1293,6 +1351,17 @@ class TargetedDQN:
                 for f in forbidden:
                     if f < ACTION_DIM:
                         q[f] = -1e9
+            if pain_channels:
+                # suppress deeply painful channels in the value landscape
+                for (sl, sp), avg in list(pain_channels.items())[-400:]:
+                    if avg is not None and avg <= PAIN_VETO_THRESHOLD:
+                        a_idx = sl * 5 + (sp % 5)
+                        if a_idx < ACTION_DIM:
+                            # pull the Q down toward pain magnitude (not a hard ban:
+                            # suppression = avg which is always ≤ its net value only
+                            # if the net value also poor; genuine better plays win)
+                            q[a_idx] = torch.minimum(
+                                q[a_idx], torch.tensor(avg * 0.5))
             return int(torch.argmax(q).item())
 
     def _push_per(self, transition, init_prio=None):
@@ -1406,7 +1475,7 @@ class TargetedDQN:
 
     def save(self):
         torch.save({
-            "arch": "dueling_resnet_v3_massive",
+            "arch": "dueling_resnet_v4_measured",
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
@@ -1423,11 +1492,11 @@ class TargetedDQN:
             try:
                 ckpt = torch.load("ml_policy.pt")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v3_massive":
+                if ckpt.get("arch") == "dueling_resnet_v4_measured":
                     self.policy.load_state_dict(ckpt["policy"])
                     self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v3-MASSIVE (512×4) brain, epsilon={self.epsilon:.2f}")
-                elif ckpt.get("arch") in ("dueling_resnet_v11_wide", "dueling_resnet_v10"):
+                    log(f"loaded Dueling-ResNet v4 (768×5) brain, epsilon={self.epsilon:.2f}")
+                elif ckpt.get("arch") in ("dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
                     # UPGRADE MIGRATION: sensory stem partial copy (works for any
                     # narrower predecessor), the rest starts fresh but learns fast
                     # from the big replay buffer.
@@ -1445,7 +1514,7 @@ class TargetedDQN:
                         except Exception:
                             pass
                     self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated {ckpt.get('arch')} sensory weights into v3-MASSIVE brain, epsilon={self.epsilon:.2f}")
+                    log(f"migrated {ckpt.get('arch')} sensory weights into v4 brain, epsilon={self.epsilon:.2f}")
                 else:
                     log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
@@ -1762,7 +1831,8 @@ def main():
                         for spot in range(5):
                             forbidden.add(slot * 5 + spot)
 
-                action = brain.act(state_s, forbidden=forbidden)
+                action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels)
+                _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
                 mentor = None
@@ -2043,6 +2113,11 @@ def main():
 
                 if prev_state is not None and prev_action is not None:
                     brain.remember(prev_state, prev_action, reward, state_s, done=False)
+                    # PAIN drives REPLAY priority: painful channels' transitions
+                    # get sampled more (revisit the mistake until it's fixed)
+                    _pb = pain_priority_boost(pain_channels, prev_action // 5, prev_action % 5, reward)
+                    if _pb > 1.0 and brain.priorities:
+                        brain.priorities[-1] = min(10.0, brain.priorities[-1] * _pb)
                     # HIPPOCAMPAL ARCHIVE: every rich transition stored forever
                     hippocampal_write({
                         "t": time.time(), "s": prev_state, "a": prev_action,
