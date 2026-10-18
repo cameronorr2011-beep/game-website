@@ -51,12 +51,68 @@ import torch.optim as optim
 import sys
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+# GROQ TOKEN BUDGET: Groq is used for END-OF-MATCH summaries (1 call per match,
+# not per-play tokens) and optional throttled advisory when enabled. The reward
+# path NEVER touches the API (deterministic Referee only).
+GROQ_MENTOR_INTERVAL = 180
+GROQ_IN_MATCH_ADVISORY = os.environ.get("GROQ_IN_MATCH_ADVISORY", "0") == "1"
+
 CFG = json.load(open("bot_config.json"))
-DEV = CFG["device"]
+DEV = os.environ.get("NEUROML_DEVICE", CFG.get("device", "127.0.0.1:5555"))
+PHONE_LOCAL_MODE = (os.environ.get("NEUROML_PHONE_LOCAL", "0") == "1"
+                    or str(DEV).startswith("127.0.0.1")
+                    or str(DEV).startswith("localhost")
+                    or str(DEV) == "local")
 SHOT_DIR = "cr_bot"
 os.makedirs(SHOT_DIR, exist_ok=True)
 LOG = open("bot.log", "a", buffering=1, encoding="utf-8", errors="replace")
 CARDS_DB = json.load(open("cards.json"))
+
+# ============================================================
+# CARD COUNTERS & MATCHUP INTELLIGENCE (opponent & self card matrix)
+# ============================================================
+CARD_COUNTERS = {
+    "hogrider":    {"counters": ["cannon", "tesla", "minipekka", "skeletons"], "preferred_spot": "center_back", "role": "win_condition", "cost": 4},
+    "giant":       {"counters": ["minipekka", "cannon", "tesla", "skeletons"], "preferred_spot": "center_back", "role": "tank", "cost": 5},
+    "golem":       {"counters": ["minipekka", "cannon", "tesla", "musketeer"], "preferred_spot": "center_back", "role": "tank", "cost": 8},
+    "pekka":       {"counters": ["skeletons", "archers", "musketeer", "cannon"], "preferred_spot": "center_back", "role": "tank", "cost": 7},
+    "balloon":     {"counters": ["musketeer", "tesla", "archers", "fireball"], "preferred_spot": "center_back", "role": "win_condition", "cost": 5},
+    "lava_hound":  {"counters": ["musketeer", "tesla", "archers", "arrows"], "preferred_spot": "center_back", "role": "tank", "cost": 7},
+    "goblin_barrel": {"counters": ["zap", "arrows", "valkyrie", "skeletons"], "preferred_spot": "left_defend", "role": "win_condition", "cost": 3},
+    "minipekka":   {"counters": ["skeletons", "knight", "valkyrie", "archers"], "preferred_spot": "center_back", "role": "win_condition", "cost": 4},
+    "musketeer":   {"counters": ["fireball", "knight", "valkyrie", "minipekka"], "preferred_spot": "left_defend", "role": "support", "cost": 4},
+    "knight":      {"counters": ["minipekka", "valkyrie", "musketeer", "archers"], "preferred_spot": "left_defend", "role": "support", "cost": 3},
+    "valkyrie":    {"counters": ["minipekka", "musketeer", "archers", "knight"], "preferred_spot": "left_defend", "role": "support", "cost": 4},
+    "archers":     {"counters": ["arrows", "fireball", "valkyrie", "zap"], "preferred_spot": "left_defend", "role": "support", "cost": 3},
+    "skeletons":   {"counters": ["zap", "arrows", "valkyrie"], "preferred_spot": "left_defend", "role": "support", "cost": 1},
+    "wizard":      {"counters": ["fireball", "valkyrie", "minipekka", "knight"], "preferred_spot": "left_defend", "role": "support", "cost": 5},
+    "minions":     {"counters": ["arrows", "zap", "archers", "musketeer"], "preferred_spot": "left_defend", "role": "support", "cost": 3},
+    "cannon":      {"counters": ["fireball", "giant", "musketeer", "hogrider"], "preferred_spot": "bridge_left", "role": "building", "cost": 3},
+    "tesla":       {"counters": ["fireball", "giant", "hogrider", "musketeer"], "preferred_spot": "bridge_left", "role": "building", "cost": 4},
+}
+
+
+def select_counter_card(enemy_archetype_or_card, hand_deck, affordable_slots, threat_lane=None):
+    """Given an observed/inferred opponent threat or card and our current hand,
+    return {'slot': int, 'card': str, 'counter_to': str, 'recommended_spot': str}
+    or None if no specific counter is held and affordable."""
+    info = CARD_COUNTERS.get(str(enemy_archetype_or_card or "").lower())
+    if not info or not hand_deck:
+        return None
+    wanted = info.get("counters", [])
+    for pref in wanted:
+        for slot_i, c_name in enumerate(hand_deck[:4]):
+            if str(c_name).lower() == pref and (affordable_slots is None or slot_i in affordable_slots):
+                spot = info.get("preferred_spot", "center_back")
+                if threat_lane in ("left", "right") and spot in ("left_defend", "right_defend"):
+                    spot = f"{threat_lane}_defend"
+                return {
+                    "slot": slot_i,
+                    "card": str(c_name).lower(),
+                    "counter_to": str(enemy_archetype_or_card).lower(),
+                    "recommended_spot": spot,
+                }
+    return None
 
 STATE_DIM = 38
 ACTION_DIM = 20
@@ -77,6 +133,9 @@ import urllib.error
 
 
 def sh(args, timeout=25):
+    if PHONE_LOCAL_MODE and str(DEV) == "local" and args and args[0] in ("shell", "exec-out"):
+        cmd = args[1:]
+        return subprocess.run(cmd, capture_output=True, timeout=timeout)
     return subprocess.run(
         ["adb", "-s", DEV] + args, capture_output=True, timeout=timeout
     )
@@ -237,71 +296,10 @@ def _any(img, tests=None):
 
 
 def groq_damage_punishment(dmg_info, img=None):
-    """Calculate severe negative dopamine punishment when our towers take damage.
-    Queries Groq's qwen/qwen3.8-27b VLM (with visual snapshot when available)
-    and combines with proportional HP-drop physics so the surge neurons are
-    strictly punished whenever our towers take damage."""
-    hp_drop = dmg_info.get("ally_hp_drop", 0.0)
-    towers_lost = dmg_info.get("ally_towers_lost", 0)
-    base_punish = -max(0.50, round(hp_drop * 4.0 + towers_lost * 1.6, 2))
-    base_punish = max(-3.5, base_punish)
-
-    if groq_is_muted():
-        return base_punish, "groq_muted_local_fallback"
-    key = load_groq_key()
-    if not key:
-        return base_punish, "local_sensor"
-
-    try:
-        prompt = (
-            f"Clash Royale RL Judge: Our friendly towers just took damage! "
-            f"HP fraction lost={hp_drop:.3f}, towers collapsed={towers_lost}, "
-            f"left_hp={dmg_info.get('ally_left', 0):.2f}, right_hp={dmg_info.get('ally_right', 0):.2f}, "
-            f"king_hp={dmg_info.get('ally_king', 0):.2f}. "
-            f"Output ONLY a single negative float between -0.50 and -3.50 (more negative for bigger damage or collapsed tower) to punish the surge neurons."
-        )
-        if img is not None:
-            thumb = img.copy()
-            thumb.thumbnail((320, 690))
-            buf = io.BytesIO()
-            thumb.save(buf, format="JPEG", quality=60)
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            content = [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ]
-        else:
-            content = prompt
-
-        payload = {
-            "model": GROQ_VISION_MODEL,
-            "messages": [{"role": "user", "content": content}],
-            "max_tokens": 16,
-            "temperature": 0.0,
-        }
-        req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "User-Agent": GROQ_UA,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=7) as resp:
-            data = json.loads(resp.read().decode())
-            txt = (data["choices"][0]["message"].get("content") or "").strip()
-            m = re.search(r"-[0-9]+(?:\.[0-9]+)?", txt)
-            if m:
-                val = float(m.group(0))
-                # Ensure severe damage / lost tower is never under-punished
-                val = min(val, base_punish * 0.85)
-                val = max(-3.5, min(-0.45, round(val, 2)))
-                return val, "groq_vlm_judge"
-    except Exception as e:
-        err = e.read().decode(errors="ignore")[:90] if hasattr(e, "read") else str(e)[:90]
-        log(f"groq damage judge fallback to local punishment ({base_punish:+.2f}): {err}")
-    return base_punish, "groq_key_local_fallback"
+    """Compatibility wrapper: NEVER contacts Groq. Delegates to the deterministic
+    Referee so tower-damage punishment is 100% rules-based and uses zero LLM tokens."""
+    from referee import groq_damage_punishment as _ref_gdp
+    return _ref_gdp(dmg_info, img=img)
 
 
 # ---------------------- Groq OSS AI Coach: Punisher + Mentor ----------------------
@@ -374,13 +372,11 @@ def groq_deck_builder(player_deck=None):
 
 
 def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
-    """GROQ IS THE REWARD GOVERNOR ON EVERY TICK: it gets the FULL CONTEXT
-    (elixir, towers, HP-mass, lane threats, desperation, hand, opponent pushes,
-    pain channels, game memory) and decides the final dopamine with that
-    context — fixing flat shaped rewards that punish e.g. casts that look bad
-    but were NECESSARY at low tower HP (desperation rocket on a cheap barrel).
+    """GROQ IS A MENTOR ONLY: requests strategic critique and a recommended
+    placement only. No LLM-generated number may determine dopamine, pain, a
+    tower-damage penalty, or a reward adjustment.
     Returns dict: {agree, reward_delta, recommended_spot, critique, source}
-    """
+    where reward_delta is ALWAYS None."""
     out = {"agree": None, "reward_delta": None, "recommended_spot": None,
            "critique": None, "source": None}
     if groq_is_muted():
@@ -390,7 +386,6 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
         return out
     try:
         import re as _re
-        # The coach knows the agent's GAME MEMORY — past performance shapes its advice
         try:
             gm = game_memory_digest()
             gmline = gm.get("one_line", "")
@@ -399,40 +394,25 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
         except Exception:
             gmline, best, avoid = "", [], []
         prompt = (
-            "You are NeuroML's REWARD GOVERNOR for a Clash Royale RL agent."
-            " You judge every single play with FULL CONTEXT and assign the final dopamine.\n"
+            "You are NeuroML's STRATEGIC MENTOR for a Clash Royale RL agent. "
+            "Provide a brief strategic critique and a recommended placement spot ONLY.\n"
             f"Agent's game memory: {gmline or 'no history yet (first games)'}\n"
             + (f"Spots that historically paid best: {best}\nSpots that historically lost dopamine: {avoid}\n" if best or avoid else "")
             + f"FULL CONTEXT: {state_desc}\n"
             + f"The agent just played: {played_spot}\n"
-            + f"Local shaped reward was: {prev_reward:+.2f}\n\n"
             + "Reply ONLY with minified JSON, no markdown, no reasoning. Start your reply with { immediately.\n"
-            + '{"reward_delta": <float -2.5..+1.5>, "recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 22 words>"}\n\n'
-            + "BATTLEFIELD PHYSICS (measured, in elixir-damage units):\n"
-            + "- A tower takes about 1000 HP to destroy; fireball ≈ 572, rocket ≈ 600, lightning ≈ 773, arrows ≈ 285, zap ≈ 159.\n"
-            + "- Elixir regen: 1 per 2.8s; a full 10 elixir push swings roughly 2 tower-HP bar units.\n"
-            + "- Positive elixir trade: killing a 6-elixir push with 3 elixir of defense wins the game long-run.\n"
-            + "- Always target the LOWEST-HP enemy tower with offensive damage — symmetric pressure loses games.\n"
-            + "JUDGMENT PRINCIPLES:\n"
-            + "- Desperation is allowed: at low king-HP or against a pushed-away tower,"
-            + " expensive spells at cheap troops CAN be correct — judge by necessity, not by elixir math alone.\n"
-            + "- Punish wasting elixir on nothing (hits empty lane, overdefense of a single cheap troop).\n"
-            + "- Punish hard: offensive damage aimed at the HIGHER-HP tower while the LOWER-HP tower stands.\n"
-            + "- Reward counter-pushes (attacking the lane the enemy did NOT commit to).\n"
-            + "- Reward targeting the LOWER-HP enemy tower for finishing pressure.\n"
-            + "- Reward kiting: cheap troops placed center to drag heavy attackers away.\n"
-            + "- DO NOT punish cheap-card cycling when up on elixir and no threat.\n\n"
-            + "You MUST judge differently when the context changes — an identical play can be genius"
-            + " at 1 tower HP or terrible at full towers.\n"
+            + '{"recommended_spot": <one of bridge_left|bridge_right|left_defend|right_defend|center_back>, "critique": "<max 22 words>"}\n\n'
+            + "IMPORTANT: DO NOT emit any reward_delta or numerical score — the deterministic Referee owns all rewards and punishments.\n"
+            + "TACTICAL PRINCIPLES:\n"
+            + "- Target the LOWEST-HP enemy tower with offensive pressure or spells when in finish range.\n"
+            + "- Defend active threats on the threatened lane; use buildings at center_back to pull tanks.\n"
+            + "- Counterpush on the opposite lane when the opponent overcommits.\n"
+            + "- Conserve elixir when low; cycle cheaply only when safe.\n"
         )
-        content = prompt
-        # gpt-oss-120b text-only: the structured state_desc already carries full vision
-        if img is not None:
-            pass  # image kept for future multimodal coach; text-only avoids API rejection
         payload = {
             "model": GROQ_COACH_MODEL,
-            "messages": [{"role": "user", "content": content}],
-            "max_tokens": 512,  # gpt-oss reasoning tokens consume budget; keep JSON in decoded output
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 512,
             "temperature": 0.0,
         }
         req = urllib.request.Request(
@@ -448,9 +428,7 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
             if not m:
                 return out
             j = json.loads(m.group(0))
-            rd = j.get("reward_delta")
-            if isinstance(rd, (int, float)):
-                out["reward_delta"] = max(-1.5, min(0.5, float(rd)))
+            out["reward_delta"] = None  # strictly enforced: never accept LLM reward numbers
             rs = j.get("recommended_spot")
             if rs in SPOT_TO_ACTION:
                 out["recommended_spot"] = rs
@@ -459,6 +437,16 @@ def groq_reward_governor(state_desc, played_spot, prev_reward, img=None):
                 out["critique"] = cr.strip()[:160]
             out["source"] = "groq_oss_coach"
             _metrics["mentor_reviews"] = _metrics.get("mentor_reviews", 0) + 1
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode(errors="ignore")
+        except Exception:
+            pass
+        if e.code in (429, 403) or "Rate limit" in body:
+            mute_groq()
+        out["critique"] = f"coach unavailable: HTTP {e.code}"
+        out["source"] = "groq_oss_coach_unavailable"
     except Exception as e:
         err = e.read().decode(errors="ignore")[:80] if hasattr(e, "read") else str(e)[:80]
         out["critique"] = f"coach unavailable: {err}"
@@ -549,17 +537,28 @@ def tower_healths(img):
 COUNTER_TABLE = {
     # card -> cards that BEAT it for less elixir (positive elixir trade)
     "valkyrie": ["minipekka", "musketeer", "archers"],
-    "giant": ["minipekka", "cannon", "tesla", "skeletons"],
-    "hogrider": ["cannon", "tesla", "valkyrie", "skeletons"],
-    "minipekka": ["skeletons", "cannon"],
-    "musketeer": ["skeletons", "fireball"],
-    "knight": ["minipekka", "musketeer"],
-    "archers": ["fireball", "arrows"],
-    "wizard": ["fireball", "skeletons"],
-    "minions": ["arrows", "zap", "musketeer"],
-    "bomber": ["fireball"],
-    "balloon": ["musketeer", "archers", "tesla"],
-    "prince": ["skeletons", "minions"],
+    "giant": ["minipekka", "cannon", "tesla", "skeletons", "barbarian_hut"],
+    "hogrider": ["cannon", "tesla", "valkyrie", "skeletons", "tombstone"],
+    "minipekka": ["skeletons", "cannon", "musketeer"],
+    "musketeer": ["skeletons", "fireball", "lightning"],
+    "knight": ["minipekka", "musketeer", "valkyrie"],
+    "archers": ["fireball", "arrows", "valkyrie"],
+    "wizard": ["fireball", "skeletons", "musketeer", "lightning"],
+    "minions": ["arrows", "zap", "musketeer", "wizard"],
+    "bomber": ["fireball", "valkyrie", "knight"],
+    "balloon": ["musketeer", "archers", "tesla", "minions", "fireball"],
+    "prince": ["skeletons", "minions", "cannon", "tombstone"],
+    "pekka": ["skeletons", "minions", "cannon", "inferno_tower"],
+    "baby_dragon": ["musketeer", "arrows", "wizard"],
+    "witch": ["fireball", "valkyrie", "arrows"],
+    "skeleton_army": ["zap", "arrows", "fireball", "valkyrie"],
+    "giant_skeleton": ["minions", "musketeer", "skeleton_army"],
+    "barbarians": ["fireball", "wizard", "valkyrie", "bomber"],
+    "royal_giant": ["minipekka", "cannon", "skeleton_army"],
+    "golem": ["minipekka", "inferno_tower", "skeleton_army"],
+    "freeze": ["cycle_out"],
+    "mirror": ["cycle_out"],
+    "rage": ["cycle_out"],
 }
 AIR_UNITS = {"minions", "balloon", "baby_dragon", "mega_minion", "bats"}
 
@@ -700,13 +699,14 @@ def tower_finish_check(towers, hand_deck, mlxir):
     return finishers
 
 
-def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, finishers=None):
+def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, finishers=None, opponent=None):
     """Knowledge-based veto/redirect layer ON TOP of the network choose:
     the net proposes, the RULES referee. Returns possibly-corrected action.
       - spell at bridge -> redirect to tower finisher if a finisher exists
       - spell center_back (pointless) -> redirect to defense/finisher
       - heavy tank at bridge when elixir < cost+1 (can't support) -> center_back
       - cheap cycle card at bridge with no push and no threat -> defend instead
+      - card-counter intelligence -> deploy hard counter when opponent push archetype known
     """
     if not hand_deck:
         return action, "net"
@@ -738,6 +738,13 @@ def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, fini
     # RULE 5: buildings go at the center to pull pushes, never at the bridge
     if role == "building" and spot_n.startswith("bridge"):
         return slot * 5 + 4, "building pulls center"
+    # RULE 6: opponent card-counter intelligence under active lane threat
+    if lane and opponent and opponent.get("last_inferred_card"):
+        aff_slots = [i for i in range(min(4, len(afford))) if afford[i] > 0.5]
+        cnt = select_counter_card(opponent["last_inferred_card"], hand_deck, aff_slots, threat_lane=lane)
+        if cnt and cnt["slot"] != slot and role not in ("building", "spell"):
+            c_spot_idx = SPOT_TO_ACTION.get(cnt["recommended_spot"], 4)
+            return cnt["slot"] * 5 + c_spot_idx, f"counter {cnt['card']} vs {cnt['counter_to']}"
     return action, "net"
 
 
@@ -841,26 +848,47 @@ def _save_opponent_memory(mem):
 
 def opponent_new_match():
     """Start tracking a fresh opponent."""
-    return {"cards_played": [], "elixir_spent": 0, "pushes": [], "start": time.time()}
+    return {
+        "cards_played": [],
+        "inferred_archetypes": [],
+        "last_inferred_card": None,
+        "last_push_cost_est": None,
+        "elixir_spent": 0,
+        "pushes": [],
+        "start": time.time(),
+    }
 
 
 def opponent_observe(opp, arena_prev, arena_now, towers_prev, towers_now):
     """Update the opponent model this match: it sees enemy troops crossing the
-    bridge (vision counts them) and enemy damage spikes (a play was made)."""
+    bridge (vision counts them), classifies wave density into likely card
+    archetypes (hogrider/bridge_spam, giant/beatdown, swarm/goblin_barrel), and
+    tracks estimated elixir committed only when a clear wave appears."""
     if not opp:
         return
+    opp["last_push_cost_est"] = None
     e_now = arena_now.get("enemy_left", 0) + arena_now.get("enemy_right", 0)
     e_prev = (arena_prev or {}).get("enemy_left", 0) + (arena_prev or {}).get("enemy_right", 0)
-    # A wave coming over the bridge: units >6 in a lane the previous frame lacked
     for side in ("left", "right"):
         now_n = arena_now.get(f"enemy_{side}", 0)
         prev_n = (arena_prev or {}).get(f"enemy_{side}", 0)
-        if now_n >= 6 and prev_n < now_n // 2:
-            opp["pushes"].append({"side": side, "size": now_n, "tick": time.time()})
-            opp["cards_played"].append("unknown")
-    if e_now - e_prev >= 5:
-        opp["cards_played"].append("unknown")
-    # enemy tower took big damage from us: they were distracted, commit
+        bridge_n = arena_now.get(f"enemy_bridge_{'l' if side == 'left' else 'r'}", 0)
+        if now_n >= 6 and prev_n < max(3, now_n // 2):
+            if now_n >= 16:
+                inferred, est_cost = "giant", 5.0
+            elif bridge_n >= 5:
+                inferred, est_cost = "hogrider", 4.0
+            else:
+                inferred, est_cost = "knight", 3.0
+            opp["pushes"].append({"side": side, "size": now_n, "inferred": inferred, "tick": time.time()})
+            opp["cards_played"].append(inferred)
+            opp.setdefault("inferred_archetypes", []).append(inferred)
+            opp["last_inferred_card"] = inferred
+            opp["last_push_cost_est"] = est_cost
+            opp["elixir_spent"] += int(est_cost)
+    if e_now - e_prev >= 5 and not opp.get("last_push_cost_est"):
+        opp["cards_played"].append("musketeer")
+        opp["last_inferred_card"] = "musketeer"
     el = max(0.0, (towers_prev or {}).get("enemy_left", 1) - towers_now.get("enemy_left", 1))
     er = max(0.0, (towers_prev or {}).get("enemy_right", 1) - towers_now.get("enemy_right", 1))
     if el + er >= 0.08:
@@ -1122,54 +1150,54 @@ def seed_lifetime_record(metrics, mem=None):
 # Replaces the Groq damage-punisher with strict physics rules that cost zero
 # inference tokens and can never be talked into a wrong verdict.
 # ============================================================
-def referee_pain(dmg_info, ally_alive, tick):
+# --- ARENA TWIN hook (local digital twin; bounded memory; planning gated) ---
+TWIN_PLAN = os.environ.get("TWIN_PLAN_ENABLED", "0") == "1"
+arena_twin = None
+
+def _init_twin():
+    global arena_twin
+    try:
+        from arena_twin import ArenaTwin
+        arena_twin = ArenaTwin()
+        arena_twin.load()
+        if arena_twin.seq:
+            log(f"arena twin restored (seq {arena_twin.seq}, ready={arena_twin.ready})")
+    except Exception as e:
+        log(f"arena twin unavailable (recording continues offline): {str(e)[:70]}")
+        arena_twin = None
+
+
+def bot_ml_pred_uncertainty():
+    """Bounded world-model uncertainty signal in [0,1] from the live prediction
+    telemetry (tower-HP MAE blended with elixir MAE), 0 when no twin yet."""
+    try:
+        pr = _metrics.get("prediction") or {}
+        n = pr.get("n_scored", 0)
+        if n < 5:
+            return 0.5           # not enough data = honest mid uncertainty
+        t = min(1.0, pr.get("tower_hp_mae", 0.0) * 3.0)
+        e = min(1.0, pr.get("elixir_mae", 0.0) / 4.0)
+        return round(min(1.0, 0.6 * t + 0.4 * e), 3)
+    except Exception:
+        return 0.5
+
+
+def referee_pain(dmg_info, ally_alive, tick, ally_king=None):
     """Deterministic tower-damage punishment from measurable state only.
-    Rules (each logged in the ledger by the caller, none invented):
-      R1 proportional:  -4 * hp_drop  (a full-loss tick scales with damage)
-      R2 tower loss:    -1.6 per fallen tower, escalated by threat: losing a
-                        tower while only 2 stand (king next) is 2x worse
-      R3 phase urgency: late-match damage (tick>45) while the king is alive
-                        weighs +25% — an endgame lapse decides the outcome
-      R4 floor/ceiling: clamp to [-3.5, -0.5]; never silent, never extreme
-    Returns (punish, source)."""
-    hp_drop = max(0.0, float(dmg_info.get("ally_hp_drop", 0.0)))
-    towers_lost = max(0, int(dmg_info.get("ally_towers_lost", 0)))
-    p = 4.0 * hp_drop + 1.6 * towers_lost
-    if towers_lost > 0 and ally_alive <= 1 + towers_lost:
-        p += 1.6 * towers_lost          # R2 king-next escalation
-    if tick > 45 and dmg_info.get("ally_king", 1.0) > 0.0:
-        p *= 1.25                        # R3 endgame urgency
-    p = max(-3.5, min(-0.5, -p))
-    return round(p, 2), "referee_rules"
+    Delegates to referee.py so all rules live in one canonical module while
+    maintaining exact return compatibility `(round(p, 2), "referee_rules")`."""
+    from referee import referee_pain as _rp
+    p, src = _rp(dmg_info, ally_alive=ally_alive, tick=tick, ally_king=ally_king)
+    if p == 0.0 and (float(dmg_info.get("ally_hp_drop", 0.0)) > 0 or int(dmg_info.get("ally_towers_lost", 0)) > 0):
+        p = -0.5
+    return round(p, 2), ("referee_rules" if p < 0 else src)
 
 
-_MENTOR_PATTERNS = {"finish": ("finish", "finishing", "last hit", "kill the tower"),
-                    "defend": ("defend", "defense", "protect"),
-                    "elixir": ("elixir", "cycle", "save"),
-                    "counter": ("counter-push", "counterpush", "opposite lane")}
-
-def interpret_mentor(mentor, towers, mlxir):
-    """STRUCTURAL MENTOR INTERPRETER (the ML 'understands' Groq here): parse
-    the free-text critique into directives, check each against the CURRENT
-    measured state, and write an accept/reject verdict with a reason. The
-    interpreter can only ever NUDGE metadata — it never changes rewards or
-    actions by itself; laws (physics_finisher / referee) keep ownership."""
-    text = (mentor.get("critique") or "").lower()
-    intents = {k: any(p in text for p in pats) for k, pats in _MENTOR_PATTERNS.items()}
-    accepted, reason = False, "n/a"
-    if intents["finish"]:
-        low = min([towers.get("enemy_left", 1.0), towers.get("enemy_right", 1.0)])
-        if low <= TOWER_FINISH_THRESHOLD:
-            accepted, reason = True, "critique=finish aligns with lowest-HP law"
-        else:
-            accepted, reason = False, "critique=finish but no tower in finish range"
-    elif intents["defend"]:
-        accepted = True; reason = "critique=defend is always legal"
-    elif intents["elixir"] and mlxir <= 4:
-        accepted, reason = True, "critique=save consistent with low elixir"
-    elif intents["counter"]:
-        accepted, reason = True, "critique=counter aligned with counter-push shaping"
-    return {"intents": intents, "accepted": accepted, "reason": reason}
+def interpret_mentor(mentor, towers=None, mlxir=10, context=None):
+    """Structural mentor interpreter wrapper: delegates to referee.interpret_mentor
+    while keeping `intents` and `features` available for all callers."""
+    from referee import interpret_mentor as _im
+    return _im(mentor, towers, context if context is not None else mlxir)
 
 
 PAIN_FILE = "pain_channels.json"
@@ -1342,14 +1370,25 @@ class SpikingAgent:
                 _metrics.setdefault("spiking_errors", []).append(
                     f"cortex: {e}")
             self.nucleus.encode_sensory(vals)
-            # v18 structural-state channels (bounded, cross-coupled):
+            # v18/v19 structural-state channels (bounded, cross-coupled):
             try:
                 rec = (plan.get("recalled") or [])
                 sim = rec[0]["similarity"] if rec else 0.0
-                self.affect.set("curiosity", self.affect._clamp(1.0 - sim))
+                obs_nov = self.affect.observe_novelty(state_s[:38])
+                self.affect.set("curiosity", self.affect._clamp(0.6 * (1.0 - sim) + 0.4 * obs_nov))
                 threat = max(state_s[36], state_s[37]) if len(state_s) > 37 else 0.0
+                king_hp = state_s[25] if len(state_s) > 25 else 1.0
+                ally_alive = round((state_s[28] if len(state_s) > 28 else 1.0) * 3.0)
                 if threat > 0.4:
                     self.affect.inject("pressure", 0.12)   # opponent can punish soon
+                self.affect.update({
+                    "novelty": obs_nov,
+                    "threat": threat,
+                    "king_hp": king_hp,
+                    "towers_exposed": ally_alive,
+                    "overruns": 1 if plan.get("over_budget") else 0,
+                    "uncertainty": bot_ml_pred_uncertainty(),
+                })
             except Exception:
                 pass
             self.nucleus.step(50)          # 50 ms of simulated dynamics
@@ -1365,6 +1404,17 @@ class SpikingAgent:
             mx = max(rates) or 1
             mean = sum(rates) / len(rates)
             bias = [(r - mean) / mx for r in rates]
+            # Behavioral modulation from AffectiveCore: when danger/desperation
+            # is elevated, nudge defensive spots [left_defend=2, right_defend=3, center_back=4]
+            try:
+                bmod = self.affect.behavioral_modulation()
+                dbias = bmod.get("defensive_bias", 0.0)
+                if dbias > 0.25:
+                    for a_i in range(len(bias)):
+                        if (a_i % 5) in (2, 3, 4):
+                            bias[a_i] = max(-1.0, min(1.0, bias[a_i] + 0.18 * dbias))
+            except Exception:
+                bmod = {}
             # ruled-out plays get the strongest possible negative vote; the
             # main loop additionally excludes them from consideration via
             # forbidden (bounded so valid alternatives always remain).
@@ -1372,6 +1422,7 @@ class SpikingAgent:
                 if a_idx < len(bias):
                     bias[a_idx] = -1.0
             act_pop = [n.spike_count for n in self.nucleus.action]
+            sample_n = self.nucleus.action[0] if self.nucleus.action else None
             _metrics["spiking"] = {
                 "ok": True,
                 "observe_ms": round((time.time() - t0) * 1000, 1),
@@ -1382,6 +1433,15 @@ class SpikingAgent:
                 "pot_events": self.nucleus.telemetry()["potentiation_events"],
                 "dep_events": self.nucleus.telemetry()["depression_events"],
                 "affect": {k: round(v, 3) for k, v in self.affect.state.items()},
+                "behavioral_modulation": bmod,
+                "sample_neuron": {
+                    "v_mv": round(float(sample_n.v), 2) if sample_n else -70.0,
+                    "v_thresh": round(float(sample_n.v_threshold + sample_n.adapt_threshold), 2) if sample_n else -55.0,
+                    "i_syn_e": round(float(sample_n.i_syn_e), 3) if sample_n else 0.0,
+                    "i_syn_i": round(float(sample_n.i_syn_i), 3) if sample_n else 0.0,
+                    "i_adapt": round(float(sample_n.i_adapt), 3) if sample_n else 0.0,
+                    "spikes": int(sample_n.spike_count) if sample_n else 0,
+                },
                 "cortex": {
                     "working_memory": len(self.cortex.memory),
                     "vetoes": len(self.vetoed),
@@ -1409,18 +1469,36 @@ class SpikingAgent:
                 self.cortex.observe(action // 5, action % 5, reward)
                 if self._last_state is not None:
                     self.hippo.store(list(self._last_state), reward)
-            if reward > 0:
-                self.affect.inject("pos_rpe", min(0.3, reward * 0.15))
-            elif reward < 0:
-                self.affect.inject("neg_rpe", min(0.3, -reward * 0.15))
+            # v19 intake: one documented path feeds every channel from real
+            # signals (RPE vs EMA baseline, novelty, threats, compute load...).
+            prev = self._last_state or []
+            novelty = self.affect.observe_novelty(prev[:38]) if prev else 0.25
+            baseline_unc = bot_ml_pred_uncertainty()
+            twin_ready = bool(_metrics.get("twin", {}).get("ready"))
+            forecast_q = max(0.0, 1.0 - baseline_unc) if twin_ready else None
+            self.affect.update({
+                "reward": reward,
+                "novelty": novelty,
+                "threat": max((prev[36] if len(prev) > 36 else 0.0),
+                              (prev[37] if len(prev) > 37 else 0.0)),
+                "uncertainty": baseline_unc,
+                "prediction_err": baseline_unc * 0.6,
+                "mentor_conflict": _metrics.get("mentor_conflict_sig", 0.0),
+                "forecast": forecast_q,
+                "opponent_pattern": min(1.0, (_metrics.get("opponent_memory", {}).get("this_match_pushes", 0)) * 0.2),
+            })
+            if reward < -0.4:
+                self.affect.inject("frustration", min(0.25, abs(reward) * 0.08))
+            elif reward > 0.5:
+                self.affect.inject("progress", min(0.20, reward * 0.06))
             # momentum: the recent-trend channel (EMA of reward signs), not a
             # win-counter — it shapes persistence of current strategy.
             self.affect.state["momentum"] = self.affect._clamp(
-                self.affect.state["momentum"] * 0.97 + 0.2 * max(-1.0, min(1.0, reward)),)
-            # valence-gated plasticity scale: strong frustration slows new
-            # potentiation so one system cannot grab all the credit.
-            val = self.affect.valence_scalar()
-            scale = max(0.25, 1.0 + 0.5 * val)
+                self.affect.state["momentum"] * 0.95 + 0.12 * max(-1.0, min(1.0, reward))
+            )
+            # valence-gated plasticity scale via documented behavioral_modulation()
+            bmod = self.affect.behavioral_modulation()
+            scale = bmod["plasticity_scale"]
             self.nucleus.apply_reward(max(-2.0, min(2.0, reward)) * scale)
         except Exception as e:
             log(f"spiking learn failed: {e}")
@@ -1432,6 +1510,7 @@ class SpikingAgent:
             payload = {"version": SPIKING_VERSION,
                        "nucleus": self.nucleus.state_dict(),
                        "affect": self.affect.state,
+                       "affect_meta": self.affect.state_dict(),
                        "cortex": {"memory": list(self.cortex.memory)},
                        "hippo": self.hippo.memories[-self.hippo.max_memories:]}
             tmp = SPIKING_FILE + ".tmp"
@@ -1450,9 +1529,10 @@ class SpikingAgent:
                 log(f"spiking checkpoint version mismatch — starting fresh nucleus")
                 return
             self.nucleus.load_state_dict(data["nucleus"])
-            for k, v in data.get("affect", {}).items():
-                if k in self.affect.state:
-                    self.affect.state[k] = float(v)
+            if "affect_meta" in data and isinstance(data["affect_meta"], dict):
+                self.affect.load_state_dict(data["affect_meta"])
+            else:
+                self.affect.load_state_dict(data.get("affect", {}))
             # durable reasoning state: veto evidence + episodic index restore
             for slot, spot, o in data.get("cortex", {}).get("memory", []):
                 self.cortex.observe(int(slot), int(spot), float(o))
@@ -1502,22 +1582,35 @@ class SynapticResBlock(nn.Module):
 # plus its measured sizes are published to _metrics for the dashboard.
 # ============================================================
 QNET_PROFILES = {
-    "compact": (768, 5),
+    "compact": (768, 6),
     "standard": (1024, 6),
-    "advanced": (1280, 10),
+    "advanced": (1280, 8),
 }
 
 
 def param_report(net):
     """Honest trainable-parameter report from the instantiated modules:
-    totals per class of layer, FP32 size in MB, split policy-stream totals."""
+    totals per class of layer, FP32 size in MB, split policy-stream totals,
+    and world-model parameter count reported separately."""
     trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
     sensory = sum(p.numel() for n, p in net.named_parameters() if n.startswith("sensory."))
     cortical = sum(p.numel() for n, p in net.named_parameters() if n.startswith("cortex"))
     streams = sum(p.numel() for n, p in net.named_parameters()
                   if n.startswith(("value_stream.", "advantage_stream.")))
+    twin_params = 0
+    try:
+        if arena_twin is not None and arena_twin.members is not None:
+            twin_params = sum(p.numel() for m in arena_twin.members for p in m.parameters() if p.requires_grad)
+        else:
+            from arena_twin import TwinMember, ENSEMBLE_MEMBERS
+            _tm = TwinMember()
+            twin_params = sum(p.numel() for p in _tm.parameters() if p.requires_grad) * ENSEMBLE_MEMBERS
+    except Exception:
+        twin_params = 0
     return {"profile": getattr(net, "profile", "?"),
+            "width": getattr(net, "W", 1024),
             "trainable_params": trainable,
+            "world_model_params": twin_params,
             "sensory_params": sensory,
             "cortical_params": cortical,
             "stream_params": streams,
@@ -1542,10 +1635,13 @@ class QNet(nn.Module):
     WIDE = 1024
     NARROW = 512
 
-    def __init__(self):
+    def __init__(self, profile=None):
         super().__init__()
         import os as _os
-        self.profile = _os.environ.get("NEUROML_PROFILE", "standard")
+        req_prof = profile or _os.environ.get("QNET_PROFILE") or _os.environ.get("NEUROML_PROFILE") or "standard"
+        if req_prof not in QNET_PROFILES:
+            req_prof = "standard"
+        self.profile = req_prof
         wide, depth = QNET_PROFILES[self.profile]
         self.W = wide          # instance width (WIDE/NARROW kept for older code)
         self.depth = depth
@@ -1673,6 +1769,15 @@ class TargetedDQN:
         # honest capacity report (publish + log so claims are always measured)
         _metrics["param_report"] = param_report(self.policy)
         pr = _metrics["param_report"]
+        # measured load-time (honest profile sizing): time from now to first
+        # inference on a synthetic state, published for the dashboard
+        try:
+            import time as _t
+            t0 = _t.time()
+            self.policy(torch.zeros(1, STATE_DIM) + 0.5)
+            _metrics["model_load_latency_ms"] = round((_t.time() - t0) * 1000, 1)
+        except Exception:
+            pass
         log(f"model profile '{pr['profile']}': {pr['trainable_params']:,} params "
             f"({pr['fp32_mb']} MB fp32, depth {pr['depth']})")
         self.optim = optim.AdamW(self.policy.parameters(), lr=8e-4, weight_decay=1e-4)
@@ -1866,8 +1971,18 @@ class TargetedDQN:
         self.target.load_state_dict(self.policy.state_dict())
 
     def save(self):
+        if os.path.exists("ml_policy.pt"):
+            try:
+                import shutil as _sh
+                _sh.copy2("ml_policy.pt", "ml_policy.pt.bak")
+            except Exception:
+                pass
         torch.save({
             "arch": "dueling_resnet_v5_deep",
+            "arch_version": 5,
+            "profile": getattr(self.policy, "profile", "standard"),
+            "width": getattr(self.policy, "W", 1024),
+            "depth": getattr(self.policy, "depth", 6),
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
@@ -1879,35 +1994,65 @@ class TargetedDQN:
         except Exception as e:
             log(f"replay dump failed: {e}")
 
+    @staticmethod
+    def _migrate_overlapping_weights(dst_net, src_sd):
+        """Explicit overlapping-slice migration between different profile widths
+        or depths. Copies shared tensor slices and returns (exact_match_count,
+        sliced_count, fresh_count)."""
+        dst_sd = dst_net.state_dict()
+        exact_n, sliced_n, fresh_n = 0, 0, 0
+        with torch.no_grad():
+            for k, dst_t in dst_sd.items():
+                if k not in src_sd:
+                    fresh_n += 1
+                    continue
+                src_t = src_sd[k]
+                if tuple(src_t.shape) == tuple(dst_t.shape):
+                    dst_t.copy_(src_t)
+                    exact_n += 1
+                elif src_t.dim() == dst_t.dim():
+                    if src_t.dim() == 1:
+                        n0 = min(src_t.shape[0], dst_t.shape[0])
+                        dst_t[:n0].copy_(src_t[:n0])
+                    elif src_t.dim() == 2:
+                        r0 = min(src_t.shape[0], dst_t.shape[0])
+                        c0 = min(src_t.shape[1], dst_t.shape[1])
+                        dst_t[:r0, :c0].copy_(src_t[:r0, :c0])
+                    sliced_n += 1
+                else:
+                    fresh_n += 1
+        return exact_n, sliced_n, fresh_n
+
     def load(self):
         if os.path.exists("ml_policy.pt"):
             try:
-                ckpt = torch.load("ml_policy.pt")
+                ckpt = torch.load("ml_policy.pt", map_location="cpu")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v5_deep":
-                    self.policy.load_state_dict(ckpt["policy"])
-                    self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v5-deep (1024×6) brain, epsilon={self.epsilon:.2f}")
-                elif ckpt.get("arch") in ("dueling_resnet_v4_measured", "dueling_resnet_v3_massive", "dueling_resnet_v11_wide", "dueling_resnet_v10"):
-                    # UPGRADE MIGRATION: sensory stem partial copy (works for any
-                    # narrower predecessor), the rest starts fresh but learns fast
-                    # from the big replay buffer.
-                    old_sd = ckpt.get("policy", {})
-                    with torch.no_grad():
-                        w = self.policy.sensory[0].weight  # (512, 38)
-                        b = self.policy.sensory[0].bias
-                        try:
-                            ow = old_sd.get("sensory.0.weight")
-                            ob = old_sd.get("sensory.0.bias")
-                            if ow is not None and ow.shape[1] == STATE_DIM:
-                                rows = min(ow.shape[0], w.shape[0])
-                                w[:rows].copy_(ow[:rows])
-                                b[:rows].copy_(ob[:rows])
-                        except Exception:
-                            pass
+                ckpt_arch = ckpt.get("arch")
+                ckpt_prof = ckpt.get("profile", "standard")
+                cur_prof = getattr(self.policy, "profile", "standard")
+                old_sd = ckpt.get("policy", {})
+                # Check if shapes match our current profile exactly
+                cur_sd = self.policy.state_dict()
+                exact_compatible = (
+                    ckpt_arch == "dueling_resnet_v5_deep"
+                    and set(old_sd.keys()) == set(cur_sd.keys())
+                    and all(tuple(old_sd[k].shape) == tuple(cur_sd[k].shape) for k in cur_sd)
+                )
+                if exact_compatible:
+                    self.policy.load_state_dict(old_sd)
+                    self.target.load_state_dict(ckpt.get("target", old_sd))
+                    _metrics["checkpoint_load_mode"] = "exact"
+                    log(f"loaded Dueling-ResNet v5-deep ({cur_prof}: {self.policy.W}×{self.policy.depth}) brain exactly, epsilon={self.epsilon:.2f}")
+                elif old_sd:
+                    # Explicit overlapping-weight migration across profiles or legacy v4/v3 checkpoints
+                    ex_n, sl_n, fr_n = self._migrate_overlapping_weights(self.policy, old_sd)
                     self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated {ckpt.get('arch')} sensory stem into v5-deep (1024×6) cortex; warm-training from replay, epsilon={self.epsilon:.2f}")
+                    _metrics["checkpoint_load_mode"] = f"migrated(exact={ex_n},sliced={sl_n},fresh={fr_n})"
+                    log(f"migrated checkpoint ({ckpt_arch}/{ckpt_prof}) into '{cur_prof}' ({self.policy.W}×{self.policy.depth}): "
+                        f"exact={ex_n}, overlapping_sliced={sl_n}, newly_initialized={fr_n}, epsilon={self.epsilon:.2f}")
                 else:
+                    _metrics["checkpoint_load_mode"] = "fresh"
                     log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
                 log(f"model load note: {e}")
@@ -2047,6 +2192,42 @@ def _local_meta_deck(stats):
     return decks[0] if decks else None
 
 
+META_FILE = "meta_decks.json"
+META_REFRESH_DAYS = 30       # meta understanding refreshes monthly (spec)
+
+
+def meta_stale_days():
+    try:
+        meta = json.load(open(META_FILE))
+        stamp = meta.get("fetched_at", "")
+        import datetime as _dt
+        try:
+            t = _dt.datetime.strptime(stamp[:10], "%Y-%m-%d")
+            return (_dt.datetime.now() - t).days
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def ensure_meta_fresh(refetch_fn=None):
+    """Guarantee the ladder meta is at most META_REFRESH_DAYS old. Returns
+    (used, stale_days_or_None). Explains itself in the log when skipped."""
+    stale = meta_stale_days()
+    if stale is None or stale > META_REFRESH_DAYS:
+        if refetch_fn:
+            try:
+                refetch_fn()
+                stale = meta_stale_days()
+                log(f"meta refreshed ({stale}d old)")
+            except Exception as e:
+                log(f"meta refresh note: {str(e)[:70]}")
+        else:
+            log(f"meta is {'unknown' if stale is None else str(stale) + 'd old'} — "
+                f"refresh when the web fetcher is available (policy: every {META_REFRESH_DAYS}d)")
+    return True, stale
+
+
 def autonomous_deck_session(gm_stats=None):
     """Once per startup AND on every 5th match end: build the deck.
 
@@ -2091,6 +2272,7 @@ def main():
     spike_agent = SpikingAgent()   # spiking nucleus + affective core (guarded)
     spike_agent.new_match_reset()
     try:
+        ensure_meta_fresh()                           # 30-day meta freshness gate
         autonomous_deck_session(game_memory_digest())  # deck built at every startup
     except Exception as e:
         log(f"deck session note: {e}")
@@ -2118,7 +2300,10 @@ def main():
     train_loss_ma = None
     cards_played = 0
     mentor_cooldown = 0.0
+    from referee import CheapCycleMonitor, referee_evaluate
+    cheap_monitor = CheapCycleMonitor()
     opp_memory_store = _load_opponent_memory()
+    _init_twin()   # restore local digital-twin ensemble if present (bounded caps)
     game_memory = _load_game_memory()
     # LIFETIME RECORD SEED: the W/L counters start from the durable game-memory
     # book instead of from zero on every restart (dashboard honesty fix).
@@ -2283,6 +2468,20 @@ def main():
                     forbidden |= spike_agent.vetoed
                 action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels,
                                    bias=_spike_bias)
+                # Bounded Digital Twin planner check (active only when TWIN_PLAN_ENABLED
+                # AND the ensemble beats its persistence baseline on held-out data)
+                _twin_planned = None
+                try:
+                    if arena_twin is not None and arena_twin.ready:
+                        legal_cand = [a for a in range(ACTION_DIM) if a not in forbidden]
+                        _twin_planned = arena_twin.plan(
+                            state_s, legal_cand,
+                            value_fn=lambda sp: float(brain.policy(torch.tensor(sp, dtype=torch.float32)).max().item())
+                        )
+                        if _twin_planned and isinstance(_twin_planned.get("action"), int):
+                            action = _twin_planned["action"]
+                except Exception:
+                    _twin_planned = None
                 _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
                 slot, spot_i = divmod(action, 5)
                 spot_n = SPOT_NAMES[spot_i]
@@ -2309,6 +2508,7 @@ def main():
                         "spell": _kill["spell"],
                         "spell_damage_frac": _kill["dmg"],
                         "target_xy": _kill["target_xy"],
+                        "killable": True,
                         "observation_age_s": round(obs_age, 2),
                     }
                     action = _kill["slot"] * 5 + (0 if _kill["side"] == "left" else 1)
@@ -2332,7 +2532,7 @@ def main():
                         "killable": False,
                     }
                     action, rule_note = card_play_policy(
-                        action, mlxir, lane, arena, towers, afford, hand_deck, finishers)
+                        action, mlxir, lane, arena, towers, afford, hand_deck, finishers, opponent=opponent)
                     slot, spot_i = divmod(action, 5)
                     spot_n = SPOT_NAMES[spot_i]
                 if rule_note != "net":
@@ -2341,17 +2541,18 @@ def main():
                     log(f"RULES: {rule_note} slot={slot} spot={spot_n}")
                 else:
                     reward_rules_add = 0.0
-                # ---- DECISION PROVENANCE (who chose this play, and why): the
-                # policy may be overridden by the rules referee, the pain
-                # channels, the prefrontal vetoes or an unaffordable-slot mask
-                # — the final choice is always recorded with its origin so no
-                # component can silently select an action. ----
+                # ---- DECISION PROVENANCE (who chose this play, and why) ----
+                _origin = (
+                    "physics_finisher" if _kill
+                    else "rules_referee" if rule_note != "net"
+                    else "twin_planner" if _twin_planned
+                    else "prefrontal_veto" if spike_agent.vetoed
+                    else "dqn_policy"
+                )
                 _metrics["decision"] = {
                     "t": time.strftime("%H:%M:%S"),
                     "action": f"slot{slot}.{spot_n}",
-                    "origin": ("dqn_policy" if rule_note == "net" and not spike_agent.vetoed
-                               else "rules_referee" if rule_note != "net"
-                               else "prefrontal_veto"),
+                    "origin": _origin,
                     "rule_note": rule_note,
                     "masked_actions": int(_metrics.get("masked_actions", 0) or len(forbidden)),
                     "vetoed_actions": sorted(spike_agent.vetoed),
@@ -2488,6 +2689,38 @@ def main():
                     # repeating the same play will hurt more and be avoided sooner.
                     record_pain(pain_channels, slot, spot_i, dmg_punish)
                     _save_pain_channels(pain_channels)
+
+                # ---- REFEREE SCENARIO ADJUSTMENTS (weakest-tower, finisher urgency,
+                # elixir trade when known, anti-farming with threat exemption) ----
+                try:
+                    _played_card_name = hand_deck[slot].lower() if slot < len(hand_deck) and hand_deck[slot] else ""
+                    _played_cost = CARDS_DB.get(_played_card_name, {}).get("cost", 4)
+                    _targeted_t = (
+                        ("left", towers.get("enemy_left", 1.0)) if spot_n == "bridge_left"
+                        else ("right", towers.get("enemy_right", 1.0)) if spot_n == "bridge_right"
+                        else None
+                    )
+                    _ref_eval = referee_evaluate({
+                        "threat": 1.0 if lane else 0.0,
+                        "targeted_tower": _targeted_t,
+                        "enemy_hp": {"enemy_left": towers.get("enemy_left", 1.0),
+                                     "enemy_right": towers.get("enemy_right", 1.0)},
+                        "finisher_executed": bool(_kill is not None),
+                        "finisher_available": bool(finishers),
+                        "finisher_legal": True,
+                        "spell_used": _played_card_name if CARDS_DB.get(_played_card_name, {}).get("role") == "spell" else None,
+                        "cost": _played_cost,
+                        "opponent_cost_est": opponent.get("last_push_cost_est") if opponent else None,
+                    }, cheap_monitor=cheap_monitor)
+                    if _ref_eval["reward_adjustment"] != 0.0:
+                        reward += _ref_eval["reward_adjustment"]
+                        for _ck, _cv in _ref_eval["components"].items():
+                            _cval = _cv.get("bonus") or _cv.get("penalty") or _cv.get("delta") or 0.0
+                            if _cval != 0.0:
+                                _events.append((f"⚖️ referee.{_ck}", float(_cval)))
+                    _metrics["referee_last"] = _ref_eval
+                except Exception:
+                    pass
 
                 # ---- REWARD LEDGER: every component of this tick's reward in
                 # the machine ledger + team-total aggregates (no censoring) ----
@@ -2645,6 +2878,24 @@ def main():
                         "towers": towers, "arena": arena,
                         "pain_avg": pain_channels.get((slot, spot_i)),
                     })
+                    # ARENA TWIN: the same REAL transition feeds the local
+                    # digital twin (synced, no fabricated experience; memory-
+                    # capped; planning stays off until validation gates pass)
+                    try:
+                        if arena_twin is None:
+                            _init_twin()
+                        arena_twin.record(prev_state, prev_action, round(reward, 3),
+                                          state_s, stale=(obs_age > 12.0),
+                                          quality=1.0, towers=dict(towers),
+                                          elixir=mlxir)
+                        tt = dict(_metrics.get("twin", {}))
+                        tt.update(arena_twin.metrics)
+                        tt["buffer"] = len(arena_twin.buffer)
+                        tt["ready"] = arena_twin.ready
+                        tt["planning"] = "off (validation gate)" if not (TWIN_PLAN and arena_twin.metrics.get("beats_baseline")) else "active"
+                        _metrics["twin"] = tt
+                    except Exception as _te:
+                        _metrics["twin_errors"] = _metrics.get("twin_errors", 0) + 1
                     # Consolidation: stir in 8 random old memories occasionally
                     if tick_in_match % 30 == 0 and len(brain.buffer) >= brain.batch:
                         for _mem in hippocampal_sample(8):
@@ -2667,12 +2918,15 @@ def main():
                         brain.save()
                         log(f"checkpoint saved: buffer={len(brain.buffer)} loss={train_loss_ma:.4f}")
 
-                # ---- AI Coach (Punisher + Mentor) reviews every move ----
-                # (mentor_cooldown is honored inside the governor so state_desc
-                # is always defined when the advisory path runs)
+                # ---- AI Coach (Mentor Only — throttled / end-of-match summary focus) ----
+                # Per user request ("groq being used up too fast. do summaries of game,
+                # not plays between games"), in-match Groq calls only run when
+                # GROQ_IN_MATCH_ADVISORY=1; otherwise Groq is reserved for the
+                # end-of-match summary at the result screen. Whenever a mentor
+                # response IS received, validation & logging happen unconditionally.
                 mentor = None
-                if not leaking and time.time() >= mentor_cooldown:
-                    mentor_cooldown = time.time() + 22  # stay under free-tier rate limit
+                if GROQ_IN_MATCH_ADVISORY and not leaking and time.time() >= mentor_cooldown:
+                    mentor_cooldown = time.time() + GROQ_MENTOR_INTERVAL
                     _desperate = towers["ally_king"] <= 0.35
                     _low_t = min(towers["enemy_left"], towers["enemy_right"])
                     state_desc = (
@@ -2687,52 +2941,75 @@ def main():
                         f"hand_deck={hand_deck}, affordable_slots={affordable_slots}, phase={phase}, "
                         f"recent_creeps={len(opp_memory_store.get('recent_opponents', []))}"
                     )
-                    # Coach advisory is STATE-CHECKED (spec §7): a recommendation
-                    # is only accepted if it targets the lowest-HP tower lane and
-                    # is affordable — the coach can never silently overwrite the
-                    # laws-of-physics decision.
                     mentor = groq_reward_governor(state_desc, spot_n, reward, img)
-                    if mentor.get("recommended_spot") == "bridge_right" and \
-                            towers.get("enemy_left", 1.0) < towers.get("enemy_right", 1.0):
-                        mentor["critique"] = (mentor.get("critique") or "") + " [physics vetoed: target the LOWER-HP left tower]"
-                        mentor["recommended_spot"] = "bridge_left"
-                        log("COACH physics check: recommendation redirected to the lower-HP tower")
                     if mentor["source"] == "groq_oss_coach":
-                        # ADVISORY-ONLY MENTOR: Groq sees the context and
-                        # critiques, but the DETERMINISTIC REFEREE owns every
-                        # dopamine and pain signal. The delta is logged, never
-                        # applied (saves Groq tokens; no model inference in the
-                        # reward path). The v18 deterministic referee and the
-                        # structural rules ARE the pain/dopamine authority.
-                        _mentor_intent = interpret_mentor(mentor, towers, mlxir)
+                        # Validate every mentor response against measured state, legal spots,
+                        # affordability, threat lane, and mandatory physics finishers BEFORE
+                        # any redirection or imitation logging.
+                        _raw_rec = mentor.get("recommended_spot")
+                        _mentor_intent = interpret_mentor(
+                            mentor.get("critique"), _raw_rec,
+                            context={
+                                "towers": towers,
+                                "mlxir": mlxir,
+                                "finishers": finishers,
+                                "physics_finisher": _kill,
+                                "affordable_slots": affordable_slots,
+                                "threat_lane": lane,
+                            }
+                        )
                         _metrics["mentor_intent"] = _mentor_intent
                         _metrics["groq_tokens_saved_ticks"] = int(_metrics.get("groq_tokens_saved_ticks", 0)) + 1
-                        if mentor["reward_delta"] is not None:
-                            log(f"COACH advisory (NOT applied): {mentor['critique']} "
-                                f"(suppressed delta {mentor['reward_delta']:+.2f})")
+                        # Strategic conflict signal for AffectiveCore: mentor disagrees with played spot
+                        if _raw_rec and _raw_rec != spot_n:
+                            _metrics["mentor_conflict_sig"] = 0.7 if _mentor_intent["accepted"] else 0.3
+                        else:
+                            _metrics["mentor_conflict_sig"] = 0.0
                         mentor_entry = {
-                            "played": spot_n, "critique": mentor.get("critique"),
-                            "reward_delta": mentor.get("reward_delta"),
-                            "recommended_spot": mentor.get("recommended_spot"),
-                            "agree": mentor.get("agree"),
+                            "played": spot_n,
+                            "critique": mentor.get("critique"),
+                            "structured_features": _mentor_intent.get("features"),
+                            "proposed_action": _raw_rec,
+                            "accepted": _mentor_intent.get("accepted"),
+                            "validation_reason": _mentor_intent.get("reason"),
+                            "final_selector": _origin,
+                            "reward_delta": None,
+                            "recommended_spot": _raw_rec if _mentor_intent.get("accepted") else None,
+                            "agree": (_raw_rec == spot_n) if _raw_rec else None,
                         }
                         mentor_log_line(mentor_entry)
-                        _metrics["mentor_agree"] = _metrics.get("mentor_agree", 0)
-                        # MENTOR: remember the coach's recommended action for this state
-                        if mentor["recommended_spot"] is not None and mentor["recommended_spot"] in SPOT_TO_ACTION:
-                            rec_action = slot * 5 + SPOT_TO_ACTION[mentor["recommended_spot"]]
-                            brain._push_per([state_s, rec_action, 0.6, state_s, False, 1], init_prio=1.5)
+                        if mentor_entry["agree"]:
+                            _metrics["mentor_agree"] = _metrics.get("mentor_agree", 0) + 1
+                        # Only accepted AND legal recommendations enter the bounded, low-priority
+                        # mentor-imitation pathway (never changes actual reward for played action).
+                        if _mentor_intent.get("accepted") and _raw_rec in SPOT_TO_ACTION and affordable_slots:
+                            rec_action = affordable_slots[0] * 5 + SPOT_TO_ACTION[_raw_rec]
+                            brain._push_per([state_s, rec_action, 0.25, state_s, False, 1], init_prio=0.5)
                             _metrics["mentor_actions"] = _metrics.get("mentor_actions", {})
-                            _metrics["mentor_actions"][mentor["recommended_spot"]] = \
-                                _metrics["mentor_actions"].get(mentor["recommended_spot"], 0) + 1
+                            _metrics["mentor_actions"][_raw_rec] = \
+                                _metrics["mentor_actions"].get(_raw_rec, 0) + 1
 
-                # ---- OPPONENT MEMORY: observe their pushes and troop waves ----
+                # ---- OPPONENT & CARD INTELLIGENCE TELEMETRY ----
                 opponent_observe(
                     opponent, opponent_arena_prev, arena, opponent_towers_prev, towers)
                 opponent_arena_prev = arena
                 opponent_towers_prev = towers
-                opponent_arena_prev = arena
-                opponent_towers_prev = towers
+                try:
+                    _meta_info = json.load(open(META_FILE)) if os.path.exists(META_FILE) else {}
+                except Exception:
+                    _meta_info = {}
+                _metrics["card_intel"] = {
+                    "my_deck": hand_deck[:8],
+                    "affordable_slots": affordable_slots,
+                    "opponent_cards_seen": (opponent.get("cards_played", [])[-8:] if opponent else []),
+                    "opponent_last_inferred": (opponent.get("last_inferred_card") if opponent else None),
+                    "opponent_elixir_est": (opponent.get("elixir_spent", 0) if opponent else 0),
+                    "meta_fetched_at": _meta_info.get("fetched_at", "unknown"),
+                    "meta_stale_days": meta_stale_days(),
+                    "meta_refresh_policy_days": META_REFRESH_DAYS,
+                    "top_meta_archetypes": [d.get("name", "") for d in (_meta_info.get("top_meta_decks") or [])[:4]],
+                    "counters_table_size": len(CARD_COUNTERS),
+                }
 
                 prev_state = state_s
                 prev_action = action
@@ -2812,6 +3089,24 @@ def main():
                 dig = distill_match(_verdict, match_stats)
                 _metrics["game_memory"] = dig
                 log(f"GAME MEMORY distilled: {dig.get('one_line', '')}")
+                # TOKEN-LIGHT COACHING: one mentor call PER MATCH (a whole-game
+                # summary), not per play — the referee owns per-tick signals.
+                try:
+                    _sum = groq_reward_governor(
+                        f"MATCH SUMMARY {dig.get('one_line', '')}; verdict={_verdict}; "
+                        f"towers_down={match_stats['towers_down']} towers_lost={match_stats['towers_lost']} "
+                        f"rule_corrections={match_stats['rule_corrections']}",
+                        "match_summary", match_stats["reward_total"], None)
+                    if _sum.get("critique") and "unavailable" not in (_sum.get("source") or ""):
+                        _sum["played"] = "match_summary"
+                        mentor_log_line({"played": "match_summary",
+                                         "critique": _sum.get("critique"),
+                                         "reward_delta": None,
+                                         "recommended_spot": _sum.get("recommended_spot"),
+                                         "agree": None})
+                        log(f"MATCH SUMMARY coach: {_sum.get('critique')}")
+                except Exception as _se:
+                    log(f"match summary note: {str(_se)[:80]}")
                 # Episode-final hippocampal write with the verdict dopamine
                 hippocampal_write({"t": time.time(), "episode_end": _verdict,
                                    "dopamine": dopamine,

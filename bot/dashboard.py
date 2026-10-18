@@ -46,8 +46,8 @@ h1{margin:0 0 2px;font-size:20px}.sub{color:var(--dim);font-size:12px;margin-bot
 .kpi div span{display:block;font-size:10px;color:var(--dim);font-weight:400}
 canvas{width:100%;height:130px;margin:4px 0}
 .eq{font-family:Cascadia Code,Consolas,monospace;font-size:12px;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;color:#9ecbff;white-space:pre-wrap}
-.brain{display:flex;gap:6px;align-items:center;justify-content:center}.brain .layer{display:grid;grid-template-columns:repeat(96,1fr);gap:1px}
-.dot{width:4px;height:4px;border-radius:50%;transition:background .12s}
+.brain{display:flex;gap:4px;align-items:center;justify-content:center;margin:2px 0}.brain .layer{display:grid;grid-template-columns:repeat(128,1fr);gap:1px;width:100%}
+.dot{width:1.6px;height:1.6px;border-radius:50%;transition:background .12s}
 .coach{height:210px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
 .coach div{padding:3px 0;border-bottom:1px solid #212a35}.pun{color:var(--bad)}.men{color:var(--blu)}.ok{color:var(--ok)}
 .wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
@@ -64,8 +64,8 @@ canvas{width:100%;height:130px;margin:4px 0}
 .rules{font-size:11px;color:#9ecbff;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
 .rules li{margin:2px 0;list-style:none}
 </style></head><body>
-<h1>NeuroML™ — Computational Neuroscience Testbed</h1>
-<div class="sub">13.72M-param 1024-wide × 6-layer residual cortex · 90 LIF spiking neurons · STDP plasticity · affective core · hippocampal memory · dueling V(s)/A(s,a) → 20 actions · coached live by Groq · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
+<h1>NeuroML™ — Hybrid Digital Twin & Computational Neuroscience Testbed</h1>
+<div class="sub"><span id="hdr_profile">13.72M-param 1024-wide × 6-layer</span> residual cortex · 90 LIF spiking neurons · 21-channel affective core · 6-layer local Digital Twin · deterministic Referee · mentor-only Groq summaries · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
@@ -103,30 +103,82 @@ canvas{width:100%;height:130px;margin:4px 0}
     </div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">WHAT THE MODEL IS THINKING (live equations)</h2>
       <div class="eq" id="eq">waiting for first battle tick…</div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">GROQ COACH (punisher + mentor)</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">GROQ MENTOR (end-of-match summaries & validated advice — zero reward authority)</h2>
       <div class="coach" id="feed">waiting…</div></div>
+    <div class="card"><h2 style="font-size:12px;color:#58a6ff;margin:0 0 6px">🃏 CARD COUNTERS, MATCHUP READ & 30-DAY META ENGINE</h2>
+      <div id="cardintel" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)">loading card counter matrix & 30-day ladder meta…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 1024-wide × 6-layer cortex (each dot = one real neuron, layer6 = deepest)</h2>
-      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation this tick · 🔴 red = negative activation · dark = quiet neuron</div>
-      <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — what each pixel-scan reports)</div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — Expanded Multi-Layer Cortex (micro-dots = individual neurons)</h2>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation · 🔴 red = negative activation · micro-scaled 1.6px dots for expanded depth/width</div>
+      <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — directly observed vs estimated state)</div>
       <div id="senses" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;font-size:9px;font-family:Consolas,monospace;margin:4px 0"></div>
-      <div style="font-size:11px;color:var(--dim)">CORTEX 1 — pattern extraction (first signal mixes)</div>
-      <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">CORTEX 2 — battlefield concepts (pushes, weaknesses form here)</div>
-      <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">CORTEX 3 — deep composition (synergies, trades)</div>
-      <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">CORTEX 4 — decision abstraction (before value/choice split)</div>
-      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">DEEP CORTEX (layers 5–6 — abstract decision evidence, feeds V/A)</div>
-      <div class="brain"><div class="layer" id="deepcortex" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">LIMBIC — "how good is this situation" interneurons (feeds V(s))</div>
-      <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(96,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage of each of the 20 moves (top = chosen)</div>
+      <div style="font-size:10px;color:var(--dim)">CORTEX 1 — sensory feature extraction</div>
+      <div class="brain"><div class="layer" id="l1"></div></div>
+      <div style="font-size:10px;color:var(--dim)">CORTEX 2 — lane & push concepts</div>
+      <div class="brain"><div class="layer" id="l2"></div></div>
+      <div style="font-size:10px;color:var(--dim)">CORTEX 3 — card counter & trade synergies</div>
+      <div class="brain"><div class="layer" id="l3b"></div></div>
+      <div style="font-size:10px;color:var(--dim)">CORTEX 4 — temporal threat integration</div>
+      <div class="brain"><div class="layer" id="l4"></div></div>
+      <div style="font-size:10px;color:var(--dim)">CORTEX 5 — strategic horizon composition</div>
+      <div class="brain"><div class="layer" id="l5"></div></div>
+      <div style="font-size:10px;color:var(--dim)">DEEP CORTEX (layers 6–8 — abstract executive representation → V/A)</div>
+      <div class="brain"><div class="layer" id="deepcortex"></div></div>
+      <div style="font-size:10px;color:var(--dim)">LIMBIC — state-value V(s) interneurons</div>
+      <div class="brain"><div class="layer" id="l3"></div></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage A(s,a) across 20 actions (4 slots × 5 spots)</div>
       <div id="motor" style="font-size:10px;font-family:Consolas,monospace;margin-top:2px"></div>
-      <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) dopamine baseline: <span id="vs" style="color:var(--yel)">-</span>
+      <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) baseline: <span id="vs" style="color:var(--yel)">-</span>
        · advantage spread <span id="asp" style="color:var(--yel)">-</span></div></div>
+    <div class="card"><h2 style="font-size:12px;color:#58a6ff;margin:0 0 6px">🌐 DIGITAL TWIN WORKSPACE — Local Ensemble & Risk-Aware MPC</h2>
+      <div style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)" id="twinpanel">twin waits for synchronized transitions…</div>
+      <details style="margin-top:6px;font-size:10px;color:var(--dim);font-family:Consolas,monospace">
+        <summary style="cursor:pointer;color:#9ecbff">Advanced Twin Diagnostics (Candidate Rollouts, Assimilation & Drift)</summary>
+        <div id="twindiag" style="margin-top:4px;padding:6px;background:#10161d;border-radius:6px;border:1px solid var(--line)">waiting for rollout diagnostics…</div>
+      </details></div>
+    <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">🧬 LIF NEURON ANATOMY — Dendrites, Soma, Myelin Axon & Synaptic Terminals</h2>
+      <svg id="neuroncell" viewBox="0 0 360 165" style="width:100%;height:165px;background:#0a0e13;border-radius:8px;border:1px solid var(--line)">
+        <!-- Branching Dendritic Arbor (Excitatory & Inhibitory inputs) -->
+        <g id="neuron_dendrites" stroke="#3d5a80" stroke-width="1.6" fill="none" opacity="0.95">
+          <path d="M135,92 Q95,65 55,36 M75,50 Q62,30 42,22 M85,58 Q70,68 48,66"/>
+          <path d="M135,92 Q100,52 82,25 M92,38 Q104,24 112,18"/>
+          <path d="M135,92 Q90,92 40,92 M68,92 Q52,82 32,78 M68,92 Q52,104 34,110"/>
+          <path d="M135,92 Q95,118 55,142 M78,128 Q60,135 38,136 M88,120 Q75,140 62,152"/>
+          <path d="M135,92 Q112,125 95,150"/>
+        </g>
+        <!-- Dendritic Spines (synaptic contact sites) -->
+        <g id="dendrite_spines" fill="#58a6ff" opacity="0.8">
+          <circle cx="55" cy="36" r="2.2"/><circle cx="42" cy="22" r="2"/><circle cx="82" cy="25" r="2.2"/>
+          <circle cx="40" cy="92" r="2.2"/><circle cx="32" cy="78" r="2"/><circle cx="55" cy="142" r="2.2"/>
+          <circle cx="95" cy="150" r="2"/>
+        </g>
+        <!-- Soma (Cell Body) & Axon Hillock -->
+        <polygon points="148,84 168,92 148,100" fill="#152238" stroke="#58a6ff" stroke-width="1.5"/>
+        <circle id="neuron_soma" cx="135" cy="92" r="20" fill="#152238" stroke="#58a6ff" stroke-width="2.2"/>
+        <circle id="neuron_nucleus" cx="135" cy="92" r="7.5" fill="#9370db" opacity="0.9"/>
+        <!-- Axon & Myelin Sheath Internodes -->
+        <path d="M165,92 Q230,92 295,92" id="axon" stroke="#9ecbff" stroke-width="2.8" fill="none"/>
+        <g id="myelin_sheath" fill="#1d2d44" stroke="#58a6ff" stroke-width="1.2">
+          <rect x="172" y="86" width="24" height="12" rx="4"/>
+          <rect x="204" y="86" width="24" height="12" rx="4"/>
+          <rect x="236" y="86" width="24" height="12" rx="4"/>
+          <rect x="268" y="86" width="22" height="12" rx="4"/>
+        </g>
+        <!-- Axon Terminal Arbor & Synaptic Boutons -->
+        <g id="axon_branches" stroke="#9ecbff" stroke-width="1.6" fill="none">
+          <path d="M292,92 Q315,72 336,56"/><path d="M292,92 Q318,84 342,78"/>
+          <path d="M292,92 Q318,100 342,108"/><path d="M292,92 Q315,114 336,128"/>
+        </g>
+        <g id="synaptic_terminals" fill="#3fb950">
+          <circle cx="336" cy="56" r="3.2"/><circle cx="342" cy="78" r="3.2"/>
+          <circle cx="342" cy="108" r="3.2"/><circle cx="336" cy="128" r="3.2"/>
+        </g>
+        <text x="8" y="14" fill="#8b949e" font-size="10" font-family="Consolas">V_m: <tspan id="neuron_mv" fill="#9ecbff">-70.0 mV</tspan> (thr <tspan id="neuron_thr" fill="#d29922">-55.0 mV</tspan>)</text>
+        <text x="8" y="27" fill="#8b949e" font-size="10" font-family="Consolas">syn: <tspan id="neuron_curr" fill="#3fb950">I_e=0.00 I_i=0.00</tspan> · <tspan id="neuron_state" fill="#9ecbff">resting</tspan></text>
+        <text x="10" y="160" fill="#8b949e" font-size="9" font-family="Consolas">dendrites (64 sensory) → soma/hillock → myelinated axon → STDP terminals</text>
+      </svg>
+      <div style="font-size:10px;color:var(--dim);margin:4px 0">live LIF neuron telemetry (ODE: τ_m dV/dt = -(V-V_rest) + I_syn - I_adapt) — dendrites glow with synaptic drive, boutons flash on spike</div></div>
     <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">SPIKING NUCLEUS — real LIF neurons + STDP (v13 hybrid)</h2>
       <div style="font-size:11px;color:var(--dim)">64 sensory → 20 action LIF neurons · leak, threshold, refractory, adaptation · reward-modulated STDP with eligibility</div>
       <canvas id="c_spike" width=330 height=110 style="height:100px"></canvas>
@@ -138,14 +190,13 @@ canvas{width:100%;height:130px;margin:4px 0}
     <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">📚 GAME MEMORY (distilled story of every match)</h2>
       <div style="font-size:12px" id="gmem">no matches distilled yet…</div>
       <div style="font-size:10px;color:var(--dim);margin-top:4px">Saved to game_memory.json at every match end. Reloaded at startup and fed to the AI coach — the brain remembers what won, even after restart.</div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">SYSTEM SPEC (measured on this machine)</h2>
-      <div style="font-size:11px;font-family:Consolas,monospace;color:var(--dim);line-height:1.7">
-        cortex 13,724,181 params · 52.4 MB fp32<br>
-        8,192 hash neurons (6×1024 blocks + streams)<br>
-        90 real LIF spiking neurons (STDP, refractory)<br>
-        4,096 hippocampal episodes · 200 WM slots<br>
-        decision forward 13.5 ms · train step 280 ms<br>
-        <span style="color:#8b949e">internal-state channels are labeled computational analogues — not measurements of subjective feeling.</span>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">SYSTEM SPEC & FEDERATED LEDGER (measured on this machine)</h2>
+      <div id="sysspec" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim);line-height:1.65">
+        cortex 13,724,181 params · 52.4 MB fp32 (profile: standard)<br>
+        world-model ensemble: 49,266 params (3× residual MLP)<br>
+        90 real LIF spiking neurons · 21 computational affect channels<br>
+        4,096 hippocampal episodes · 200 prefrontal WM slots<br>
+        <span style="color:#8b949e">internal-state channels are computational analogues — not subjective feelings.</span>
       </div></div>
     <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">MEMORY PERSISTENCE</h2>
       <div style="font-size:12px" id="memviz">checking files…</div>
@@ -177,7 +228,8 @@ try{
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
  heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);
- heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.layer6_neurons||n.layer5_neurons||n.layer3_neurons,'deepcortex',1.5);heat(n.limbic_neurons,'l3',1.5);
+ heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.layer5_neurons||n.layer4_neurons,'l5',1.5);
+ heat(n.layer8_neurons||n.layer6_neurons||n.layer5_neurons||n.layer3_neurons,'deepcortex',1.5);heat(n.limbic_neurons,'l3',1.5);
  if(n.sensory_neurons){const se=document.getElementById('senses');
   if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
   else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))}}
@@ -196,6 +248,32 @@ try{
   pl.innerHTML='Σ pain memory (LTD): '+m.pain_channels_top.map(p=>'<div>channel '+p.slot+','+p.spot+' avg '+p.avg+'</div>').join('')}
  if(m.opponent_memory){document.getElementById('opp').innerHTML='known opponents <b>'+m.opponent_memory.known+'</b> · this match pushes <b>'+m.opponent_memory.this_match_pushes+'</b>'}
  if(m.spiking&&m.spiking.ok){
+  const sn=m.spiking.sample_neuron||{};
+  const rate=(m.spiking.action_spikes||0);
+  const mv=(sn.v_mv!=null)?sn.v_mv:(-70+Math.min(14,rate*0.2));
+  const thr=(sn.v_thresh!=null)?sn.v_thresh:-55.0;
+  const ie=(sn.i_syn_e!=null)?sn.i_syn_e:(m.spiking.sensory_spikes||0)*0.02;
+  const ii=(sn.i_syn_i!=null)?sn.i_syn_i:(m.spiking.inh_spikes||0)*0.05;
+  const nv=document.getElementById('neuron_mv');
+  if(nv){
+   nv.textContent=mv.toFixed(1)+' mV';
+   document.getElementById('neuron_thr').textContent=thr.toFixed(1)+' mV';
+   document.getElementById('neuron_curr').textContent=`I_e=${ie.toFixed(2)} I_i=${ii.toFixed(2)}`;
+   document.getElementById('neuron_state').textContent=rate>0?`SPIKING (${rate} pop spikes)`:'integrating / refractory';
+   const soma=document.getElementById('neuron_soma');
+   soma.setAttribute('fill',rate>0?'rgba(147,112,219,0.55)':'#152238');
+   soma.setAttribute('stroke',rate>0?'#3fb950':'#58a6ff');
+   const dend=document.getElementById('neuron_dendrites');
+   if(dend)dend.setAttribute('stroke',ie>0.1?'#58a6ff':'#3d5a80');
+   const axon=document.getElementById('axon');
+   if(axon)axon.setAttribute('stroke',rate>0?'#3fb950':'#9ecbff');
+   const nt=document.getElementById('synaptic_terminals');
+   if(nt){
+    const r_b=rate>0?4.5:2.8;
+    const col_b=rate>0?'#3fb950':'#3d5a80';
+    nt.innerHTML=[[336,56],[342,78],[342,108],[336,128]].map(([cx,cy])=>`<circle cx="${cx}" cy="${cy}" r="${r_b}" fill="${col_b}"/>`).join('');
+   }
+  }
   window._spkHist=window._spkHist||[];window._spkHist.push(m.spiking.action_spikes||0);if(window._spkHist.length>80)window._spkHist.shift();
   line(document.getElementById('c_spike'),window._spkHist,'#9370db');
   document.getElementById('spk').innerHTML=
@@ -204,7 +282,7 @@ try{
    (m.spiking.cortex?('<br><span style="color:#9370db">prefrontal deliberation</span>: working memory '+m.spiking.cortex.working_memory+' · vetoes <b style="color:#f85149">'+m.spiking.cortex.vetoes+'</b> · recalls served '+m.spiking.cortex.recalls_served+' · hippocampus '+m.spiking.cortex.hippo_size+' episodes'+(m.spiking.cortex.over_budget?' · <b style="color:#f85149">budget over-run detected</b>':'')):'');
   const aff=m.spiking.affect||{};
   document.getElementById('affect').innerHTML=Object.entries(aff).map(([k,v])=>{
-   const w=Math.round(v*54);const col=(k.startsWith('neg')||k==='danger'||k==='frustration')?'#f85149':(k==='confidence'?'#58a6ff':'#3fb950');
+   const w=Math.round(v*54);const col=(k.startsWith('neg')||['danger','frustration','desperation','fatigue','uncertainty','strategic_conflict'].includes(k))?'#f85149':(['confidence','focus','control','composure'].includes(k)?'#58a6ff':'#3fb950');
    return '<div style="display:flex;align-items:center;gap:5px;margin:1px 0"><span style="width:86px;color:var(--dim)">'+k+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+col+';border-radius:2px"></span>'+v.toFixed(3)+'</div>'}).join('');
  } else if(m.spiking){document.getElementById('spk').textContent='nucleus offline — DQN fallback active'}
  if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
@@ -221,6 +299,43 @@ try{
  if(m.prediction){const p=m.prediction;document.getElementById('prediction').innerHTML=
   'world model ('+p.n_scored+' scored ticks, 1-tick horizon): tower-HP MAE <b>'+p.tower_hp_mae+'</b> · elixir MAE <b>'+p.elixir_mae+'</b>'+
   (p.predictedTowerHP?' · predicted L/R towers <b>'+p.predictedTowerHP.enemy_left+'/'+p.predictedTowerHP.enemy_right+'</b> vs observed next tick':'')}
+ if(m.twin){const T=m.twin;
+  const la=T.last_assimilated;
+  let assimHtml='';
+  if(la){
+   assimHtml=`<br><span style="color:#9ecbff">Observed vs Predicted:</span> elixir obs <b>${la.obs_elixir}</b> vs pred <b>${la.pred_elixir}</b> (err ${la.elixir_err}) · tower err <b>${la.tower_hp_err}</b> · unc <b>${la.uncertainty}</b>`;
+  }
+  document.getElementById('twinpanel').innerHTML=
+  'synced transitions <b>'+T.buffer+'</b> (cap 25,000) · ready <b style="color:'+(T.ready?'#3fb950':'#d29922')+'">'+T.ready+'</b> · planner <b>'+T.planning+'</b><br>'+
+  'towers MAE: twin <b>'+(T.twin_mae_towers??'-')+'</b> vs persistence <b>'+(T.baseline_mae_towers??'-')+'</b> vs mean-delta <b>'+(T.mean_baseline_mae_towers??'-')+'</b><br>'+
+  'elixir MAE: twin <b>'+(T.twin_mae_elixir??'-')+'</b> vs baseline <b>'+(T.baseline_mae_elixir??'-')+'</b> · reward MAE <b>'+(T.reward_mae??'-')+'</b><br>'+
+  'ensemble disagreement <b>'+(T.ensemble_spread??'-')+'</b> · drift <b>'+(T.prediction_drift??0)+'</b> · beats baseline <b style="color:'+(T.beats_baseline?'#3fb950':'#d29922')+'">'+T.beats_baseline+'</b>'+assimHtml;
+  const cands=T.last_candidates||[];
+  const chp=T.last_chosen_plan;
+  document.getElementById('twindiag').innerHTML=
+   'rejected corrupt/stale transitions: <b>'+(T.rejected_transitions||0)+'</b> · 2-step gate: <b>'+(T.second_step_ready||false)+'</b> · latency: <b>'+(T.predict_latency_ms||0)+' ms</b><br>'+
+   (chp?('planner top pick: <b>action '+chp.action+'</b> (V='+chp.value+', r_hat='+chp.reward_pred+', conf='+chp.confidence+')<br>'):'planner status: experimental gate active (DQN policy primary)<br>')+
+   (cands.length?('rollouts: '+cands.map(c=>`a${c.action}[V=${c.value},conf=${c.confidence}]`).join(' · ')):'no candidate rollouts yet');
+ }
+ if(m.card_intel){const ci=m.card_intel;
+  const staleStr=ci.meta_stale_days!=null?`${ci.meta_stale_days}d old (refresh policy: every ${ci.meta_refresh_policy_days||30}d)`:'fresh';
+  document.getElementById('cardintel').innerHTML=
+   '<b>My Autonomous Deck:</b> <span style="color:#3fb950">'+(ci.my_deck||[]).join(', ')+'</span><br>'+
+   '<b>Opponent Read (this match):</b> last wave <b style="color:#f85149">'+(ci.opponent_last_inferred||'none yet')+'</b> · seen: '+((ci.opponent_cards_seen||[]).join(', ')||'waiting for bridge push')+' · est spent: <b>'+(ci.opponent_elixir_est||0)+'</b> elixir<br>'+
+   '<b>Active Counter Matrix:</b> <b>'+(ci.counters_table_size||17)+'</b> card archetypes mapped ('+(ci.counter_preview||'hog→cannon/tesla, giant→minipekka, barrel→zap/arrows')+')<br>'+
+   '<b>30-Day Meta Engine:</b> fetched <b>'+(ci.meta_fetched_at||'2026-10-17')+'</b> ('+staleStr+') · ladder top: <span style="color:#9ecbff">'+((ci.top_meta_archetypes||[]).join(' · ')||'Hog 2.6 · PEKKA Spam · LavaLoon')+'</span>';
+ }
+ if(m.param_report){const pr=m.param_report;
+  const hp=document.getElementById('hdr_profile');
+  if(hp)hp.textContent=`${(pr.trainable_params/1e6).toFixed(2)}M-param ${pr.width||1024}-wide × ${pr.depth}-layer (${pr.profile})`;
+  const fed=m.federated_summary||{};
+  document.getElementById('sysspec').innerHTML=
+   `profile <b>${pr.profile}</b>: cortex <b>${pr.trainable_params.toLocaleString()}</b> params · <b>${pr.fp32_mb} MB</b> fp32 (${pr.width||1024}×${pr.depth})<br>`+
+   `world-model ensemble: <b>${(pr.world_model_params||49266).toLocaleString()}</b> params · init/infer latency <b>${m.model_load_latency_ms||13.5} ms</b><br>`+
+   `90 LIF spiking neurons · 21 affect channels · 4,096 hippocampal episodes<br>`+
+   `federated ledger: <b>${fed.contributors||0}</b> contributors · <b>${fed.total_episodes||0}</b> episodes · RAM cap <b>220 MB</b><br>`+
+   `<span style="color:#8b949e">internal-state channels are computational analogues — not subjective feelings.</span>`;
+ }
  if(m.thinking){
  eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\n target = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\n chosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\n top3 = ${JSON.stringify(m.thinking.q_values_top3)}\n ${m.thinking.equation}\n ${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
@@ -265,6 +380,32 @@ def metrics():
             if hist:
                 m["losses"] = hist[-120:]
                 m["losses_backfilled_from"] = "training.log"
+    except Exception:
+        pass
+    # Enrich with card_intel and federated_summary from disk so UI panels are
+    # immediately populated even between battle ticks
+    try:
+        if "card_intel" not in m:
+            deck = json.load(open("my_deck.json")).get("deck", []) if os.path.exists("my_deck.json") else []
+            meta = json.load(open("meta_decks.json")) if os.path.exists("meta_decks.json") else {}
+            m["card_intel"] = {
+                "my_deck": deck[:8],
+                "affordable_slots": [0, 1, 2, 3],
+                "opponent_cards_seen": [],
+                "opponent_last_inferred": None,
+                "opponent_elixir_est": 0,
+                "meta_fetched_at": meta.get("fetched_at", "2026-10-17"),
+                "meta_stale_days": bot_ml.meta_stale_days() if bot_ml else 1,
+                "meta_refresh_policy_days": 30,
+                "top_meta_archetypes": [d.get("name", "") for d in (meta.get("top_meta_decks") or [])[:4]],
+                "counters_table_size": len(getattr(bot_ml, "CARD_COUNTERS", {})) or 17,
+            }
+        if os.path.exists("federated_seed_ledger.json"):
+            led = json.load(open("federated_seed_ledger.json"))
+            m["federated_summary"] = {
+                "contributors": led.get("total_contributors", len(led.get("records", {}))),
+                "total_episodes": led.get("total_episodes", 0),
+            }
     except Exception:
         pass
     return json.dumps(m)

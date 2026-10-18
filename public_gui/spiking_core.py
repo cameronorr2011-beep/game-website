@@ -98,19 +98,56 @@ class AffectiveCore:
             "relief": 0.0,
             "vigilance": 0.0, "momentum": 0.5,
             "pressure": 0.0, "curiosity": 0.0,
+            # v19 channels (structural state, still bounded analogues)
+            "anticipation": 0.0, "desperation": 0.0, "fatigue": 0.0,
+            "uncertainty": 0.0, "focus": 0.5, "control": 0.5,
+            "surprise": 0.0, "strategic_conflict": 0.0,
+            "patience": 0.5, "opponent_read": 0.0,
         }
         self.tau: Dict[str, float] = {"neg_rpe": 30.0, "pos_rpe": 40.0,
                                       "progress": 120.0, "danger": 20.0,
                                       "confidence": 60.0, "frustration": 150.0,
                                       "relief": 25.0,
                                       "vigilance": 45.0, "momentum": 80.0,
-                                      "pressure": 35.0, "curiosity": 22.0}
-        self.neutral: Dict[str, float] = {"neg_rpe": 0.0, "pos_rpe": 0.0,
-                                          "progress": 0.0, "danger": 0.0,
-                                          "confidence": 0.5, "frustration": 0.0,
-                                          "relief": 0.0, "vigilance": 0.0,
-                                          "momentum": 0.5, "pressure": 0.0,
-                                          "curiosity": 0.0}
+                                      "pressure": 35.0, "curiosity": 22.0,
+                                      "anticipation": 18.0, "desperation": 50.0,
+                                      "fatigue": 200.0, "uncertainty": 40.0,
+                                      "focus": 70.0, "control": 90.0,
+                                      "surprise": 12.0, "strategic_conflict": 55.0,
+                                      "patience": 110.0, "opponent_read": 160.0}
+        self.neutral: Dict[str, float] = {
+            "neg_rpe": 0.0, "pos_rpe": 0.0, "progress": 0.0, "danger": 0.0,
+            "confidence": 0.5, "frustration": 0.0, "relief": 0.0,
+            "vigilance": 0.0, "momentum": 0.5, "pressure": 0.0,
+            "curiosity": 0.0, "anticipation": 0.0, "desperation": 0.0,
+            "fatigue": 0.0, "uncertainty": 0.0, "focus": 0.5,
+            "control": 0.5, "surprise": 0.0, "strategic_conflict": 0.0,
+            "patience": 0.5, "opponent_read": 0.0}
+        self.reward_baseline = 0.3   # EMA of shaped rewards → RPE reference
+        self.obs_ma = None           # EMA of observed state hash delta → novelty
+        self.doc = {
+            "neg_rpe": "reward below EMA baseline (unexpected losses)",
+            "pos_rpe": "reward above EMA baseline (unexpected gains)",
+            "progress": "objectives closed (towers won)",
+            "danger": "imminent threat urgency (pushes, exposed king)",
+            "confidence": "policy certainty (inverse normalised entropy)",
+            "frustration": "EMA of repeated similar failures",
+            "relief": "resolution of previously-high danger",
+            "vigilance": "post-threat attention posture",
+            "momentum": "EMA of recent reward trend",
+            "pressure": "mirrored opponent threat capacity",
+            "curiosity": "novelty of state (1 - hippocampal similarity)",
+            "anticipation": "predictive forecast confidence (predictive twin)",
+            "desperation": "critically low king/exposed towers + sustained pressure",
+            "fatigue": "sustained compute overruns, workload stamp; recovers",
+            "uncertainty": "world-model/prediction disagreement & MAE",
+            "focus": "decision bandwidth; degraded by fatigue, restored by control",
+            "control": "measured command effectiveness (paged/corrected actions)",
+            "surprise": "observed prediction error surprise signal",
+            "strategic_conflict": "mentor-vs-policy disagreement magnitude",
+            "patience": "willingness to hold resources (decays with leaks)",
+            "opponent_read": "read confidence for the current opponent pattern",
+        }
 
     @staticmethod
     def _clamp(x: float) -> float:
@@ -153,6 +190,135 @@ class AffectiveCore:
             raise KeyError(channel)
         self.state[channel] = self._clamp(value)
         return self.state[channel]
+
+    def update(self, signals: Dict[str, float]) -> Dict[str, float]:
+        """The single intake point for real application signals → channels.
+        Every mapping is a DOCUMENTED, measured formula; defaults 0. Accepted
+        signals (all optional):
+          reward            shaped tick reward → RPE vs the EMA baseline
+          novelty           measured state-change score in [0,1]
+          threat            lane-threat flags in [0,1]
+          king_hp           ally king-health fraction in [0,1]
+          towers_exposed    alive ally towers count (2 = king exposed)
+          overruns          compute budget overrun count this tick (0..n)
+          uncertainty      world-model disagreement/MAE in [0,1]
+          prediction_err    surprise: observed prediction error magnitude
+          mentor_conflict   validated mentor-vs-policy disagreement in [0,1]
+          page_confirmed    decision survived every referee override (bool)
+          leak              elixir leaked this tick (bool)
+          opponent_pattern  opponent read confidence in [0,1]
+          forecast          predictive twin forecast quality in [0,1]
+        Cross-channel coupling happens inside decay_step(); composite
+        desperation is stored and modulated here from hard signals."""
+        s, c = self.state, self._clamp
+        self.decay_step()
+        reward = signals.get("reward")
+        if reward is not None:
+            err = float(reward) - self.reward_baseline
+            self.reward_baseline = 0.95 * self.reward_baseline + 0.05 * float(reward)
+            if err > 0:
+                s["pos_rpe"] = c(s["pos_rpe"] + min(0.3, 0.15 * err))
+            else:
+                s["neg_rpe"] = c(s["neg_rpe"] + min(0.3, 0.15 * -err))
+        nov = signals.get("novelty")
+        if nov is not None:
+            s["curiosity"] = c(s["curiosity"] + 0.12 * c(nov))
+        threat = signals.get("threat")
+        if threat is not None:
+            s["danger"] = c(s["danger"] + 0.15 * c(threat))
+        king = signals.get("king_hp")
+        if king is not None and king < 0.35:
+            s["desperation"] = c(s["desperation"] + 0.08)
+        exposed = signals.get("towers_exposed")
+        if exposed is not None and exposed <= 1 and threat and threat > 0.3:
+            s["desperation"] = c(s["desperation"] + 0.05)
+        s["desperation"] = c(0.5 * s["desperation"] + 0.2 * s["danger"] + 0.15 * s["pressure"] + 0.15 * s["neg_rpe"])
+        over = signals.get("overruns") or 0
+        if over:
+            s["fatigue"] = c(s["fatigue"] + 0.05 * min(3, over))
+        unc = signals.get("uncertainty")
+        if unc is not None:
+            s["uncertainty"] = c(s["uncertainty"] + 0.12 * c(unc))
+        perr = signals.get("prediction_err")
+        if perr is not None:
+            s["surprise"] = c(s["surprise"] + 0.2 * c(perr))
+        conf = signals.get("mentor_conflict")
+        if conf is not None:
+            s["strategic_conflict"] = c(s["strategic_conflict"] + 0.15 * c(conf))
+        if signals.get("page_confirmed"):
+            s["control"] = c(s["control"] + 0.05)
+        elif signals.get("veto_overridden") or signals.get("rules_corrected"):
+            s["control"] = c(max(0.0, s["control"] - 0.03))
+        if signals.get("leak"):
+            s["patience"] = c(max(0.0, s["patience"] - 0.02))
+        oread = signals.get("opponent_pattern")
+        if oread is not None:
+            s["opponent_read"] = c(s["opponent_read"] + 0.1 * c(oread))
+        fc = signals.get("forecast")
+        if fc is not None:
+            s["anticipation"] = c(s["anticipation"] + 0.1 * c(fc))
+        # fatigue gates focus (banded, documented)
+        s["focus"] = c(0.9 * s["focus"] + 0.1 * (s["control"] * (1.0 - 0.7 * s["fatigue"])))
+        # uncertainty raises vigilance; high confidence reads opponents better
+        if s["uncertainty"] > 0.4:
+            s["vigilance"] = c(s["vigilance"] + 0.02)
+        if s["opponent_read"] > 0.5:
+            s["confidence"] = c(min(1.0, s["confidence"] + 0.01))
+        return dict(s)
+
+    def observe_novelty(self, state_vec: List[float]) -> float:
+        """Compute bounded novelty in [0, 1] from observed state changes using
+        an exponential moving average of the state vector."""
+        if not state_vec:
+            return 0.0
+        if self.obs_ma is None or len(self.obs_ma) != len(state_vec):
+            self.obs_ma = [float(x) for x in state_vec]
+            return 0.25
+        diff = sum(abs(float(x) - float(m)) for x, m in zip(state_vec, self.obs_ma)) / max(1, len(state_vec))
+        for i, x in enumerate(state_vec):
+            self.obs_ma[i] = 0.90 * self.obs_ma[i] + 0.10 * float(x)
+        return self._clamp(diff * 3.5)
+
+    def state_dict(self) -> Dict:
+        return {
+            "state": dict(self.state),
+            "reward_baseline": float(self.reward_baseline),
+            "obs_ma": list(self.obs_ma) if self.obs_ma is not None else None,
+        }
+
+    def load_state_dict(self, d: Dict) -> None:
+        if not isinstance(d, dict):
+            return
+        # Support both legacy flat dict {channel: float} and v19 structured dict
+        raw_state = d.get("state") if isinstance(d.get("state"), dict) else d
+        for k, v in raw_state.items():
+            if k in self.state and isinstance(v, (int, float)):
+                self.state[k] = self._clamp(float(v))
+        if "reward_baseline" in d and isinstance(d["reward_baseline"], (int, float)):
+            self.reward_baseline = float(d["reward_baseline"])
+        if isinstance(d.get("obs_ma"), list):
+            self.obs_ma = [float(x) for x in d["obs_ma"]]
+
+    def behavioral_modulation(self) -> Dict[str, float]:
+        """Bounded, documented behavioral and plasticity modulation derived
+        from the 21 computational-affect channels:
+          - plasticity_scale: gates STDP eligibility conversion in [0.25, 1.5]
+          - exploration_nudge: small bounded adjustment to exploration in [-0.04, +0.06]
+            (curiosity + frustration increase exploration; high focus + control reduce it)
+          - defensive_bias: bounded preference for defensive spots when danger/desperation high"""
+        s = self.state
+        val = self.valence_scalar()
+        plasticity_scale = max(0.25, min(1.5, 1.0 + 0.5 * val - 0.15 * s["fatigue"]))
+        exp_nudge = max(-0.04, min(0.06,
+            0.05 * s["curiosity"] + 0.03 * s["frustration"]
+            - 0.03 * s["focus"] * s["control"]
+        ))
+        def_bias = self._clamp(0.5 * s["danger"] + 0.5 * s["desperation"])
+        return {
+            "plasticity_scale": round(plasticity_scale, 4),
+            "exploration_nudge": round(exp_nudge, 4),
+            "defensive_bias": round(def_bias, 4),
+        }
 
     def composites(self) -> Dict[str, float]:
         """Derived structural states (never stored, recomputed each call):

@@ -21,16 +21,20 @@ import time
 
 # Everything the user "is" — never touched by an update.
 NEVER_TOUCH = {
-    "ml_policy.pt", "ml_replay.json", "ml_metrics.json", "training.log",
-    "game_memory.json", "opponent_memory.json", "pain_channels.json",
-    "spiking_brain.json", "hippocampus.jsonl", "hippocampus_rotate.log",
-    "bot_config.json", "my_deck.json", "ai_coach.jsonl", "mentor.log",
-    "groq_key.txt", "bot.log", "bot_stdout.log", "dash_stdout.log",
-    "federated_outbox.json", "federated_imports.log",
+    "ml_policy.pt", "ml_policy.pt.bak", "ml_replay.json", "ml_metrics.json",
+    "training.log", "game_memory.json", "opponent_memory.json",
+    "pain_channels.json", "spiking_brain.json", "arena_twin.pt",
+    "arena_twin.pt.bak", "arena_twin.json", "hippocampus.jsonl",
+    "hippocampus_rotate.log", "bot_config.json", "my_deck.json",
+    "ai_coach.jsonl", "mentor.log", "groq_key.txt", "bot.log",
+    "bot_stdout.log", "dash_stdout.log", "federated_outbox.json",
+    "federated_imports.log", "federated_seed_ledger.json",
+    "federated_device_id.txt",
 }
 
 CODE_FILES = ["bot_ml.py", "bot.py", "dashboard.py", "spiking_core.py",
-              "updater.py", "federated.py", "cards.json", "bot_config.example.json"]
+              "referee.py", "arena_twin.py", "updater.py", "federated.py",
+              "cards.json", "meta_decks.json", "bot_config.example.json"]
 
 BACKUP_DIR = ".update_backups"
 
