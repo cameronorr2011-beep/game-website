@@ -124,7 +124,8 @@ function heat(arr,container,scale){const el=document.getElementById(container);
  if(!el||!arr)return; if(!el.dataset.built){el.innerHTML='';for(let i=0;i<arr.length;i++){const d=document.createElement('i');d.className='dot';d.dataset.i=i;el.appendChild(d)}el.dataset.built=1}
  const kids=el.children;for(let i=0;i<kids.length;i++){const v=arr[i]||0;const t=Math.min(1,Math.abs(v)/(scale||2));
  kids[i].style.background=t<.05?'#2a3441':(v>=0?`rgba(63,185,120,${t})`:`rgba(248,81,73,${t})`)}}
-async function poll(){try{
+async function poll(){
+try{
  const m=await(await fetch('/metrics')).json();
  k_steps.textContent=m.steps; k_buf.textContent=m.buffer;
  k_loss.textContent=m.losses&&m.losses.length?m.losses[m.losses.length-1].toFixed(4):'-';
@@ -144,7 +145,8 @@ async function poll(){try{
   '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
   '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85149">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
   '<div style="margin-top:4px;color:#8b949e">'+gm.towers_destroyed_recent+' towers destroyed · '+gm.enemy_pushes_faced_recent+' pushes faced recently</div>'}
- eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\\ntarget = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\\nchosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\\ntop3 = ${JSON.stringify(m.thinking.q_values_top3)}\\n${m.thinking.equation}\\n${m.thinking.hud}`}
+ if(m.thinking){
+ eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\n target = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\n chosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\n top3 = ${JSON.stringify(m.thinking.q_values_top3)}\n ${m.thinking.equation}\n ${m.thinking.hud}`}
  if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
   `my towers L/R/K: <b>${v.towers.ally_left}/${v.towers.ally_right}/${v.towers.ally_king}</b><br>`+
   `enemy towers L/R: <b style="color:#f85149">${v.towers.enemy_left}/${v.towers.enemy_right}</b><br>`+
@@ -153,9 +155,12 @@ async function poll(){try{
  feed.innerHTML=cf.slice(-50).reverse().map(r=>'<div><span class="pun">'+r.t+'</span> played <b>'+(r.played||'')+'</b> — '+(r.critique||'')+
   (r.reward_delta!=null?' <span class="pun">'+r.reward_delta+'</span>':'')+(r.recommended_spot?' <span class="men">teach:'+r.recommended_spot+'</span>':'')+'</div>').join('');
  shot.src='/vision?'+Date.now();
+}catch(e){console.log('poll error',e)}}
+async function mem(){
+try{
+ const h=await(await fetch('/health')).json();
+ memviz.textContent=h.mem||'';
 }catch(e){}}
-async function mem(){try{const h=await(await fetch('/health')).json();
- memviz.textContent=h.mem}else{}}
 setInterval(poll,1500);poll();
 setInterval(mem,5000);mem();
 </script></body></html>"""

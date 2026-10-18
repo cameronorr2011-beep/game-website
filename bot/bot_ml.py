@@ -1383,6 +1383,8 @@ def main():
     opponent = None
     opponent_arena_prev = None
     opponent_towers_prev = None
+    last_fg_note = 0.0
+    user_saw_clash = None
 
     while True:
         try:
@@ -1398,30 +1400,17 @@ def main():
                 continue
             offline_since = None
             if fg != "clashroyale":
-                # Wake screen + drag the lock icon (Android unlock swipe) if locked,
-                # then re-launch the game. Unattended play must never stop for lock.
-                # If dumpsys still sees the GameApp, re-check once more after 5s instead of
-                # force-relaunching (mid-transition glitch).
-                if fg == "clashroyale_or_locked":
-                    time.sleep(5)
-                    fg2 = foreground_app()
-                    if fg2 == "clashroyale":
-                        continue
-                log(f"game not in foreground (fg={fg}) — waking phone + unlocking")
-                sh(["shell", "input", "keyevent", "KEYCODE_WAKEUP"])
-                time.sleep(1)
-                sh(["shell", "input", "keyevent", "KEYCODE_MENU"])
-                time.sleep(0.5)
-                sh(["shell", "cmd", "statusbar", "collapse"])
-                time.sleep(0.5)
-                sh(["shell", "input", "swipe", "540", "1900", "540", "500", "300"])
-                time.sleep(1.5)
-                sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
-                    "-c", "android.intent.category.LAUNCHER", "1"])
-                time.sleep(20)
+                # USER-CONTROLLED PLAY: only ever act when the user has Clash
+                # open themselves. Never wake the phone, never unlock, never
+                # launch the game from another app. Wait politely, check again.
+                if fg != user_saw_clash and time.time() - (last_fg_note or 0) > 600:
+                    log(f"waiting for user to open Clash (currently fg={fg}) — bot only plays when YOU open the game")
+                    last_fg_note = time.time()
+                user_saw_clash = fg
+                time.sleep(5)
                 continue
 
-            # ---- gate passed: Clash is open and reachable ----
+            # ---- gate passed: USER opened Clash — play ----
             png = screenshot()
             from PIL import Image
             img = Image.open(png).convert("RGB")
@@ -1439,13 +1428,9 @@ def main():
                 for t in taps:
                     tap(*t)
                     time.sleep(0.5)
-                if now - stuck_since > 90:
-                    log("still stuck — restarting app")
-                    sh(["shell", "am", "force-stop", "com.supercell.clashroyale"])
-                    time.sleep(2)
-                    sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
-                        "-c", "android.intent.category.LAUNCHER", "1"])
-                    time.sleep(22)
+                # NOTE: never force-stop/relaunch the game on stuck — that would
+                # break the user's rule of only playing when THEY open Clash.
+                # The tap cycle above is enough; we just keep waiting.
                 stuck_since = None
                 back_streak = 0
                 popup_hits = 0
@@ -1828,31 +1813,35 @@ def main():
                 log(f"score now W{w_}/L{l_} winrate={wr}% eps={brain.epsilon:.3f} buffer={len(brain.buffer)}")
                 tap(*OK_CENTER)
                 time.sleep(2)
-                if prev_state is None:  # reward already flushed; dismiss result fully
-                    tap(*RESULT_OK)
-                    time.sleep(2)
-                # ---- PLAY AGAIN: after OK, most post-game dialogs still show a
-                # rematch/start button in the same area — tap it so the next
-                # match starts straight from the result screen (not homepage). ----
-                _re = sh(["exec-out", "screencap", "-p"], timeout=15)
-                if _re.returncode == 0 and _re.stdout:
+                # ---- PLAY AGAIN: after OK the game shows one of several screens
+                # depending on match type. Screenshot, classify, and act on what
+                # is ACTUALLY there instead of blind-tapping the same spot:
+                #   result  -> more dialogs; keep dismissing and re-check
+                #   lobby   -> the classic post-match lobby: press Battle again
+                #   battle/other -> matchmaking is already loading; hands off
+                for _retry in range(4):
+                    _re = sh(["exec-out", "screencap", "-p"], timeout=15)
+                    if _re.returncode != 0 or not _re.stdout:
+                        break
                     try:
                         _rimg = _I.open(io.BytesIO(_re.stdout)).convert("RGB")
                         nxt = classify(_rimg)
-                        if nxt == "result":
-                            tap(*OK_CENTER)
-                            time.sleep(2)
-                            tap(*RESULT_OK)
-                        elif nxt == "lobby":
-                            just_queued = False   # fresh lobby path, queue again
-                        tap(*CLAIM_SPOT)
-                        time.sleep(1.5)
+                    except Exception:
+                        break
+                    if nxt == "result":
+                        tap(*OK_CENTER)
+                        time.sleep(2)
+                        continue
+                    if nxt == "lobby":
+                        just_queued = False
                         tap(*BATTLE_BUTTON)
                         just_queued = True
                         tick_in_match = 0
-                        log("play again queued straight from result screen")
-                    except Exception:
-                        pass
+                        log("play again: Battle pressed from post-match lobby")
+                        break
+                    # battle/popup/other: matchmaking or transition underway
+                    log(f"play again: next screen '{nxt}' — standing down, loop takes over")
+                    break
 
             elif state == "popup":
                 stuck_since = stuck_since or now
@@ -1890,13 +1879,11 @@ def main():
                 focus = sh(["shell", "dumpsys", "window"], timeout=20)
                 focus_text = focus.stdout.decode(errors="ignore")
                 if "clashroyale" not in focus_text.lower():
-                    log("game lost focus -> relaunching app")
-                    sh(["shell", "am", "force-stop", "com.supercell.clashroyale"])
-                    time.sleep(1)
-                    sh(["shell", "monkey", "-p", "com.supercell.clashroyale",
-                        "-c", "android.intent.category.LAUNCHER", "1"])
-                    time.sleep(25)
-                    back_streak = 0
+                    # USER RULE: never launch the game ourselves — if the user
+                    # left Clash, stop touching and wait for them to return.
+                    log("game lost focus — waiting for user to reopen Clash")
+                    stuck_since = None
+                    time.sleep(5)
                     continue
                 if back_streak < 2:
                     log(f"unknown -> BACK ({back_streak + 1}/2)")
