@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeuroML — Download</title>
+<meta name="description" content="NeuroML: an RL brain that plays Clash Royale on your Android phone and learns live, coached by Groq. Download, install in 5 minutes, and open the dashboard at 127.0.0.1:8765.">
+<style>
+  :root{--bg:#0b0f14;--panel:#111823;--line:#1e2937;--text:#dbe4f0;--muted:#8aa0b8;--accent:#4fd1c5;--accent2:#7c9cf5;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:880px;margin:0 auto;padding:48px 24px}
+  h1{font-size:2.4rem;margin:0 0 8px;letter-spacing:-.02em}
+  h2{font-size:1.3rem;margin:40px 0 12px;color:var(--accent)}
+  p.sub{color:var(--muted);font-size:1.05rem;margin-top:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;margin:20px 0}
+  .btn{display:inline-block;background:var(--accent);color:#04211f;font-weight:700;text-decoration:none;
+       padding:14px 28px;border-radius:10px;font-size:1.05rem}
+  .btn:hover{filter:brightness(1.1)}
+  .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent);margin-left:12px}
+  ol li{margin:10px 0}
+  code{background:#0a1017;border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:.92em;color:var(--accent2)}
+  a{color:var(--accent)}
+  table{border-collapse:collapse;width:100%}
+  td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
+  .warn{border-left:4px solid #e5484d;padding:12px 16px;background:#1a1216;border-radius:0 10px 10px 0;color:#ffd9db}
+  footer{margin-top:48px;color:var(--muted);font-size:.9rem;border-top:1px solid var(--line);padding-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>NeuroML</h1>
+  <p class="sub">A computational-neuroscience testbed that learns a real game the way brains are
+  thought to: perception &rarr; prediction &rarr; decision &rarr; plastic feedback. It plays
+  Clash&nbsp;Royale on a connected Android phone, from any PC.</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">Download</h2>
+    <p>The app is a small (~50 KB, instant) zip containing everything except Python itself —
+    <code>install.bat</code> fetches the rest.</p>
+    <a class="btn" href="/NeuroMLCR.zip" download>Download NeuroMLCR.zip</a>
+    <a class="btn ghost" href="https://github.com/cameronorr2011-beep/game-website">Source on GitHub</a>
+  </div>
+
+  <h2>What you need</h2>
+  <table>
+    <tr><td>Windows PC</td><td>any</td></tr>
+    <tr><td>Android phone</td><td>same Wi-Fi first, then anywhere</td></tr>
+    <tr><td>Free Groq API key</td><td><a href="https://console.groq.com/keys">console.groq.com/keys</a></td></tr>
+    <tr><td>Clash Royale installed + signed in</td><td>phone</td></tr>
+  </table>
+
+  <h2>Setup (5 steps)</h2>
+  <ol>
+    <li>Unzip the download and <strong>double-click <code>install.bat</code></strong> — checks Python,
+        installs torch + tools, downloads adb if missing. If Python is missing it opens the download
+        page for you (check “Add Python to PATH”, then rerun).</li>
+    <li>Put your <code>groq_key.txt</code> (one line, starts with <code>gsk_</code>) in the folder.</li>
+    <li>Double-click <code>connect_phone.bat</code> and follow the pairing prompts
+        (same Wi-Fi, or Tailscale/ZeroTier/ port-forward for remote).</li>
+    <li>Double-click <code>NeuroMLCR.bat</code> — the AI Coach dashboard opens in your browser at
+        <code>http://127.0.0.1:8765</code> (live phone view + loss curves + coach feed) and the brain
+        starts playing matches.</li>
+    <li>Updates never wipe memory: <code>updater.py</code> replaces code, never data.</li>
+  </ol>
+
+  <div class="warn">
+    <strong>Fair play:</strong> automating Clash Royale violates Supercell’s ToS. Use an account you
+    accept losing. The app never force-relaunches the game and only taps inside it.
+  </div>
+
+  <h2>Honest limitations</h2>
+  <p>Vision is pixel-scanning + statistics, not object detection. Internal “valence” channels are
+  computational reward signals, not claims of sentience. The world model is a scored 1-tick baseline,
+  still accumulating ablation data.</p>
+
+  <footer>NeuroML — measured, not claimed. Everything it learns stays on your disk.</footer>
+</div>
+</body>
+</html>

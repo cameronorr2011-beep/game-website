@@ -18,10 +18,21 @@ pinned to a measurement — no decorative science.
 Measured on the reference desktop: decision forward **13.5 ms**, batch-128
 forward 109 ms, train step **280 ms** — all far under the 5 s battle tick.
 
+## Download the app
+
+**Download page: https://game-website-two-tau.vercel.app** — serves the ready-to-run
+`NeuroMLCR.zip` (~50 KB; `install.bat` fetches Python deps itself) plus the 5-step setup.
+The site auto-deploys every push to `main` of this repository.
+
+Keep the served zip in sync after editing `public_gui/`:
+
+```bash
+cd public_gui && rm -f NeuroMLCR.zip && zip -r NeuroMLCR.zip *.bat *.py *.json README.md && cp NeuroMLCR.zip ../public/NeuroMLCR.zip
+```
+
 ## Install anywhere (phone hotspot, PC, no same-network requirement)
 
 Full source + releases: **https://github.com/cameronorr2011-beep/game-website**
-(live demo site: https://vercel.com/orr5/game-website)
 
 NeuroML uses Wi-Fi ADB only to *see and tap the phone*. The brain itself runs
 on any device:
