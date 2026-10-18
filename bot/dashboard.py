@@ -102,15 +102,17 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div class="coach" id="feed">waiting…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 256-wide × 3 cortical brain</h2>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — 512-wide × 4 cortical MASSIVE brain</h2>
       <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — what each pixel-scan reports)</div>
       <div id="senses" style="display:grid;grid-template-columns:repeat(2,1fr);gap:1px;font-size:10px;font-family:Consolas,monospace;margin:4px 0"></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 1 — pattern extraction (first signal mixes)</div>
       <div class="brain"><div class="layer" id="l1" style="grid-template-columns:repeat(32,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">CORTEX 2 — battlefield concepts (pushes, weaknesses form here)</div>
       <div class="brain"><div class="layer" id="l2" style="grid-template-columns:repeat(32,1fr)"></div></div>
-      <div style="font-size:11px;color:var(--dim)">CORTEX 3 — decision abstraction (before value/choice split)</div>
+      <div style="font-size:11px;color:var(--dim)">CORTEX 3 — deep composition (synergies, trades)</div>
       <div class="brain"><div class="layer" id="l3b" style="grid-template-columns:repeat(32,1fr)"></div></div>
+      <div style="font-size:11px;color:var(--dim)">CORTEX 4 — decision abstraction (before value/choice split)</div>
+      <div class="brain"><div class="layer" id="l4" style="grid-template-columns:repeat(32,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim)">LIMBIC — "how good is this situation" interneurons (feeds V(s))</div>
       <div class="brain"><div class="layer" id="l3" style="grid-template-columns:repeat(32,1fr)"></div></div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px">MOTOR — advantage of each of the 20 moves (top = chosen)</div>
@@ -148,7 +150,8 @@ try{
  const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d29922');
  const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
- heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);heat(n.limbic_neurons,'l3',1.5);
+ heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);
+ heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.limbic_neurons,'l3',1.5);
  if(n.sensory_neurons){const se=document.getElementById('senses');
   if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
   else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))}}

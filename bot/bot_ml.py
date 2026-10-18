@@ -896,8 +896,8 @@ def hippocampal_write(entry):
     so each line is ~1.4 KB instead of ~0.1 KB — reach GB scale ~14× faster."""
     try:
         e = dict(entry)
-        q, v, a, h1, h2, h3, v_hid = brain_ref[0].policy.forward_streams(
-            torch.tensor(e["s"], dtype=torch.float32)) if brain_ref[0] else (None,)*7
+        q, v, a, *_hid = brain_ref[0].policy.forward_streams(
+            torch.tensor(e["s"], dtype=torch.float32)) if brain_ref[0] else ((None,)*8)
         if q is not None:
             e["q_row"] = [round(v_, 4) for v_ in q.tolist()]
             e["V_export"] = round(v.item(), 4)
@@ -968,7 +968,10 @@ def judge_match_result(img):
     if blues >= reds + 8:
         return "WIN"
     return "LOSS"         # unclear → never claim a false win
-    """Fast lane variance on a downsampled crop (抽样 40×80 grid instead of full 400×400).
+
+
+def lane_variances(img):
+    """Fast lane variance on a downsampled crop (40×80 grid instead of full 400×400).
     ~6ms instead of ~600ms."""
     import statistics
 
@@ -1100,37 +1103,41 @@ class SynapticResBlock(nn.Module):
 
 
 class QNet(nn.Module):
-    """Dueling Surge-Neuron Architecture v2 (wider brain):
-      - Sensory Input Stem (38 -> 256 + LayerNorm + SiLU)
-      - 3 Residual Synaptic Cortical Blocks (256 -> 256)  ≈ 590k cortical synapses
-      - Limbic State-Value stream V(s): 256 -> 128 -> 1
-      - Motor Action-Advantage stream A(s,a): 256 -> 128 -> 20
+    """Dueling Surge-Neuron Architecture v3 (MASSIVE cortex — disk budget is free):
+      - Sensory Input Stem (38 -> 512 + LayerNorm + SiLU)
+      - 4 Residual Synaptic Cortical Blocks (512 -> 512)  ≈ 8.4M cortical synapses
+      - Limbic State-Value stream V(s): 512 -> 256 -> 1
+      - Motor Action-Advantage stream A(s,a): 512 -> 256 -> 20
       - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
+    ~8.6M trainable parameters ≈ 35 MB fp32 weights on disk — the brain is now
+    big enough to represent deck synergies, counter-relationships and
+    meta-strategy, not just reflexes. Trains on CPU well with batch 128.
     """
     def __init__(self):
         super().__init__()
         self.sensory = nn.Sequential(
-            nn.Linear(STATE_DIM, 256),
-            nn.LayerNorm(256),
+            nn.Linear(STATE_DIM, 512),
+            nn.LayerNorm(512),
             nn.SiLU(),
         )
-        self.cortex1 = SynapticResBlock(256)
-        self.cortex2 = SynapticResBlock(256)
-        self.cortex3 = SynapticResBlock(256)
+        self.cortex1 = SynapticResBlock(512)
+        self.cortex2 = SynapticResBlock(512)
+        self.cortex3 = SynapticResBlock(512)
+        self.cortex4 = SynapticResBlock(512)
 
         # Limbic State-Value stream V(s)
         self.value_stream = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),
             nn.SiLU(),
-            nn.Linear(128, 1),
+            nn.Linear(256, 1),
         )
         # Motor Action-Advantage stream A(s,a)
         self.advantage_stream = nn.Sequential(
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),
             nn.SiLU(),
-            nn.Linear(128, ACTION_DIM),
+            nn.Linear(256, ACTION_DIM),
         )
 
     def forward_streams(self, x):
@@ -1141,15 +1148,16 @@ class QNet(nn.Module):
         h1 = self.cortex1(h0)
         h2 = self.cortex2(h1)
         h3 = self.cortex3(h2)
-        v_hid = self.value_stream[:-1](h3)
-        a_hid = self.advantage_stream[:-1](h3)
+        h4 = self.cortex4(h3)
+        v_hid = self.value_stream[:-1](h4)
+        a_hid = self.advantage_stream[:-1](h4)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
             return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
-                    h2.squeeze(0), h3.squeeze(0), v_hid.squeeze(0))
-        return q, v, a, h1, h2, h3, v_hid
+                    h2.squeeze(0), h3.squeeze(0), h4.squeeze(0), v_hid.squeeze(0))
+        return q, v, a, h1, h2, h3, h4, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1220,8 +1228,8 @@ class TargetedDQN:
     """Advanced Dueling Double DQN with:
       - Prioritized Experience Replay (PER, proportional TD-error priorities)
       - 3-Step Bootstrapping queue (propagates tower-damage punishment 3x faster)
-      - Polyak Soft Target Updates (tau=0.015 per train step)
-      - Legacy checkpoint migration (upgrades older Sequential checkpoints seamlessly)
+      - Polyak Soft Target Updates
+      - Legacy checkpoint migration (upgrades older checkpoints seamlessly)
     """
     def __init__(self):
         self.policy = QNet()
@@ -1232,13 +1240,13 @@ class TargetedDQN:
         # in RAM, replay JSON dumps to disk every checkpoint so DOWNLOADERS and
         # restarts keep every memory. (A few GB on disk is achievable via
         # per-state detail; this is the practical sweet spot for CPU training.)
-        self.buffer = deque(maxlen=120000)
-        self.priorities = deque(maxlen=120000)
+        self.buffer = deque(maxlen=400000)
+        self.priorities = deque(maxlen=400000)
         self.nstep_queue = deque(maxlen=3)
         self.n_steps = 3
         self.epsilon = 0.35
         self.gamma = 0.95
-        self.batch = 96      # bigger brain → bigger minibatch Gradient batches
+        self.batch = 128     # massive cortex deserves massive minibatches
         self.train_every = 2  # Train every 2 battle ticks for faster convergence
         self.per_alpha = 0.6
         self.per_beta = 0.4
@@ -1250,7 +1258,7 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, h3, v_hid = self.policy.forward_streams(x)
+            q, v, a, h1, h2, h3, h4, v_hid = self.policy.forward_streams(x)
             return {
                 "layer1_mean": round(h1.abs().mean().item(), 3),
                 "layer2_mean": round(h2.abs().mean().item(), 3),
@@ -1265,6 +1273,7 @@ class TargetedDQN:
                 "layer1_neurons": [round(v_, 3) for v_ in h1.tolist()],
                 "layer2_neurons": [round(v_, 3) for v_ in h2.tolist()],
                 "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
+                "layer4_neurons": [round(v_, 3) for v_ in h4.tolist()],
                 "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
                 "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
@@ -1397,7 +1406,7 @@ class TargetedDQN:
 
     def save(self):
         torch.save({
-            "arch": "dueling_resnet_v11_wide",
+            "arch": "dueling_resnet_v3_massive",
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
@@ -1414,28 +1423,29 @@ class TargetedDQN:
             try:
                 ckpt = torch.load("ml_policy.pt")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v11_wide":
+                if ckpt.get("arch") == "dueling_resnet_v3_massive":
                     self.policy.load_state_dict(ckpt["policy"])
                     self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v11-wide (256×3) model, epsilon={self.epsilon:.2f}")
-                elif ckpt.get("arch") == "dueling_resnet_v10":
-                    # UPGRADE MIGRATION: copy old 128-wide sensory weights into the
-                    # left block of the new 256-wide sensory layer; the rest starts
-                    # fresh but learns fast from the big replay buffer.
+                    log(f"loaded Dueling-ResNet v3-MASSIVE (512×4) brain, epsilon={self.epsilon:.2f}")
+                elif ckpt.get("arch") in ("dueling_resnet_v11_wide", "dueling_resnet_v10"):
+                    # UPGRADE MIGRATION: sensory stem partial copy (works for any
+                    # narrower predecessor), the rest starts fresh but learns fast
+                    # from the big replay buffer.
                     old_sd = ckpt.get("policy", {})
                     with torch.no_grad():
-                        w = self.policy.sensory[0].weight  # (256, 38)
+                        w = self.policy.sensory[0].weight  # (512, 38)
                         b = self.policy.sensory[0].bias
                         try:
-                            old_w = old_sd.get("sensory.0.weight")  # (128, 38)
-                            old_b = old_sd.get("sensory.0.bias")
-                            if old_w is not None and old_w.shape == (128, STATE_DIM):
-                                w[:128].copy_(old_w)
-                                b[:128].copy_(old_b)
+                            ow = old_sd.get("sensory.0.weight")
+                            ob = old_sd.get("sensory.0.bias")
+                            if ow is not None and ow.shape[1] == STATE_DIM:
+                                rows = min(ow.shape[0], w.shape[0])
+                                w[:rows].copy_(ow[:rows])
+                                b[:rows].copy_(ob[:rows])
                         except Exception:
                             pass
                     self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated v10 128-wide sensory weights into v11-wide brain, epsilon={self.epsilon:.2f}")
+                    log(f"migrated {ckpt.get('arch')} sensory weights into v3-MASSIVE brain, epsilon={self.epsilon:.2f}")
                 else:
                     log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
