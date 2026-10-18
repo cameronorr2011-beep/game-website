@@ -887,6 +887,27 @@ OPPONENT_VOCAB = [
 SPOT_TO_ACTION.update({n: i for i, n in enumerate(SPOT_NAMES)})
 
 
+def q_state_fired(q_state):
+    """The 38 sensory neurons and WHAT each one senses, for the dashboard's
+    labeled input-row firing display."""
+    senses = (
+        "elixir", "lane_variance_L bars", "lane_variance_R bars",
+        "cost slot0", "cost slot1", "cost slot2", "cost slot3",
+        "afford slot0", "afford slot1", "afford slot2", "afford slot3",
+        "phase early", "phase mid", "phase late",
+        "last slot0", "last slot1", "last slot2", "last slot3",
+        "last spot bridge_L", "last spot bridge_R", "last spot def_L",
+        "last spot def_R", "last spot center",
+        "my tower L", "my tower R", "my king", "enemy tower L", "enemy tower R",
+        "towers alive (me)", "towers alive (enemy)",
+        "units enemy L", "units enemy R", "push enemy bridge L",
+        "push enemy bridge R", "units ally L", "units ally R",
+        "threat L", "threat R", "extra",
+    )
+    return [{"v": round(float(x), 3), "sense": senses[i] if i < len(senses) else f"s{i}"}
+            for i, x in enumerate(q_state)]
+
+
 # ---------------------- Advanced Neural Architecture (Dueling ResNet QNet) ----------------------
 class SynapticResBlock(nn.Module):
     """Residual cortical column with LayerNorm + SiLU activation so deep neuron
@@ -906,36 +927,37 @@ class SynapticResBlock(nn.Module):
 
 
 class QNet(nn.Module):
-    """Dueling Surge-Neuron Architecture:
-      - Sensory Input Stem (38 -> 128)
-      - 2 Residual Synaptic Cortical Blocks (128 -> 128)
-      - Limbic Value Stream V(s): estimates overall battlefield dopamine state (128 -> 64 -> 1)
-      - Motor Advantage Stream A(s,a): estimates relative advantage of each (card, zone) (128 -> 64 -> 20)
+    """Dueling Surge-Neuron Architecture v2 (wider brain):
+      - Sensory Input Stem (38 -> 256 + LayerNorm + SiLU)
+      - 3 Residual Synaptic Cortical Blocks (256 -> 256)  ≈ 590k cortical synapses
+      - Limbic State-Value stream V(s): 256 -> 128 -> 1
+      - Motor Action-Advantage stream A(s,a): 256 -> 128 -> 20
       - Aggregated Q(s,a) = V(s) + (A(s,a) - mean_a A(s,a))
     """
     def __init__(self):
         super().__init__()
         self.sensory = nn.Sequential(
-            nn.Linear(STATE_DIM, 128),
-            nn.LayerNorm(128),
+            nn.Linear(STATE_DIM, 256),
+            nn.LayerNorm(256),
             nn.SiLU(),
         )
-        self.cortex1 = SynapticResBlock(128)
-        self.cortex2 = SynapticResBlock(128)
+        self.cortex1 = SynapticResBlock(256)
+        self.cortex2 = SynapticResBlock(256)
+        self.cortex3 = SynapticResBlock(256)
 
         # Limbic State-Value stream V(s)
         self.value_stream = nn.Sequential(
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.SiLU(),
-            nn.Linear(64, 1),
+            nn.Linear(128, 1),
         )
         # Motor Action-Advantage stream A(s,a)
         self.advantage_stream = nn.Sequential(
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
             nn.SiLU(),
-            nn.Linear(64, ACTION_DIM),
+            nn.Linear(128, ACTION_DIM),
         )
 
     def forward_streams(self, x):
@@ -945,14 +967,16 @@ class QNet(nn.Module):
         h0 = self.sensory(x)
         h1 = self.cortex1(h0)
         h2 = self.cortex2(h1)
-        v_hid = self.value_stream[:-1](h2)
-        a_hid = self.advantage_stream[:-1](h2)
+        h3 = self.cortex3(h2)
+        v_hid = self.value_stream[:-1](h3)
+        a_hid = self.advantage_stream[:-1](h3)
         v = self.value_stream[-1](v_hid)
         a = self.advantage_stream[-1](a_hid)
         q = v + (a - a.mean(dim=-1, keepdim=True))
         if single:
-            return q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0), h2.squeeze(0), v_hid.squeeze(0)
-        return q, v, a, h1, h2, v_hid
+            return (q.squeeze(0), v.squeeze(0), a.squeeze(0), h1.squeeze(0),
+                    h2.squeeze(0), h3.squeeze(0), v_hid.squeeze(0))
+        return q, v, a, h1, h2, h3, v_hid
 
     def forward(self, x):
         return self.forward_streams(x)[0]
@@ -1031,13 +1055,17 @@ class TargetedDQN:
         self.target = QNet()
         self.target.load_state_dict(self.policy.state_dict())
         self.optim = optim.AdamW(self.policy.parameters(), lr=8e-4, weight_decay=1e-4)
-        self.buffer = deque(maxlen=20000)
-        self.priorities = deque(maxlen=20000)
+        # GB-scale memory: 120k transitions × ~0.5 KB heavy states ≈ up to ~60 MB
+        # in RAM, replay JSON dumps to disk every checkpoint so DOWNLOADERS and
+        # restarts keep every memory. (A few GB on disk is achievable via
+        # per-state detail; this is the practical sweet spot for CPU training.)
+        self.buffer = deque(maxlen=120000)
+        self.priorities = deque(maxlen=120000)
         self.nstep_queue = deque(maxlen=3)
         self.n_steps = 3
         self.epsilon = 0.35
         self.gamma = 0.95
-        self.batch = 64
+        self.batch = 96      # bigger brain → bigger minibatch Gradient batches
         self.train_every = 2  # Train every 2 battle ticks for faster convergence
         self.per_alpha = 0.6
         self.per_beta = 0.4
@@ -1049,19 +1077,23 @@ class TargetedDQN:
         Includes per-neuron arrays so the dashboard can draw a real firing brain."""
         with torch.no_grad():
             x = torch.tensor(q_state, dtype=torch.float32)
-            q, v, a, h1, h2, v_hid = self.policy.forward_streams(x)
+            q, v, a, h1, h2, h3, v_hid = self.policy.forward_streams(x)
             return {
                 "layer1_mean": round(h1.abs().mean().item(), 3),
                 "layer2_mean": round(h2.abs().mean().item(), 3),
+                "layer3_mean": round(h3.abs().mean().item(), 3),
                 "limbic_mean": round(v_hid.abs().mean().item(), 3),
                 "state_value_V": round(v.item(), 3),
                 "advantage_spread": round((a.max() - a.min()).item(), 3),
                 "output_best": int(q.argmax().item()),
                 "output_value": round(q.max().item(), 3),
-                # per-neuron activations (dashboard draws live brain)
-                "layer1_neurons": [round(v_, 3) for v_ in h1.abs().tolist()[:64]],
-                "layer2_neurons": [round(v_, 3) for v_ in h2.abs().tolist()[:64]],
-                "limbic_neurons": [round(v_, 3) for v_ in v_hid.abs().tolist()[:32]],
+                # FULL-depth per-neuron activations (dashboard draws live brain)
+                "sensory_neurons": q_state_fired(q_state),
+                "layer1_neurons": [round(v_, 3) for v_ in h1.tolist()],
+                "layer2_neurons": [round(v_, 3) for v_ in h2.tolist()],
+                "layer3_neurons": [round(v_, 3) for v_ in h3.tolist()],
+                "limbic_neurons": [round(v_, 3) for v_ in v_hid.tolist()],
+                "actions_desc": [SPOT_NAMES[i % 5] for i in range(ACTION_DIM)],
                 "advantage_neurons": [round(v_, 3) for v_ in a.tolist()],
             }
 
@@ -1192,14 +1224,14 @@ class TargetedDQN:
 
     def save(self):
         torch.save({
-            "arch": "dueling_resnet_v10",
+            "arch": "dueling_resnet_v11_wide",
             "policy": self.policy.state_dict(),
             "target": self.target.state_dict(),
             "epsilon": self.epsilon,
         }, "ml_policy.pt")
         try:
             with open("ml_replay.json", "w") as f:
-                json.dump(list(self.buffer)[-5000:], f)
+                json.dump(list(self.buffer)[-60000:], f)
             self._memory_dirty = 0
         except Exception as e:
             log(f"replay dump failed: {e}")
@@ -1209,19 +1241,30 @@ class TargetedDQN:
             try:
                 ckpt = torch.load("ml_policy.pt")
                 self.epsilon = ckpt.get("epsilon", 0.35)
-                if ckpt.get("arch") == "dueling_resnet_v10":
+                if ckpt.get("arch") == "dueling_resnet_v11_wide":
                     self.policy.load_state_dict(ckpt["policy"])
                     self.target.load_state_dict(ckpt.get("target", ckpt["policy"]))
-                    log(f"loaded Dueling-ResNet v10 model, epsilon={self.epsilon:.2f}")
-                else:
-                    # Migrate sensory stem weights from v8/v9 Sequential net if shapes match
+                    log(f"loaded Dueling-ResNet v11-wide (256×3) model, epsilon={self.epsilon:.2f}")
+                elif ckpt.get("arch") == "dueling_resnet_v10":
+                    # UPGRADE MIGRATION: copy old 128-wide sensory weights into the
+                    # left block of the new 256-wide sensory layer; the rest starts
+                    # fresh but learns fast from the big replay buffer.
                     old_sd = ckpt.get("policy", {})
-                    if "net.0.weight" in old_sd and old_sd["net.0.weight"].shape == (128, STATE_DIM):
-                        with torch.no_grad():
-                            self.policy.sensory[0].weight.copy_(old_sd["net.0.weight"])
-                            self.policy.sensory[0].bias.copy_(old_sd["net.0.bias"])
-                            self.target.load_state_dict(self.policy.state_dict())
-                    log(f"migrated v8/v9 sensory weights into Dueling-ResNet v10, epsilon={self.epsilon:.2f}")
+                    with torch.no_grad():
+                        w = self.policy.sensory[0].weight  # (256, 38)
+                        b = self.policy.sensory[0].bias
+                        try:
+                            old_w = old_sd.get("sensory.0.weight")  # (128, 38)
+                            old_b = old_sd.get("sensory.0.bias")
+                            if old_w is not None and old_w.shape == (128, STATE_DIM):
+                                w[:128].copy_(old_w)
+                                b[:128].copy_(old_b)
+                        except Exception:
+                            pass
+                    self.target.load_state_dict(self.policy.state_dict())
+                    log(f"migrated v10 128-wide sensory weights into v11-wide brain, epsilon={self.epsilon:.2f}")
+                else:
+                    log(f"unknown checkpoint arch — starting fresh brain, epsilon={self.epsilon:.2f}")
             except Exception as e:
                 log(f"model load note: {e}")
         if os.path.exists("ml_replay.json"):
@@ -1421,6 +1464,8 @@ def main():
     prev_action = None
     prev_towers = None
     elixir_leak_ticks = 0
+    last_spell_played = None
+    _finisher_cast = False
     train_loss_ma = None
     cards_played = 0
     mentor_cooldown = 0.0
@@ -1562,6 +1607,39 @@ def main():
                 reward = 0.0
                 dmg_punish = None
                 dmg_source = None
+                _events = []  # every labeled dopamine/punishment event this tick
+
+                # ---- SPELL VALUE TRACKING: did the spell cast ONE tick ago hit
+                # anything? (enemy units present, or enemy tower HP dropped)
+                # Hitting nothing = WASTED SPELL = heavy punishment. ----
+                if last_spell_played is not None and opponent_arena_prev is not None and prev_towers is not None:
+                    _slot_i, _spot_i = last_spell_played
+                    _spell_name = ""
+                    try:
+                        _deck_now = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
+                        _spell_name = _deck_now[_slot_i] if _slot_i < len(_deck_now) else ""
+                    except Exception:
+                        pass
+                    _role = CARDS_DB.get(str(_spell_name).lower(), {}).get("role")
+                    if _role == "spell":
+                        _hit_units = (opponent_arena_prev.get("enemy_left", 0) +
+                                      opponent_arena_prev.get("enemy_right", 0)) >= 1
+                        _el_tower_drop = max(0.0, prev_towers.get("enemy_left", 1) - towers.get("enemy_left", 1))
+                        _er_tower_drop = max(0.0, prev_towers.get("enemy_right", 1) - towers.get("enemy_right", 1))
+                        _hit_tower = (_el_tower_drop + _er_tower_drop) >= 0.03
+                        if _hit_units or _hit_tower or _finisher_cast:
+                            _v = "damaged units" if _hit_units else ("chipped enemy tower" if _hit_tower else "finisher attempt")
+                            _bonus = 0.3
+                            reward += _bonus
+                            _events.append((f"✨ spell connected: {_v}", _bonus))
+                            log(f"SPELL VALUE: {_spell_name} {_v} -> +{_bonus:.2f}")
+                        else:
+                            _punish = -1.2
+                            reward += _punish
+                            _events.append((f"🚫 WASTED SPELL {_spell_name} — hit nothing", _punish))
+                            log(f"SPELL WASTED: {_spell_name} hit nothing -> {_punish:+.2f}")
+                _finisher_cast = False
+                last_spell_played = None
 
                 if prev_towers is not None:
                     dl = max(0.0, prev_towers["ally_left"] - towers["ally_left"])
@@ -1599,7 +1677,7 @@ def main():
 
                 # ---- RICH DOPAMINE SHAPING (each item logged as its OWN
                 # dopamine event so the feed never shows a bad behavior green) ----
-                _events = []   # (label, amount) shown separately in the UI feed
+                # (_events was created above for spell tracking — reuse it)
                 if dmg_punish is None:
                     # 1) correct-lane defense
                     if lane:
@@ -1645,14 +1723,22 @@ def main():
                     _events.append(("⛔ good events censored — tower damage dominates this tick", 0.0))
 
                 # ---- PUNISHMENTS (always their OWN negative event, never green) ----
+                # CYCLING AMNESTY: leaking while deliberately cycling cheap cards
+                # (hand full of affordable low-costs, no big threat) is GOOD
+                # resource conversion, not waste — no punishment then.
+                cheap_in_hand = sum(1 for i in range(4) if state_s[7 + i] > 0.5) >= 2
+                cycling_ok = leaking and cheap_in_hand and not lane
                 if mlxir <= 2 and lane is None:
                     reward -= 0.2
                     _events.append(("🔻 wasted elixir nowhere (played with no threat)", -0.2))
-                if leaking:
+                if leaking and not cycling_ok:
                     elixir_leak_ticks += 1
                     leak_punish = 0.1 * elixir_leak_ticks
                     reward -= leak_punish
                     _events.append((f"💧 ELIXIR LEAK #{elixir_leak_ticks}", -leak_punish))
+                elif leaking and cycling_ok:
+                    elixir_leak_ticks = 0
+                    _events.append(("♻️ cycling cheap cards at max elixir (allowed)", 0.15))
                 else:
                     elixir_leak_ticks = 0
                 # dropped tower this tick = pure red event even if kills happened
@@ -1675,6 +1761,16 @@ def main():
                 sx, sy = FIELD_SPOTS[spot_n]
                 sh(["shell", "input", "swipe", str(x + jx), str(y + jy), str(sx), str(sy), str(dur)])
                 time.sleep(0.45)
+                # Track spell casts for next-tick value judgment (hit vs wasted)
+                _played_name = ""
+                try:
+                    _deck_now = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
+                    _played_name = _deck_now[slot] if slot < len(_deck_now) else ""
+                except Exception:
+                    pass
+                if CARDS_DB.get(str(_played_name).lower(), {}).get("role") == "spell":
+                    last_spell_played = (slot, spot_i)
+                    _finisher_cast = bool(finishers) and rule_note.startswith("finisher")
                 cards_played += 1
                 tick_in_match += 1
                 # game-memory accumulators
