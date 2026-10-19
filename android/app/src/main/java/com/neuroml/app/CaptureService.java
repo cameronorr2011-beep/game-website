@@ -100,9 +100,11 @@ public class CaptureService extends Service {
                 @Override public void onStop() { releaseDisplay(); }
             }, readerHandler);
             captureRequested = true;
-            // Cross-process readiness flag: MainActivity (main process) reads this.
+            // Cross-process readiness flag: MainActivity (main process) polls the
+            // XML file on disk (its SharedPreferences cache never sees writes from
+            // this process), so commit synchronously and deterministically here.
             getSharedPreferences("nml", Context.MODE_PRIVATE)
-                    .edit().putBoolean("capture_ready", true).apply();
+                    .edit().putBoolean("capture_ready", true).commit();
             Log.i(TAG, "capture ready");
         } catch (Exception e) {
             Log.e(TAG, "capture setup failed", e);

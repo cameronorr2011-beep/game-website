@@ -20,6 +20,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -136,10 +137,25 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Cross-process capture readiness (CaptureService runs in :brain). */
+    /** Cross-process capture readiness (CaptureService runs in :brain).
+     *  SharedPreferences are per-process cached — a write from the :brain
+     *  process is NOT visible through the cached object in this process, so
+     *  poll the actual file on disk instead. (This stale-cache read is what
+     *  made the poll report "capture taking long" even after a grant.) */
     private boolean captureReady() {
-        return getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean("capture_ready", false);
+        try {
+            File f = new File(getApplicationInfo().dataDir, "shared_prefs/nml.xml");
+            BufferedReader r = new BufferedReader(new java.io.FileReader(f));
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.contains("capture_ready") && line.contains("\"true\"")) {
+                    r.close();
+                    return true;
+                }
+            }
+            r.close();
+        } catch (Exception ignored) { }
+        return false;
     }
 
     /** Toggle ON or returning from a permission grant: run what's missing, in order. */
