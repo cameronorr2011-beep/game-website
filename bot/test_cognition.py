@@ -153,6 +153,24 @@ ex_n, sl_n, fr_n = TargetedDQN._migrate_overlapping_weights(net_s, net_c.state_d
 check("profile migration copies overlapping slices explicitly without crashing",
       sl_n > 0 and ex_n >= 1)
 
+# extended profile (desktop default v27+, user: "more neuron parameters"):
+# honestly measured from the instantiated module, never from the comment.
+_os.environ["QNET_PROFILE"] = "extended"
+net_e = QNet()
+pr_e = param_report(net_e)
+check("extended profile = 1408-wide x 8 blocks (~34M measured, desktop default)",
+      30_000_000 <= pr_e["trainable_params"] <= 40_000_000
+      and pr_e["depth"] == 8 and pr_e["width"] == 1408)
+out_e = net_e(_t.randn(1, 38))
+check("forward pass works on extended profile", tuple(out_e.shape) == (1, 20))
+
+# the v27 in-place upgrade path: an old standard-width checkpoint migrates
+# into the extended brain — shared slices carry learned weights, new slices
+# initialize fresh (never a silent total reset of learned weights).
+ex_e, sl_e, fr_e = TargetedDQN._migrate_overlapping_weights(net_e, net_s.state_dict())
+check("standard checkpoint migrates into extended (overlap carried, fresh slices added)",
+      sl_e > 0 and fr_e > 0 and ex_e >= 1)
+
 # ---------------- federated averaging (real math, including 2 & 4 w/ 1 & 3 -> 3.5) ----------------
 import federated
 
