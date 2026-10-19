@@ -637,4 +637,24 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=_auto_refresher, daemon=True).start()
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    # Bind ALL interfaces (0.0.0.0) so the phone on the same WiFi can open the
+    # dashboard at http://<LAN-IP>:8765 — NOT public internet hosting. Reach is
+    # still gated by Windows firewall + router NAT: only devices inside this
+    # home network get in; the internet at large does not.
+    import socket
+    srv = ThreadingHTTPServer(("0.0.0.0", PORT), H)
+    lan_ip = ""
+    try:
+        _s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _s.connect(("8.8.8.8", 80))          # no packet sent; just picks the NIC
+        lan_ip = _s.getsockname()[0]
+        _s.close()
+    except Exception:
+        pass
+    print(f"NeuroML dashboard live: http://localhost:{PORT}  (this PC only)")
+    if lan_ip:
+        print(f"  phone on same WiFi:    http://{lan_ip}:{PORT}")
+    else:
+        print("  (LAN IP unknown — Windows firewall may block phone access; "
+              "allow python.exe through, Private networks)")
+    srv.serve_forever()
