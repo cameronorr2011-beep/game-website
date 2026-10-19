@@ -1,6 +1,7 @@
 package com.neuroml.app;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -44,6 +45,9 @@ public class DashboardActivity extends Activity {
     private TextView status;
     private WebView web;
     private int polls;
+    private boolean restartedOnce;
+    private Button restartBtn;
+    private LinearLayout root;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -54,7 +58,7 @@ public class DashboardActivity extends Activity {
     }
 
     private android.view.View buildStatusScreen() {
-        LinearLayout root = new LinearLayout(this);
+        root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
         root.setPadding(48, 72, 48, 48);
@@ -104,12 +108,37 @@ public class DashboardActivity extends Activity {
                 runOnUiThread(() -> status.setText(
                         "⏳ brain is not fully up yet" + (d.isEmpty() ? "" : "\n" + d)
                         + "\n\nfirst start unzips torch — can take a minute\nkeep this screen open"));
-            } else if (polls > 3) {   // no server at all
+            } else if (polls > 3) {   // no server at all — WAITING can never
+                // end by itself here: only MainActivity's toggle starts the
+                // brain, so give the user a direct action instead of spinning.
+                final boolean brainSaysOn = getSharedPreferences("nml", MODE_PRIVATE)
+                        .getBoolean("brain_running", false);
                 final String err = getSharedPreferences("nml", MODE_PRIVATE)
                         .getString("brain_error", "");
-                runOnUiThread(() -> status.setText(err.isEmpty()
-                        ? "⏳ starting the brain…\n(first start unzips torch — can take a minute)\nsit tight — this screen switches to the dashboard on its own"
-                        : "✖ last brain error:\n" + err + "\n\nToggle 🧠 BRAIN ON again to restart it."));
+                runOnUiThread(() -> {
+                    if (!brainSaysOn && err.isEmpty()) {
+                        status.setText("🧠 the brain is OFF — nothing is playing.\nTap below to go start it (toggle ON once):"
+                                + "\n\nthen return here — the dashboard loads by itself.");
+                        if (restartBtn == null) {
+                            restartBtn = new Button(this);
+                            restartBtn.setText("🧠 Start it (open the switch screen)");
+                            restartBtn.setAllCaps(false);
+                            root.addView(restartBtn);
+                            restartBtn.setOnClickListener(v ->
+                                    startActivity(new Intent(this, MainActivity.class)));
+                        }
+                    } else {
+                        status.setText(err.isEmpty()
+                                ? "⏳ starting the brain…\n(first start unzips torch — can take a minute)\nkeeping watch — this screen switches when it's live"
+                                : "✖ last brain error:\n" + err + "\n\nToggle 🧠 BRAIN OFF and ON again to restart it.");
+                        // self-heal: the prefs say ON but the server never came
+                        // up after a process kill — give BrainService one nudge.
+                        if (brainSaysOn && polls > 20 && !restartedOnce) {
+                            restartedOnce = true;
+                            startForegroundService(new Intent(this, BrainService.class));
+                        }
+                    }
+                });
             }
             try { Thread.sleep(700); } catch (InterruptedException e) { return; }
         }

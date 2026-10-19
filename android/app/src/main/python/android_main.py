@@ -79,6 +79,30 @@ def run(files_dir, ctx):
             d["detail"] = _STATE["detail"]
         return d
 
+    def _lan_ip():
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return ""
+
+    dashboard.LAN_URL = f"http://{_lan_ip()}:8765" if _lan_ip() else ""
+
+    def _android_health():
+        if _STATE["phase"] == "running":
+            return {"bot": True, "device": "this phone (screen capture)",
+                    "mem": "brain data on device",
+                    "lan": getattr(dashboard, "LAN_URL", "")}
+        d = {"bot": False, "device": "this phone", "mem": "brain data on device",
+             "lan": getattr(dashboard, "LAN_URL", "")}
+        if _STATE["detail"]:
+            d["detail"] = _STATE["detail"]
+        return d
+
     dashboard.health = _android_health
 
     def _serve():
@@ -86,7 +110,10 @@ def run(files_dir, ctx):
             threading.Thread(target=dashboard._auto_refresher, daemon=True).start()
             from http.server import ThreadingHTTPServer
             try:
-                httpd = ThreadingHTTPServer(("127.0.0.1", dashboard.PORT), dashboard.H)
+                # 0.0.0.0 so the dashboard is ALSO reachable from any PC on the
+                # same Wi-Fi — the phone screen is tiny; the user asked to view
+                # it on the desktop too ("give localhost too").
+                httpd = ThreadingHTTPServer(("0.0.0.0", dashboard.PORT), dashboard.H)
             except OSError as e:
                 if getattr(e, "errno", None) == 98:  # EADDRINUSE
                     _log("dashboard already serving in this process — reusing it")
@@ -98,7 +125,9 @@ def run(files_dir, ctx):
             _fail(f"dashboard server failed: {e!r}")
 
     threading.Thread(target=_serve, daemon=True, name="neuroml-dashboard").start()
-    _log("dashboard server up on 127.0.0.1:8765 (waiting for capture grant…)")
+    lan = getattr(dashboard, "LAN_URL", "")
+    _log("dashboard up: " + (f"{lan} (from any PC on the Wi-Fi)" if lan else "")
+         + " · http://127.0.0.1:8765 on this phone")
 
     # ---- wait for the screen-capture grant ---------------------------------
     end = time.time() + 90.0
