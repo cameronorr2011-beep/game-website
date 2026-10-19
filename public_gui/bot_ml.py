@@ -131,27 +131,135 @@ CARD_COUNTERS = {
 }
 
 
-def select_counter_card(enemy_archetype_or_card, hand_deck, affordable_slots, threat_lane=None):
-    """Given an observed/inferred opponent threat or card and our current hand,
-    return {'slot': int, 'card': str, 'counter_to': str, 'recommended_spot': str}
-    or None if no specific counter is held and affordable."""
-    info = CARD_COUNTERS.get(str(enemy_archetype_or_card or "").lower())
-    if not info or not hand_deck:
-        return None
-    wanted = info.get("counters", [])
-    for pref in wanted:
-        for slot_i, c_name in enumerate(hand_deck[:4]):
-            if str(c_name).lower() == pref and (affordable_slots is None or slot_i in affordable_slots):
-                spot = info.get("preferred_spot", "center_back")
-                if threat_lane in ("left", "right") and spot in ("left_defend", "right_defend"):
-                    spot = f"{threat_lane}_defend"
-                return {
-                    "slot": slot_i,
-                    "card": str(c_name).lower(),
-                    "counter_to": str(enemy_archetype_or_card).lower(),
-                    "recommended_spot": spot,
-                }
-    return None
+def score_counter_candidates(enemy_card, hand_deck, afford, active_deck=None,
+                             threat_lane=None, towers=None, arena=None,
+                             mlxir=None, opponent=None):
+    """Matchup-conditioned candidate scoring (hotfix: deck-aware counters).
+
+    The CARD_COUNTERS matrix is PRIOR knowledge only. Its suggestions are
+    FILTERED and RESCORED against live reality before any candidate can be
+    selected:
+      * verified hand-slot identity (a slot we can't read is not playable),
+      * the ACTIVE eight-card deck (counter matrix names like minipekka vs
+        giant are just ideas if the deck doesn't carry that card),
+      * real affordability (tristate afford: >=0.9 verified),
+      * the current tactical situation: threat lane geometry, tower health,
+        elixir, enemy support troops behind a tank, and distractions already
+        available in the hand.
+
+    Returns (candidates, rejected):
+      candidates  – scored dicts sorted best-first, ALL playable NOW
+      rejected    – dicts {card, reason, detail} with machine-readable
+                    reasons for the decision log:
+                    NOT_IN_ACTIVE_DECK / NOT_IN_HAND / INSUFFICIENT_ELIXIR /
+                    INVALID_TARGET / LOW_EXPECTED_VALUE
+    """
+    enemy = _card_idx.normalize_card(str(enemy_card or ""))
+    info = CARD_COUNTERS.get(enemy, {})
+    priors = info.get("counters", [])
+    threat_role = info.get("role", "support")
+    cards, rejected = [], []
+
+    tower_low = None
+    if towers:
+        alives = {k: float(towers.get(k, 1.0) or 0.0)
+                  for k in ("ally_left", "ally_right", "ally_king")}
+        low_hp = [v for k, v in alives.items() if v > 0.03]
+        tower_low = min(low_hp) if low_hp else 1.0
+    enemy_support = bool(arena and (int(arena.get("enemy_left", 0)) +
+                                    int(arena.get("enemy_right", 0))) >= 8)
+    distractions = ["ice_golem", "ice_spirit", "skeletons", "skeleton_barrel"]
+
+    def base_score(cname, cost):
+        """Prior rank from the knowledge base, deck-relative fallback for the
+        rest of our own cards; the situation layer then adjusts it."""
+        if cname in priors:
+            rank = priors.index(cname)
+            return 3.0 - 0.6 * rank          # best prior wins the start
+        # our own card vs threat: cheap swarm beats nothing, but a building or
+        # ranged support scores above an unused win-condition sitting in hand
+        inf = _card_idx.info(cname)
+        role = inf.get("role", "support")
+        if threat_role in ("tank", "win_condition"):
+            return 1.0 if inf.get("role") in ("building", "support") else 0.3
+        return 0.8 if role in ("support", "troop") else 0.4
+
+    for slot_i, raw in enumerate((hand_deck or [])[:4]):
+        cname = _card_idx.normalize_card(str(raw or ""))
+        if not cname or cname in ("unknown_card_xyz",) or not _card_idx.info(cname):
+            if raw:
+                rejected.append({"card": str(raw), "reason": "NOT_IN_HAND",
+                                 "detail": "slot identity unverified — never authorize"})
+            else:
+                rejected.append({"card": f"slot{slot_i}", "reason": "NOT_IN_HAND",
+                                 "detail": "no verified identity in this slot"})
+            continue
+        if active_deck is not None and cname not in [str(c) for c in active_deck]:
+            rejected.append({"card": cname, "reason": "NOT_IN_ACTIVE_DECK",
+                            "detail": f"counter matrix idea, but {cname} is not "
+                                      "in the active deck — not playable"})
+            continue
+        verified = afford is None or (slot_i < len(afford) and afford[slot_i] >= 0.9)
+        if not verified:
+            aff_val = afford[slot_i] if afford is not None and slot_i < len(afford) else None
+            rejected.append({"card": cname,
+                            "reason": "INSUFFICIENT_ELIXIR",
+                             "detail": (f"slot {slot_i} afford={aff_val} not "
+                                        "verified affordable (>0.9)")})
+            continue
+        cost = _card_idx.cost(cname, strict=False)
+        s = base_score(cname, cost)
+        # situational layer (only measurable evidence moves the score)
+        if cname in ("cannon", "tesla") and threat_role in ("tank", "win_condition"):
+            s += 0.8                          # buildings soak+hits big pushes
+        if cname in ("musketeer", "fireball") and enemy_support:
+            s += 0.6                          # ranged value vs support behind the tank
+        if cname in distractions:
+            s += 0.4                          # a distraction is available in hand
+        if tower_low is not None and tower_low < 0.4 and cost is not None:
+            s += max(0.0, (3 - float(cost)) * 0.25)   # emergency: cheap defends
+        if mlxir is not None and cost is not None and float(cost) > float(mlxir) + 0.5:
+            s -= 1.0                          # can't support it for long
+        if s < 0.35:
+            rejected.append({"card": cname, "reason": "LOW_EXPECTED_VALUE",
+                             "detail": f"scored {round(s, 2)} below the play bar"})
+            continue
+        spot = info.get("preferred_spot", "center_back")
+        if threat_lane in ("left", "right") and spot in ("left_defend", "right_defend"):
+            spot = f"{threat_lane}_defend"
+        prior_note = (f"prior rank {priors.index(cname) + 1}"
+                      if cname in priors else "deck fallback")
+        lane_note = f" lane={threat_lane}" if threat_lane in ("left", "right") else ""
+        cards.append({
+            "slot": slot_i, "card": cname, "counter_to": enemy,
+            "recommended_spot": spot, "score": round(min(s, 4.0), 3),
+            "cost": cost,
+            "evidence": prior_note + lane_note,
+        })
+    cards.sort(key=lambda c: c["score"], reverse=True)
+    return cards, rejected
+
+
+def select_counter_card(enemy_archetype_or_card, hand_deck, affordable_slots,
+                        threat_lane=None, active_deck=None, towers=None,
+                        arena=None, mlxir=None, opponent=None):
+    """Legacy single-pick wrapper around matchup-conditioned scoring.
+    Returns the top candidate {'slot', 'card', 'counter_to',
+    'recommended_spot', 'score', 'cost', 'evidence'} only when that card is
+    verified-in-hand, in the active deck, and affordable; otherwise None.
+    Rejected ideas (machine-readable reasons) land in
+    _metrics["counter_rejections"] for the decision log."""
+    cards, rejected = score_counter_candidates(
+        enemy_archetype_or_card, hand_deck, affordable_slots,
+        active_deck=active_deck, threat_lane=threat_lane, towers=towers,
+        arena=arena, mlxir=mlxir, opponent=opponent)
+    try:
+        ring = _metrics.setdefault("counter_rejections", [])
+        ring.extend(rejected)
+        _metrics["counter_rejections"] = ring[-30:]
+    except Exception:
+        pass
+    return dict(cards[0]) if cards else None
 
 STATE_DIM = 38
 ACTION_DIM = 20
@@ -935,13 +1043,45 @@ def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, fini
     # RULE 5: buildings go at the center to pull pushes, never at the bridge
     if role == "building" and spot_n.startswith("bridge"):
         return slot * 5 + 4, "building pulls center"
-    # RULE 6: opponent card-counter intelligence under active lane threat
+    # RULE 6: opponent card-counter intelligence under active lane threat.
+    # Hotfix (deck-aware counters): the comparison runs through the
+    # matchup-conditioned scorer which filters to the ACTIVE deck and the
+    # VERIFIED hand, and a STALE archetype label (>8s old, i.e. the push is
+    # gone) may never redirect the play — the current live situation wins.
     if lane and opponent and opponent.get("last_inferred_card"):
-        aff_slots = [i for i in range(min(4, len(afford))) if afford[i] >= 0.9]
-        cnt = select_counter_card(opponent["last_inferred_card"], hand_deck, aff_slots, threat_lane=lane)
-        if cnt and cnt["slot"] != slot and role not in ("building", "spell"):
-            c_spot_idx = SPOT_TO_ACTION.get(cnt["recommended_spot"], 4)
-            return cnt["slot"] * 5 + c_spot_idx, f"counter {cnt['card']} vs {cnt['counter_to']}"
+        event_t = opponent.get("last_event_t")
+        fresh = event_t is None or (time.time() - float(event_t)) <= 8.0
+        if not fresh:
+            _metrics.setdefault("counter_rejections", []).append(
+                {"card": str(opponent.get("last_inferred_card")),
+                 "reason": "STALE_THREAT",
+                 "detail": "push older than 8s — live position governs, not the "
+                           "archetype label"})
+        else:
+            aff_slots = [i for i in range(min(4, len(afford))) if afford[i] >= 0.9]
+            _active = None
+            try:
+                _active = _deck_state.load_active().get("deck")
+            except Exception:
+                _active = None            # deck read failure never blocks play
+            cnt = select_counter_card(opponent["last_inferred_card"], hand_deck,
+                                      aff_slots, threat_lane=lane,
+                                      active_deck=_active, towers=towers,
+                                      arena=arena, mlxir=mlxir, opponent=opponent)
+            if cnt and cnt["slot"] != slot and role not in ("building", "spell"):
+                # final-legality double-check: the correction must remain a
+                # real, playable action (verified slot + in-hand card)
+                okf, whyf = validate_final_action(cnt["slot"] * 5 +
+                                                  SPOT_TO_ACTION.get(cnt["recommended_spot"], 4),
+                                                  hand_deck, afford)
+                if okf:
+                    c_spot_idx = SPOT_TO_ACTION.get(cnt["recommended_spot"], 4)
+                    return cnt["slot"] * 5 + c_spot_idx, \
+                        f"counter {cnt['card']} vs {cnt['counter_to']} (score {cnt.get('score')})"
+                else:
+                    _metrics.setdefault("counter_rejections", []).append(
+                        {"card": cnt["card"], "reason": "INVALID_TARGET",
+                         "detail": f"correction failed final legality: {whyf}"})
     return action, "net"
 
 
@@ -1049,8 +1189,14 @@ def opponent_new_match():
         "cards_played": [],
         "inferred_archetypes": [],
         "last_inferred_card": None,
+        "last_event_t": None,
+        "event_seq": 0,
         "last_push_cost_est": None,
         "elixir_spent": 0,
+        "elixir_spent_known": 0,     # verified plays only (0 until real enemy-card recognition)
+        "elixir_spent_est": 0,       # mass-classified estimates
+        "dominant_archetype": None,
+        "dominant_ratio": 0.0,
         "pushes": [],
         "start": time.time(),
     }
@@ -1078,18 +1224,56 @@ def opponent_observe(opp, arena_prev, arena_now, towers_prev, towers_now):
             seen_sides[side] = False
         if not seen_sides.get(side) and now_n >= 6 and prev_n < max(3, now_n // 2):
             if now_n >= 16:
-                inferred, est_cost = "giant", 5.0
+                inferred, legacy_cost = "giant", 5.0
             elif bridge_n >= 5:
-                inferred, est_cost = "hogrider", 4.0
+                inferred, legacy_cost = "hogrider", 4.0
             else:
-                inferred, est_cost = "knight", 3.0
+                inferred, legacy_cost = "knight", 3.0
             seen_sides[side] = True
-            opp["pushes"].append({"side": side, "size": now_n, "inferred": inferred, "tick": time.time()})
+            # One event = verified cost from the canonical card DB when the
+            # archetype maps to a real card, else the conservative estimate.
+            # Every deployment gets a UNIQUE event id so downstream consumers
+            # (policy feed, spell ledger counter-checks, dashboard) can never
+            # double-count or mis-attribute the same push, and each event is
+            # honestly labeled: current vision classifies push MASS, not the
+            # actual enemy card — so source is "inferred" ("observed" is
+            # reserved for future card-template recognition).
+            cost_est = _card_idx.cost(inferred, strict=False)
+            if cost_est is None:
+                cost_est = legacy_cost
+            opp["event_seq"] = int(opp.get("event_seq", 0)) + 1
+            event = {
+                "uid": f"p{int(opp.get('event_seq'))}",
+                "t": time.time(),
+                "side": side, "size": now_n,
+                "card": inferred,
+                "confidence": "low" if now_n < 16 else "medium",
+                "source": "inferred",        # vision cannot yet READ the card
+                "cost_est": float(cost_est),
+                "cost_verified": None,       # set when real recognition exists
+            }
+            opp["pushes"].append(event)
             opp["cards_played"].append(inferred)
             opp.setdefault("inferred_archetypes", []).append(inferred)
             opp["last_inferred_card"] = inferred
-            opp["last_push_cost_est"] = est_cost
-            opp["elixir_spent"] += int(est_cost)
+            opp["last_event_t"] = time.time()
+            opp["last_push_cost_est"] = cost_est
+            # elixir accounting: split KNOWN (verified plays — none until real
+            # enemy-card recognition exists) from ESTIMATED (mass-derived)
+            opp["elixir_spent_est"] = round(float(opp.get("elixir_spent_est", 0))
+                                            + float(cost_est), 2)
+            opp["elixir_spent"] = round(float(opp.get("elixir_spent", 0))
+                                        + float(cost_est), 2)
+            # repeated-strategy signal for the policy feed (P3 #6)
+            counts = {}
+            for c_name in opp.get("inferred_archetypes", [])[-12:]:
+                counts[c_name] = counts.get(c_name, 0) + 1
+            dom = max(counts.values()) if counts else 0
+            opp["dominant_archetype"] = (max(counts, key=counts.get)
+                                         if counts else None)
+            # observed predominance: one repeated strategy fully dominates;
+            # the ratio is share-of-events, NOT a stale archetype label
+            opp["dominant_ratio"] = round(dom / max(1, len(opp.get("inferred_archetypes", []))), 2)
     if e_now - e_prev >= 5 and not opp.get("last_push_cost_est"):
         if opp.get("last_inferred_card") == "musketeer" and \
            (time.time() - (opp.get("last_musk_note") or opp.get("start", time.time()))) < 6:
@@ -1694,7 +1878,14 @@ class SpikingAgent:
                 "prediction_err": baseline_unc * 0.6,
                 "mentor_conflict": _metrics.get("mentor_conflict_sig", 0.0),
                 "forecast": forecast_q,
-                "opponent_pattern": min(1.0, (_metrics.get("opponent_memory", {}).get("this_match_pushes", 0)) * 0.2),
+                # repeated-strategy encoding (hotfix P3 #6): the feature is
+                # NOT the stale archetype label — it combines push COUNT
+                # (pressure) with the DOMINANCE of one repeated strategy so
+                # the policy is shaped by the observed trend while a
+                # surprise switch is always allowed to re-form it.
+                "opponent_pattern": min(1.0,
+                    (_metrics.get("opponent_memory", {}).get("this_match_pushes", 0)) * 0.15
+                    + 0.25 * (_metrics.get("opponent_memory", {}).get("dominant_ratio", 0.0))),
             })
             if reward < -0.4:
                 self.affect.inject("frustration", min(0.25, abs(reward) * 0.08))
@@ -3362,7 +3553,17 @@ def main():
                     "affordable_slots": affordable_slots,
                     "opponent_cards_seen": (opponent.get("cards_played", [])[-8:] if opponent else []),
                     "opponent_last_inferred": (opponent.get("last_inferred_card") if opponent else None),
+                    "opponent_event_ids": ([p.get("uid") for p in opponent.get("pushes", [])][-8:]
+                                           if opponent else []),
+                    "opponent_last_event_t": (opponent.get("last_event_t") if opponent else None),
+                    "dominant_archetype": (opponent.get("dominant_archetype") if opponent else None),
+                    "dominant_ratio": (opponent.get("dominant_ratio", 0.0) if opponent else 0.0),
+                    # elixir accounting with the known/estimated split made
+                    # explicit: KNOWN = verified card plays (0 until real enemy
+                    # card recognition exists), EST = archetype-mass estimate
+                    "opponent_elixir_known": (opponent.get("elixir_spent_known", 0) if opponent else 0),
                     "opponent_elixir_est": (opponent.get("elixir_spent", 0) if opponent else 0),
+                    "counter_rejections": _metrics.get("counter_rejections", [])[-10:],
                     "meta_fetched_at": _meta_info.get("fetched_at", "unknown"),
                     "meta_stale_days": meta_stale_days(),
                     "meta_refresh_policy_days": META_REFRESH_DAYS,

@@ -28,6 +28,7 @@ MIRRORED = [
     "dashboard.py",
     "eval_scenarios.py",
     "test_opponent_read.py",
+    "test_counter_adaptation.py",
 ]
 
 
