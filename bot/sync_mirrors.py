@@ -25,6 +25,7 @@ MIRRORED = [
     "brain_xl.py",
     "decision_log.py",
     "referee.py",
+    "dashboard.py",
     "eval_scenarios.py",
     "test_opponent_read.py",
 ]

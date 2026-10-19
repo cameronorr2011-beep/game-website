@@ -238,7 +238,8 @@ mirror_ok = True
 mirror_detail = []
 for f in ["bot_ml.py", "cards_v2.json", "card_index.py", "deck_state.py",
           "hand_tracker.py", "spell_ledger.py", "affect.py", "brain_xl.py",
-          "decision_log.py", "referee.py"]:
+          "decision_log.py", "referee.py", "dashboard.py",
+          "eval_scenarios.py", "test_opponent_read.py"]:
     bot_path = os.path.join(HERE, f)
     gui_path = os.path.join(HERE, "..", "public_gui", f)
     if not os.path.exists(gui_path):
