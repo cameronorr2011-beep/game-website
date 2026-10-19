@@ -160,6 +160,12 @@ public class MainActivity extends Activity {
 
     /** Toggle ON or returning from a permission grant: run what's missing, in order. */
     private void proceedToRun() {
+        // Already running? Just show the dashboard instead of re-running the chain
+        // (double-toggle was what poisoned the state on older builds).
+        if (getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("brain_running", false)) {
+            startActivity(new Intent(this, DashboardActivity.class));
+            return;
+        }
         if (!captureReady()) {
             status.setText(" Android needs your one-time OK to see the screen…");
             requestCapture();
@@ -212,6 +218,10 @@ public class MainActivity extends Activity {
                 != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 3);
         }
+        // The brain only needs the GAME, not the user's other apps. The consent
+        // dialog lets the user hand over a single app window — guide them to
+        // exactly that (the public API can't force app-only without user choice).
+        status.setText("In the consent dialog, tap  🎯 App window  →  choose  Clash Royale.\nDo NOT pick the whole screen — the bot only needs the game.");
         MediaProjectionManager mgr =
                 (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(mgr.createScreenCaptureIntent(), PROJECTION_REQ);
@@ -239,8 +249,8 @@ public class MainActivity extends Activity {
             proceedToRun();
             return;
         }
-        if (attempt > 20) {
-            status.setText("Capture is taking long — tap BRAIN again in a moment");
+        if (attempt > 60) {   // ~36 s — cold :brain process start can be slow
+            status.setText("Capture is taking long — toggle 🧠 BRAIN OFF and ON again, and pick 🎯 App window → Clash Royale this time");
             return;
         }
         new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
