@@ -16,3 +16,4 @@ android/app/src/main/assets/neuroml/cards.json
 android/app/src/main/assets/neuroml/my_deck.json
 android/app/src/main/assets/neuroml/meta_decks.json
 electron_app/node_modules/
+__pycache__/
