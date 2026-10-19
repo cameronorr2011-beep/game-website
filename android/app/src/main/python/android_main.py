@@ -144,7 +144,20 @@ def run(files_dir, ctx):
 
     def _bridge_sh(*args, timeout=25, **kw):
         # on the desktop this ran `adb -s DEV ...`; on the phone both directions
-        # (screencap + input tap) are native bridge calls, other probes are no-ops
+        # (screencap + input tap) are native bridge calls. One probe MUST work
+        # for real: `shell dumpsys window` — bot_ml.foreground_app() uses it for
+        # the "user opened Clash" gate. Apps can't run dumpsys, but the tap
+        # accessibility service (in THIS process) sees every
+        # TYPE_WINDOW_STATE_CHANGED broadcast, so we synthesize the exact two
+        # lines foreground_app() parses from the service's tracked package.
+        joined = " ".join(str(a) for a in args)
+        if "dumpsys" in joined and "window" in joined:
+            pkg = (TapAccessibilityService.foregroundPackage() or "").strip()
+            if pkg:
+                fake = (f"  mCurrentFocus=Window{{3a1b2c u0 {pkg}/com.activity}}\n"
+                        f"  mFocusedApp=ActivityRecord{{1d2e3f u0 {pkg}/com.activity t42}}\n")
+                return SimpleNamespace(stdout=fake.encode(), stderr=b"", returncode=0)
+            return SimpleNamespace(stdout=b"", stderr=b"", returncode=1)  # "unknown"
         _log(f"sh(neutralized on device): {args!r}")
         return SimpleNamespace(stdout=b"", stderr=b"", returncode=0)
 
