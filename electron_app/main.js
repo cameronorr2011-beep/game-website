@@ -12,6 +12,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const { spawn, execFile } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
 const https = require("https");
 
 const RELEASE_ROOT = "https://github.com/cameronorr2011-beep/game-website";
@@ -142,22 +143,30 @@ async function ensureAdb() {
 }
 
 function copyBotCode() {
-  // Like updater.py: code is refreshed, memory/weights/logs are NEVER touched.
+  // Like updater.py: three classes of files —
+  //  USER_KEEP   memory/weights/logs/config the bot WRITES → never copied
+  //  SEED_ONCE   shipped data defaults (cards etc.) → copied only if missing
+  //  everything else (code) → refreshed every launch
+  // Sketching SEED files as user data broke fresh installs (cards.json was
+  // skipped → the brain crashed instantly on startup).
   send("code", "Syncing brain code (weights and memory untouched)…", 48);
   fs.mkdirSync(neuromlDir(), { recursive: true });
-  const KEEP = [
+  const USER_KEEP = new Set([
     "ml_policy.pt", "ml_target.pt", "ml_replay.json", "spiking_brain.json",
     "ml_metrics.json", "bot.log", "training.log", "ai_coach.jsonl", "mentor.log",
-    "groq_key.txt", "bot_config.json", "my_deck.json", "cards.json",
-    "meta_decks.json", "federated_package.pt", "federated_incoming",
+    "groq_key.txt", "bot_config.json", "my_deck.json",
+    "federated_package.pt", "federated_incoming",
     "federated_seed_ledger.json", "federated_outbox.json",
-  ];
-  const keep = (f) => KEEP.includes(f) || f.startsWith(".update_backups");
+    "game_memory.json", "opponent_memory.json", "dash_errors.log",
+  ]);
+  const SEED_ONCE = new Set(["cards.json", "meta_decks.json"]);
   for (const f of fs.readdirSync(adapterSrc())) {
-    if (keep(f)) continue;
     const src = path.join(adapterSrc(), f);
     if (!fs.statSync(src).isFile()) continue;
-    fs.copyFileSync(src, path.join(neuromlDir(), f));
+    const dst = path.join(neuromlDir(), f);
+    if (USER_KEEP.has(f) || f.startsWith(".update_backups")) continue;
+    if (SEED_ONCE.has(f) && fs.existsSync(dst)) continue;
+    fs.copyFileSync(src, dst);
   }
 }
 
@@ -183,12 +192,30 @@ function startBrain(dev) {
   botProc.on("exit", (c) => send("brain", `brain process exited (code ${c})`, 100));
 }
 
+function pingDashboard(url = "http://127.0.0.1:8765/api/health") {
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout: 4000 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
 async function showDashboard(dev) {
   send("brain", "Starting the brain…", 96);
   startBrain(dev);
-  setTimeout(() => {
-    if (win && !win.isDestroyed()) win.loadURL("http://127.0.0.1:8765");
-  }, 2600);
+  // Wait until the dashboard server is ACTUALLY listening before loading it —
+  // loading too early shows the user a dead-localhost error page.
+  for (let i = 0; i < 100; i++) {
+    if (await pingDashboard()) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (win && !win.isDestroyed()) win.loadURL("http://127.0.0.1:8765");
 }
 
 // Floating ⏹/▶ control so the bot can always be turned OFF from the app window.
