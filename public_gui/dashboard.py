@@ -396,7 +396,7 @@ try{
  const h=await(await fetch('/health')).json();
  memviz.textContent=h.mem||'';
 }catch(e){}}
-setInterval(poll,1500);poll();
+setInterval(()=>{if(!document.hidden)poll()},1500);poll();
 setInterval(mem,5000);mem();
 </script></body></html>"""
 
@@ -466,6 +466,11 @@ def coach():
 _shot_lock = threading.Lock()
 _shot_cache = {"jpg": None, "t": 0, "vision": None}
 _refresh_thread = [None]
+_last_viewer = [0.0]          # last time /vision, /shot or the page was touched
+
+
+def _note_viewer():
+    _last_viewer[0] = time.time()
 
 
 def _refresh_background():
@@ -528,12 +533,29 @@ def _screencap(retries=1):
 
 
 def _auto_refresher():
-    """Continuously refresh the frame cache in the background (~every 2.3s) so
-    the phone panel is ALWAYS current — polling never has to wait for a
-    screencap, which is what made localhost feel 'perpetually loading'."""
+    """Continuously refresh the frame cache in the background so the phone panel
+    is ALWAYS current. The old loop slept 2.3s AFTER a ~2-3s capture, so a new
+    frame landed only every ~5s and the panel showed a ~2-5s-old phone screen
+    (the reported 'really delayed'). Now:
+      * the cycle targets ~1.8s wall-clock (sleep shrinks by the capture time),
+      * captures PAUSE when nobody has viewed /vision or /shot for 6s, so the
+        dashboard never contends with the bot's own adb screencaps while
+        idle, and
+      * failed captures back off 2.5s instead of spinning hot."""
+    fail_streak = 0
     while True:
+        idle = time.time() - _last_viewer[0]
+        if idle > 6:
+            time.sleep(min(2.0, idle))
+            continue
+        t0 = time.time()
         _refresh_background()
-        time.sleep(2.3)
+        dt = time.time() - t0
+        if dt >= 11.5:                      # screencap timed out (12s) → failed
+            fail_streak += 1
+        else:
+            fail_streak = 0
+        time.sleep(0.2 if fail_streak else max(0.05, 1.8 - dt))
 
 
 def shot(force=False):
@@ -668,8 +690,10 @@ class H(BaseHTTPRequestHandler):
         elif path == "/coach":
             self._send(coach().encode(), "application/json")
         elif path == "/shot":
+            _note_viewer()
             self._send(shot(), "image/jpeg")
         elif path == "/vision":
+            _note_viewer()
             fresh = "fresh=1" in (self.path or "")
             self._send(vision_bytes(force=fresh), "image/jpeg")
         elif path == "/health":
