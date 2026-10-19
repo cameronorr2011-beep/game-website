@@ -255,9 +255,9 @@ public class MainActivity extends Activity {
     private void startUpdateCheck() {
         new Thread(() -> {
             try {
-                String v = readUrl("https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-version.txt");
-                if (v != null) v = v.trim();
-                String mine = getPackageManager()
+                String raw = readUrl("https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-version.txt");
+                final String v = raw == null ? null : raw.trim();
+                final String mine = getPackageManager()
                         .getPackageInfo(getPackageName(), 0).versionName;
                 if (v != null && !v.isEmpty() && !v.equals(mine)
                         && versionValue(v) > versionValue(mine)) {
@@ -281,12 +281,17 @@ public class MainActivity extends Activity {
     }
 
     private static String readUrl(String spec) {
-        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(spec).openConnection();
-        c.setConnectTimeout(4000);
-        c.setReadTimeout(6000);
-        c.setInstanceFollowRedirects(true);
-        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream()));
-        return r.readLine();
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(spec).openConnection();
+            c.setConnectTimeout(4000);
+            c.setReadTimeout(6000);
+            c.setInstanceFollowRedirects(true);
+            try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream()))) {
+                return r.readLine();
+            }
+        } catch (java.io.IOException e) {
+            return null;
+        }
     }
 
     private void installUpdate() {
