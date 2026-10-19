@@ -192,7 +192,7 @@ function startBrain(dev) {
   botProc.on("exit", (c) => send("brain", `brain process exited (code ${c})`, 100));
 }
 
-function pingDashboard(url = "http://127.0.0.1:8765/api/health") {
+function pingDashboard(url = "http://127.0.0.1:8765/health") {
   return new Promise((resolve) => {
     const req = http.get(url, { timeout: 4000 }, (res) => {
       res.resume();

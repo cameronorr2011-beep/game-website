@@ -46,6 +46,9 @@ def run(files_dir, ctx):
     then runs the brain loop."""
     global _CTX
     _CTX = ctx
+    if _STATE["phase"] == "running":
+        _log("run() called again while already running — reusing the live brain")
+        return "running"   # toggling twice must not spawn a second loop/port bind
     os.chdir(files_dir)  # relative paths (bot.log, cr_bot/, cards.json, *.pt)
     BRAIN_STATE["started"] = True
     _STATE["phase"] = "waiting_capture"
@@ -82,7 +85,14 @@ def run(files_dir, ctx):
         try:
             threading.Thread(target=dashboard._auto_refresher, daemon=True).start()
             from http.server import ThreadingHTTPServer
-            ThreadingHTTPServer(("127.0.0.1", dashboard.PORT), dashboard.H).serve_forever()
+            try:
+                httpd = ThreadingHTTPServer(("127.0.0.1", dashboard.PORT), dashboard.H)
+            except OSError as e:
+                if getattr(e, "errno", None) == 98:  # EADDRINUSE
+                    _log("dashboard already serving in this process — reusing it")
+                    return
+                raise
+            httpd.serve_forever()
         except Exception as e:
             _log(f"dashboard problem: {e!r}")
             _fail(f"dashboard server failed: {e!r}")

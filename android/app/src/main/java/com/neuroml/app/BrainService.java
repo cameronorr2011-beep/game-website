@@ -30,9 +30,14 @@ public class BrainService extends Service {
      *  fields do NOT cross process boundaries. */
     public static volatile String pythonCrashed;
 
-    /** Called from android_main on any failure: honest OFF + reason for the UI. */
+    /** Called from android_main on any failure: honest OFF + reason for the UI.
+     *  A real failure also retires the capture session — its MediaProjection
+     *  token died with whatever crashed, so keeping capture_ready=true would
+     *  make the NEXT toggle skip the grant dialog and hang on a dead capture. */
     public static void reportError(Context c, String msg) {
         pythonCrashed = msg;
+        if (msg != null) c.getSharedPreferences("nml", Context.MODE_PRIVATE)
+                .edit().putBoolean("capture_ready", false).apply();
         c.getSharedPreferences("nml", Context.MODE_PRIVATE).edit()
                 .putString("brain_error", msg == null ? "" : msg)
                 .putBoolean("brain_running", msg == null).apply();
@@ -80,7 +85,11 @@ public class BrainService extends Service {
                 // failures straight into the shared prefs we agreed on
                 Object res = mod.callAttr("run", filesDir.getAbsolutePath(), BrainService.this);
                 if (res != null && !"running".equals(res.toString())) {
-                    setRunning(false);   // android_main already called reportError
+                    // android_main already called reportError — now tear the
+                    // :brain process down so the next toggle starts fresh
+                    // (no zombie python threads holding ports and state).
+                    stopSelf();
+                    hardExitPython();
                 }
             } catch (Exception e) {
                 android.util.Log.e("NeuroML", "brain crashed: " + e, e);
