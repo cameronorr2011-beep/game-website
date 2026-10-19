@@ -725,6 +725,16 @@ SPELL_FINISH_MIN_DAMAGE = 0.18     # spell must cover at least ~18% of tower HP
 ENEMY_TOWER_XY = {"left": (233, 470), "right": (845, 470)}
 
 
+def enemy_tower_xy(side, screen_w=1080, screen_h=2340):
+    """Resolution-aware enemy tower coordinates: the tuned constants are
+    fractions of the 1080-wide calibration screen, so OTHER portrait
+    resolutions scale instead of blindly reusing calibrated pixels.
+    (Mirror/camera-flip reversal is NOT detected yet — known limitation,
+    reported honestly by eval_scenarios scenario 6.)"""
+    fx, fy = ENEMY_TOWER_XY[side]
+    return (int(round(fx * screen_w / 1080.0)), int(round(fy * screen_h / 2340.0)))
+
+
 def physics_finisher(towers, hand_deck, mlxir, afford=None):
     """REAL PHYSICS targeting (deterministic): find the LOWEST-HP alive enemy
     tower and cast a held, affordable, VERIFIED spell whose canonical damage
@@ -1047,26 +1057,33 @@ def opponent_new_match():
 
 
 def opponent_observe(opp, arena_prev, arena_now, towers_prev, towers_now):
-    """Update the opponent model this match: it sees enemy troops crossing the
-    bridge (vision counts them), classifies wave density into likely card
-    archetypes (hogrider/bridge_spam, giant/beatdown, swarm/goblin_barrel), and
-    tracks estimated elixir committed only when a clear wave appears."""
+    """Update the opponent model this match. One REAL push = ONE logged event:
+    a push spans many vision ticks, so archetypes are logged (and only then)
+    when the lane's enemy mass first crosses the wave threshold, and NOT
+    again until that lane decays back below the detection floor. Previously
+    every qualifying tick appended another 'giant' — inflating the seen list
+    and over-counting estimated elixir (P2: no duplicate attribution)."""
     if not opp:
         return
     opp["last_push_cost_est"] = None
+    seen_sides = opp.setdefault("push_active_side", {})
     e_now = arena_now.get("enemy_left", 0) + arena_now.get("enemy_right", 0)
     e_prev = (arena_prev or {}).get("enemy_left", 0) + (arena_prev or {}).get("enemy_right", 0)
     for side in ("left", "right"):
         now_n = arena_now.get(f"enemy_{side}", 0)
         prev_n = (arena_prev or {}).get(f"enemy_{side}", 0)
         bridge_n = arena_now.get(f"enemy_bridge_{'l' if side == 'left' else 'r'}", 0)
-        if now_n >= 6 and prev_n < max(3, now_n // 2):
+        # lane went quiet → the current push ended; next crossing logs a new one
+        if seen_sides.get(side) and now_n < 3:
+            seen_sides[side] = False
+        if not seen_sides.get(side) and now_n >= 6 and prev_n < max(3, now_n // 2):
             if now_n >= 16:
                 inferred, est_cost = "giant", 5.0
             elif bridge_n >= 5:
                 inferred, est_cost = "hogrider", 4.0
             else:
                 inferred, est_cost = "knight", 3.0
+            seen_sides[side] = True
             opp["pushes"].append({"side": side, "size": now_n, "inferred": inferred, "tick": time.time()})
             opp["cards_played"].append(inferred)
             opp.setdefault("inferred_archetypes", []).append(inferred)
@@ -1074,12 +1091,17 @@ def opponent_observe(opp, arena_prev, arena_now, towers_prev, towers_now):
             opp["last_push_cost_est"] = est_cost
             opp["elixir_spent"] += int(est_cost)
     if e_now - e_prev >= 5 and not opp.get("last_push_cost_est"):
-        opp["cards_played"].append("musketeer")
-        opp["last_inferred_card"] = "musketeer"
+        if opp.get("last_inferred_card") == "musketeer" and \
+           (time.time() - (opp.get("last_musk_note") or opp.get("start", time.time()))) < 6:
+            pass                      # same wave re-seen on another tick: no duplicate
+        else:
+            opp["cards_played"].append("musketeer")
+            opp["last_inferred_card"] = "musketeer"
+            opp["last_musk_note"] = time.time()
     el = max(0.0, (towers_prev or {}).get("enemy_left", 1) - towers_now.get("enemy_left", 1))
     er = max(0.0, (towers_prev or {}).get("enemy_right", 1) - towers_now.get("enemy_right", 1))
     if el + er >= 0.08:
-        opp["elixir_spent"] += 2
+        opp["elixir_spent"] += 2      # ESTIMATE: measured tower chip → conservative counter value
     return opp
 
 
@@ -1859,6 +1881,28 @@ class QNet(nn.Module):
         for i in range(1, depth + 1):
             setattr(self, f"cortex{i}", SynapticResBlock(W))
 
+        # ---- Temporal memory branch (default OFF; enabled via QNET_TEMPORAL=1) ----
+        # A small GRU reads a window of consecutive raw observations (oldest
+        # first) and produces a one-vector context ADDED to the cortical stream
+        # with a ZERO-INITIALIZED final Linear layer, so the very first forward
+        # with temporal enabled is bit-identical to the baseline network —
+        # learning then grows genuinely useful temporal signal from real
+        # episodes only. The branch is skipped entirely when no history is
+        # passed (phone builds, replay sampling): behavior and existing
+        # checkpoints are preserved with migration-safe fresh-init keys.
+        if _os.environ.get("QNET_TEMPORAL") == "1":
+            self.temporal = nn.GRU(STATE_DIM, 256, batch_first=True)
+            self.temporal_proj = nn.Sequential(
+                nn.Linear(256, wide // 4),
+                nn.SiLU(),
+                nn.Linear(wide // 4, wide),
+            )
+            nn.init.zeros_(self.temporal_proj[-1].weight)
+            nn.init.zeros_(self.temporal_proj[-1].bias)
+        else:
+            self.temporal = None
+            self.temporal_proj = None
+
         # Limbic State-Value stream V(s): wide -> wide//2 -> 1
         self.value_stream = nn.Sequential(
             nn.Linear(W, wide // 2),
@@ -1874,11 +1918,24 @@ class QNet(nn.Module):
             nn.Linear(wide // 2, ACTION_DIM),
         )
 
-    def forward_streams(self, x):
+    def _temporal_ctx(self, history):
+        """[T, STATE_DIM] window → [1, W] context (last GRU step, projected).
+        Zero-init final layer ⇒ bit-identical to baseline until training."""
+        hist = history.reshape(1, -1, STATE_DIM)
+        _, hn = self.temporal(hist)
+        return self.temporal_proj(hn[-1])          # [1, wide]
+
+    def forward_streams(self, x, history=None):
+        """History is the stacked window of past observation tensors as one
+        [T, STATE_DIM] tensor (oldest first). When no history is provided the
+        temporal branch is skipped COMPLETELY — identical to the baseline
+        network (phone, replay sampling, and unchanged checkpoints)."""
         single = x.dim() == 1
         if single:
             x = x.unsqueeze(0)
         h = self.sensory(x)
+        if history is not None and getattr(self, "temporal", None) is not None:
+            h = h + self._temporal_ctx(history).to(h.dtype)
         hides = []
         for i in range(1, self.depth + 1):
             h = getattr(self, f"cortex{i}")(h)
@@ -1893,8 +1950,8 @@ class QNet(nn.Module):
                     *[t.squeeze(0) for t in hides], v_hid.squeeze(0))
         return q, v, a, *hides, v_hid
 
-    def forward(self, x):
-        return self.forward_streams(x)[0]
+    def forward(self, x, history=None):
+        return self.forward_streams(x, history=history)[0]
 
 
 METRICS_FILE = "ml_metrics.json"
@@ -2040,7 +2097,13 @@ class TargetedDQN:
                 tries += 1
             return a
         with torch.no_grad():
-            q = self.policy(torch.tensor(state, dtype=torch.float32)).clone()
+            hist = None
+            if getattr(self.policy, "temporal", None) is not None:
+                self._obs_window = getattr(self, "_obs_window", [])
+                self._obs_window.append([float(v) for v in state])
+                self._obs_window = self._obs_window[-4:]
+                hist = torch.tensor(self._obs_window, dtype=torch.float32)
+            q = self.policy(torch.tensor(state, dtype=torch.float32), history=hist).clone()
             if forbidden:
                 for f in forbidden:
                     if f < ACTION_DIM:

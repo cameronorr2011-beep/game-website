@@ -34,83 +34,127 @@ CACHE_LOCK = threading.Lock()
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <title>NeuroML — Computational Neuroscience Testbed</title>
 <style>
-:root{--bg:#0b0f14;--card:#151b23;--line:#2a3441;--txt:#e6edf3;--dim:#8b949e;--ok:#3fb950;--bad:#f85149;--blu:#58a6ff;--yel:#d29922}
-body{background:var(--bg);color:var(--txt);font-family:Segoe UI,Roboto,sans-serif;margin:0;padding:14px}
-h1{margin:0 0 2px;font-size:20px}.sub{color:var(--dim);font-size:12px;margin-bottom:12px}
-.grid{display:grid;grid-template-columns:310px 1fr 350px;gap:12px;max-width:1400px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
-.phone{width:100%;height:560px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000}
-.phone img{width:100%;height:100%;object-fit:contain}
+:root{
+ --bg:#0b0e13; --surface:#121820; --surface2:#171f29; --line:#232d3a; --line-soft:#1b232e;
+ --txt:#e8edf4; --dim:#8fa0b3; --faint:#62738a;
+ --accent:#3ad0b6; --accent-soft:rgba(58,208,182,.12); --accent2:#8b93ff;
+ --ok:#3fb950; --warn:#d9a13b; --bad:#f85c70;
+ --font-ui:Segoe UI,Roboto,-apple-system,sans-serif;
+ --font-mono:Cascadia Code,Consolas,monospace;
+ --r-lg:12px; --r-md:8px; --sp:14px;
+ --shadow:0 1px 0 rgba(255,255,255,.02) inset, 0 8px 24px -18px rgba(0,0,0,.55);
+ --t-fast:110ms cubic-bezier(.4,0,.2,1); --t-slow:260ms cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box}
+body{background:radial-gradient(1200px 500px at 50% -180px,#10161f 0%,var(--bg) 60%);color:var(--txt);
+ font-family:var(--font-ui);margin:0;padding:var(--sp);line-height:1.45}
+h1{margin:0 0 2px;font-size:17px;font-weight:650;letter-spacing:.2px}
+h1 .mark{color:var(--accent)}
+.sub{color:var(--dim);font-size:12px;margin-bottom:var(--sp)}
+.sub a, .card a{color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent)}
+.sub a:hover, .card a:hover{color:#fff;border-bottom-style:solid}
+.grid{display:grid;grid-template-columns:310px 1fr 350px;gap:var(--sp);max-width:1400px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);
+ padding:var(--sp);margin-bottom:var(--sp);box-shadow:var(--shadow);
+ transition:border-color var(--t-fast)}
+.card:hover{border-color:#2d3a4a}
+.card>h2{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:1px;
+ font-weight:600;margin:0 0 8px}
 .kpi{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
-.kpi div{background:#212a35;border-radius:8px;padding:7px 10px;font-size:18px;font-weight:700}
-.kpi div span{display:block;font-size:10px;color:var(--dim);font-weight:400}
+.kpi div{background:var(--surface2);border:1px solid var(--line-soft);border-radius:var(--r-md);
+ padding:8px 10px;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi div span{display:block;font-size:9.5px;color:var(--dim);font-weight:500;
+ text-transform:uppercase;letter-spacing:.7px;margin-bottom:2px}
 canvas{width:100%;height:130px;margin:4px 0}
-.eq{font-family:Cascadia Code,Consolas,monospace;font-size:12px;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;color:#9ecbff;white-space:pre-wrap}
-.brain{display:flex;gap:4px;align-items:center;justify-content:center;margin:2px 0}.brain .layer{display:grid;grid-template-columns:repeat(128,1fr);gap:1px;width:100%}
-.dot{width:1.6px;height:1.6px;border-radius:50%;transition:background .12s}
-.coach{height:210px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
-.coach div{padding:3px 0;border-bottom:1px solid #212a35}.pun{color:var(--bad)}.men{color:var(--blu)}.ok{color:var(--ok)}
-.wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:10px;height:10px;border-radius:2px}
-.pill{display:inline-block;background:#212a35;border-radius:6px;padding:2px 8px;font-size:11px;margin:2px}
-.dopa{height:230px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace}
-.dopa div{display:flex;align-items:center;gap:6px;padding:3px 6px;border-bottom:1px solid #1d2530;border-radius:4px}
-.dopa div:nth-child(odd){background:#141a22}
+.eq{font-family:var(--font-mono);font-size:12px;background:var(--surface2);border:1px solid var(--line-soft);
+ border-radius:var(--r-md);padding:8px;color:#9dc4ff;white-space:pre-wrap}
+.brain{display:flex;flex-direction:column;gap:2px;margin:2px 0;opacity:.9}.brain .layer{display:grid;grid-template-columns:repeat(128,1fr);gap:1px;width:100%}
+.dot{width:100%;height:1.4px;border-radius:1px;transition:background var(--t-fast)}
+.coach{height:210px;overflow-y:auto;font-size:12px;font-family:var(--font-mono)}
+.coach div{padding:3px 0;border-bottom:1px solid var(--line-soft)}.pun{color:var(--bad)}.men{color:var(--accent2)}.ok{color:var(--ok)}
+.wl{display:flex;gap:2px;flex-wrap:wrap}.wl i{display:inline-block;width:11px;height:10px;border-radius:2px}
+.pill{display:inline-block;background:var(--surface2);border:1px solid var(--line-soft);border-radius:6px;
+ padding:2px 8px;font-size:11px;margin:2px}
+.dopa{height:230px;overflow-y:auto;font-size:12px;font-family:var(--font-mono)}
+.dopa div{display:flex;align-items:center;gap:6px;padding:3px 6px;border-bottom:1px solid var(--line-soft);border-radius:4px}
+.dopa div:nth-child(odd){background:var(--surface2)}
 .dopa .bar{display:inline-block;height:9px;border-radius:2px;min-width:2px}
 .dopa .pos{color:var(--ok);font-weight:800}.dopa .neg{color:var(--bad);font-weight:800}
-.painlist div{padding:2px 6px;font-size:11px;font-family:Consolas,monospace;color:#f0883e}
+.painlist div{padding:2px 6px;font-size:11px;font-family:var(--font-mono);color:#ef9a6c}
 .dopa .ev{color:var(--txt);flex:1;margin-left:8px}.dopa .t{color:var(--dim);width:70px}
-.dopa .big{font-size:13px;border-left:3px solid var(--yel)}
+.dopa .big{font-size:13px;border-left:3px solid var(--warn)}
 .opp{font-size:12px;color:var(--dim)}.opp b{color:var(--txt)}
-.rules{font-size:11px;color:#9ecbff;background:#10161d;border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px}
+.rules{font-size:11px;color:var(--accent);background:var(--accent-soft);border:1px solid rgba(58,208,182,.25);
+ border-radius:var(--r-md);padding:8px;margin-top:6px}
 .rules li{margin:2px 0;list-style:none}
+.phone{width:100%;height:560px;border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:#000;position:relative}
+.phone img{width:100%;height:100%;object-fit:contain;display:block}
+.phone .loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--faint);font-size:12px}
+.btn{background:var(--surface2);color:var(--txt);border:1px solid var(--line);border-radius:var(--r-md);
+ padding:6px 12px;font-size:12px;cursor:pointer;transition:all var(--t-fast)}
+.btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+@media (max-width:1100px){
+ .grid{grid-template-columns:1fr 1fr}
+ .grid>div:first-child, .grid>div:last-child{grid-column:1/-1}
+}
+@media (max-width:720px){
+ .grid{grid-template-columns:1fr}
+ .phone{height:auto;aspect-ratio:1080/2340}
+ .kpi{grid-template-columns:repeat(2,1fr)}
+ h1{font-size:15px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body>
-<h1>NeuroML™ — Hybrid Digital Twin & Computational Neuroscience Testbed</h1>
-<div class="sub"><span id="hdr_profile">13.72M-param 1024-wide × 6-layer</span> residual cortex · 90 LIF spiking neurons · 21-channel affective core · 6-layer local Digital Twin · deterministic Referee · mentor-only Groq summaries · <a href="/vision" target="_blank" style="color:#58a6ff">open raw vision overlay ↗</a></div>
+<h1><span class="mark">NeuroML</span> — battle brain · live dashboard</h1>
+<div class="sub"><span id="hdr_profile">13.72M-param 1024-wide × 6-layer</span> residual cortex · 90 LIF spiking neurons · 21-channel affective core · 6-layer local Digital Twin · deterministic Referee · <a href="/vision" target="_blank">raw vision overlay ↗</a></div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">PHONE VISION</h2>
-      <div class="phone"><img id="shot" src="/vision"></div>
-      <div style="font-size:10px;color:var(--dim);margin-top:4px">🔵 my tower HP · 🔴 enemy tower HP · 🟧 unit-scan zones · 🟪 elixir bar · 🟩 affordable card slot · <a href="/vision?fresh=1" target="_blank" style="color:#58a6ff">refresh now ↗</a></div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">VISION STATE</h2>
+    <div class="card"><h2>Phone vision (live capture)</h2>
+      <div class="phone"><img id="shot" src="/vision" alt="phone screen"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:6px">🔵 ally tower HP · 🔴 enemy tower HP · 🟧 scan zones · 🟪 elixir bar · 🟩 affordable slot · <a href="/vision?fresh=1" target="_blank">refresh ↗</a></div></div>
+    <div class="card"><h2>Vision state</h2>
       <div id="vision" style="font-size:12px;color:var(--dim)">waiting…</div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--yel);margin:0 0 6px">⚡ LIVE DOPAMINE FEED (events as they hit the brain)</h2>
+    <div class="card"><h2>⚡ Reward events (as they hit the brain)</h2>
       <div class="dopa" id="dopa"><div style="color:var(--dim)">waiting for first reward…</div></div>
-      <div style="font-size:10px;color:var(--dim);margin:4px 0 2px">bars scale to the largest |dopamine| in view — red = punishment, gold = pain memory</div>
+      <div style="font-size:10px;color:var(--dim);margin:4px 0 2px">bars scale to largest |dopamine| — red = punishment · amber = pain memory</div>
       <div class="painlist" id="painlist"></div>
-      <div class="rules"><b style="color:var(--yel)">GAME RULES the brain is taught:</b>
-        <li>⚔️ spell finisher → enemy tower ≤32% HP gets shot, not dropped at bridge</li>
-        <li>🛡️ commit discipline → never bridge-drop tanks without support elixir</li>
-        <li>🔁 cheap-cycle → 1-2 cost cards saved for defense</li>
-        <li>🏰 buildings pull center, never bridge</li></div></div>
+      <div class="rules"><b>Tactical rules taught:</b>
+        <li>spell finisher → tower ≤32% gets the shot, bridge drops exhaust elixir</li>
+        <li>commit discipline → never bridge-drop a tank without support elixir</li>
+        <li>cheap-cycle → 1-2 cost cards saved for defense</li>
+        <li>buildings pull center, never bridge</li>
+        <li>spell must prove in-area value — no cluster, no cast</li></div></div>
   </div>
   <div>
     <div class="card">
       <div class="kpi">
-        <div><span>TRAIN STEPS</span><span id="k_steps">-</span></div>
-        <div><span>LOSS (MA)</span><span id="k_loss">-</span></div>
-        <div><span>TD ERROR</span><span id="k_td">-</span></div>
-        <div><span>BUFFER</span><span id="k_buf">-</span></div>
-        <div><span>WIN RATE (lifetime)</span><span id="k_wr">-</span></div>
+        <div><span>Train steps</span><span id="k_steps">-</span></div>
+        <div><span>Loss (MA)</span><span id="k_loss">-</span></div>
+        <div><span>TD error</span><span id="k_td">-</span></div>
+        <div><span>Buffer</span><span id="k_buf">-</span></div>
+        <div><span>Win rate</span><span id="k_wr">-</span></div>
       </div>
       <div id="record_meta" style="font-size:10px;color:var(--dim);margin:4px 0">-</div>
-      <h2 style="font-size:12px;color:var(--dim)">LOSS CURVE</h2><canvas id="c_loss" width=780 height=130></canvas>
-      <h2 style="font-size:12px;color:var(--dim)">EXTREME REWARD HISTORY (tower dmg / wins / losses)</h2><canvas id="c_rw" width=780 height=130></canvas>
-      <h2 style="font-size:12px;color:var(--dim)">WIN / LOSS RECORD (lifetime, last 60 — green=win, red=loss)</h2><div class="wl" id="wl"></div>
-      <h2 style="font-size:12px;color:var(--dim);margin-top:8px">REWARD LEDGER (every contribution the brain logged, aggregated)</h2>
-      <div id="ledger" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)">waiting for first battle tick…</div>
-      <div id="decision_meta" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">decision provenance waits for the next tick…</div>
-      <div id="prediction" style="font-size:11px;font-family:Consolas,monospace;margin-top:6px;color:var(--dim)">prediction telemetry waits for a validated tick…</div>
+      <h2>Loss curve</h2><canvas id="c_loss" width=780 height=130></canvas>
+      <h2>Reward history (tower dmg / wins / losses)</h2><canvas id="c_rw" width=780 height=130></canvas>
+      <h2>Win / loss record (lifetime, last 60)</h2><div class="wl" id="wl"></div>
+      <h2 style="margin-top:8px">Reward ledger (every logged contribution)</h2>
+      <div id="ledger" style="font-size:11px;font-family:var(--font-mono);color:var(--dim)">waiting for first battle tick…</div>
+      <div id="decision_meta" style="font-size:11px;font-family:var(--font-mono);margin-top:6px;color:var(--dim)">decision provenance waits for the next tick…</div>
+      <div id="prediction" style="font-size:11px;font-family:var(--font-mono);margin-top:6px;color:var(--dim)">prediction telemetry waits for a validated tick…</div>
     </div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">WHAT THE MODEL IS THINKING (live equations)</h2>
+    <div class="card"><h2>What the model is thinking (live equations)</h2>
       <div class="eq" id="eq">waiting for first battle tick…</div></div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">GROQ MENTOR (end-of-match summaries & validated advice — zero reward authority)</h2>
+    <div class="card"><h2>Groq mentor (end-of-match summaries — zero reward authority)</h2>
       <div class="coach" id="feed">waiting…</div></div>
-    <div class="card"><h2 style="font-size:12px;color:#58a6ff;margin:0 0 6px">🃏 CARD COUNTERS, MATCHUP READ & 30-DAY META ENGINE</h2>
-      <div id="cardintel" style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)">loading card counter matrix & 30-day ladder meta…</div></div>
+    <div class="card"><h2>🃏 Card counters, matchup read & 30-day meta engine</h2>
+      <div id="cardintel" style="font-size:11px;font-family:var(--font-mono);color:var(--dim)">loading card counter matrix & 30-day ladder meta…</div></div>
   </div>
   <div>
-    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON FIRING — Expanded Multi-Layer Cortex (micro-dots = individual neurons)</h2>
-      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">🟢 green = positive activation · 🔴 red = negative activation · micro-scaled 1.6px dots for expanded depth/width</div>
+    <div class="card"><h2 style="font-size:12px;color:var(--dim);margin:0 0 6px">LIVE NEURON ACTIVATION — cortex layers (bar = per-neuron activation)</h2>
+      <div style="font-size:10px;color:var(--dim);margin-bottom:4px">green = positive · red = negative · one bar per neuron, brighter = stronger</div>
       <div style="font-size:11px;color:var(--dim)">EYES (38 sensory neurons — directly observed vs estimated state)</div>
       <div id="senses" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;font-size:9px;font-family:Consolas,monospace;margin:4px 0"></div>
       <div style="font-size:10px;color:var(--dim)">CORTEX 1 — sensory feature extraction</div>
@@ -131,13 +175,13 @@ canvas{width:100%;height:130px;margin:4px 0}
       <div id="motor" style="font-size:10px;font-family:Consolas,monospace;margin-top:2px"></div>
       <div style="font-size:11px;color:var(--dim);margin-top:6px">V(s) baseline: <span id="vs" style="color:var(--yel)">-</span>
        · advantage spread <span id="asp" style="color:var(--yel)">-</span></div></div>
-    <div class="card"><h2 style="font-size:12px;color:#58a6ff;margin:0 0 6px">🌐 DIGITAL TWIN WORKSPACE — Local Ensemble & Risk-Aware MPC</h2>
+    <div class="card"><h2 style="font-size:12px;color:#3ad0b6;margin:0 0 6px">🌐 DIGITAL TWIN WORKSPACE — Local Ensemble & Risk-Aware MPC</h2>
       <div style="font-size:11px;font-family:Consolas,monospace;color:var(--dim)" id="twinpanel">twin waits for synchronized transitions…</div>
       <details style="margin-top:6px;font-size:10px;color:var(--dim);font-family:Consolas,monospace">
-        <summary style="cursor:pointer;color:#9ecbff">Advanced Twin Diagnostics (Candidate Rollouts, Assimilation & Drift)</summary>
+        <summary style="cursor:pointer;color:#9dc4ff">Advanced Twin Diagnostics (Candidate Rollouts, Assimilation & Drift)</summary>
         <div id="twindiag" style="margin-top:4px;padding:6px;background:#10161d;border-radius:6px;border:1px solid var(--line)">waiting for rollout diagnostics…</div>
       </details></div>
-    <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">🧬 LIF NEURON ANATOMY — Dendrites, Soma, Myelin Axon & Synaptic Terminals</h2>
+    <div class="card"><h2 style="font-size:12px;color:#8b93ff;margin:0 0 6px">🧬 LIF NEURON ANATOMY — Dendrites, Soma, Myelin Axon & Synaptic Terminals</h2>
       <svg id="neuroncell" viewBox="0 0 360 165" style="width:100%;height:165px;background:#0a0e13;border-radius:8px;border:1px solid var(--line)">
         <!-- Branching Dendritic Arbor (Excitatory & Inhibitory inputs) -->
         <g id="neuron_dendrites" stroke="#3d5a80" stroke-width="1.6" fill="none" opacity="0.95">
@@ -148,25 +192,25 @@ canvas{width:100%;height:130px;margin:4px 0}
           <path d="M135,92 Q112,125 95,150"/>
         </g>
         <!-- Dendritic Spines (synaptic contact sites) -->
-        <g id="dendrite_spines" fill="#58a6ff" opacity="0.8">
+        <g id="dendrite_spines" fill="#3ad0b6" opacity="0.8">
           <circle cx="55" cy="36" r="2.2"/><circle cx="42" cy="22" r="2"/><circle cx="82" cy="25" r="2.2"/>
           <circle cx="40" cy="92" r="2.2"/><circle cx="32" cy="78" r="2"/><circle cx="55" cy="142" r="2.2"/>
           <circle cx="95" cy="150" r="2"/>
         </g>
         <!-- Soma (Cell Body) & Axon Hillock -->
-        <polygon points="148,84 168,92 148,100" fill="#152238" stroke="#58a6ff" stroke-width="1.5"/>
-        <circle id="neuron_soma" cx="135" cy="92" r="20" fill="#152238" stroke="#58a6ff" stroke-width="2.2"/>
-        <circle id="neuron_nucleus" cx="135" cy="92" r="7.5" fill="#9370db" opacity="0.9"/>
+        <polygon points="148,84 168,92 148,100" fill="#152238" stroke="#3ad0b6" stroke-width="1.5"/>
+        <circle id="neuron_soma" cx="135" cy="92" r="20" fill="#152238" stroke="#3ad0b6" stroke-width="2.2"/>
+        <circle id="neuron_nucleus" cx="135" cy="92" r="7.5" fill="#8b93ff" opacity="0.9"/>
         <!-- Axon & Myelin Sheath Internodes -->
-        <path d="M165,92 Q230,92 295,92" id="axon" stroke="#9ecbff" stroke-width="2.8" fill="none"/>
-        <g id="myelin_sheath" fill="#1d2d44" stroke="#58a6ff" stroke-width="1.2">
+        <path d="M165,92 Q230,92 295,92" id="axon" stroke="#9dc4ff" stroke-width="2.8" fill="none"/>
+        <g id="myelin_sheath" fill="#1d2d44" stroke="#3ad0b6" stroke-width="1.2">
           <rect x="172" y="86" width="24" height="12" rx="4"/>
           <rect x="204" y="86" width="24" height="12" rx="4"/>
           <rect x="236" y="86" width="24" height="12" rx="4"/>
           <rect x="268" y="86" width="22" height="12" rx="4"/>
         </g>
         <!-- Axon Terminal Arbor & Synaptic Boutons -->
-        <g id="axon_branches" stroke="#9ecbff" stroke-width="1.6" fill="none">
+        <g id="axon_branches" stroke="#9dc4ff" stroke-width="1.6" fill="none">
           <path d="M292,92 Q315,72 336,56"/><path d="M292,92 Q318,84 342,78"/>
           <path d="M292,92 Q318,100 342,108"/><path d="M292,92 Q315,114 336,128"/>
         </g>
@@ -174,12 +218,12 @@ canvas{width:100%;height:130px;margin:4px 0}
           <circle cx="336" cy="56" r="3.2"/><circle cx="342" cy="78" r="3.2"/>
           <circle cx="342" cy="108" r="3.2"/><circle cx="336" cy="128" r="3.2"/>
         </g>
-        <text x="8" y="14" fill="#8b949e" font-size="10" font-family="Consolas">V_m: <tspan id="neuron_mv" fill="#9ecbff">-70.0 mV</tspan> (thr <tspan id="neuron_thr" fill="#d29922">-55.0 mV</tspan>)</text>
-        <text x="8" y="27" fill="#8b949e" font-size="10" font-family="Consolas">syn: <tspan id="neuron_curr" fill="#3fb950">I_e=0.00 I_i=0.00</tspan> · <tspan id="neuron_state" fill="#9ecbff">resting</tspan></text>
+        <text x="8" y="14" fill="#8b949e" font-size="10" font-family="Consolas">V_m: <tspan id="neuron_mv" fill="#9dc4ff">-70.0 mV</tspan> (thr <tspan id="neuron_thr" fill="#d9a13b">-55.0 mV</tspan>)</text>
+        <text x="8" y="27" fill="#8b949e" font-size="10" font-family="Consolas">syn: <tspan id="neuron_curr" fill="#3fb950">I_e=0.00 I_i=0.00</tspan> · <tspan id="neuron_state" fill="#9dc4ff">resting</tspan></text>
         <text x="10" y="160" fill="#8b949e" font-size="9" font-family="Consolas">dendrites (64 sensory) → soma/hillock → myelinated axon → STDP terminals</text>
       </svg>
       <div style="font-size:10px;color:var(--dim);margin:4px 0">live LIF neuron telemetry (ODE: τ_m dV/dt = -(V-V_rest) + I_syn - I_adapt) — dendrites glow with synaptic drive, boutons flash on spike</div></div>
-    <div class="card"><h2 style="font-size:12px;color:#9370db;margin:0 0 6px">SPIKING NUCLEUS — real LIF neurons + STDP (v13 hybrid)</h2>
+    <div class="card"><h2 style="font-size:12px;color:#8b93ff;margin:0 0 6px">SPIKING NUCLEUS — real LIF neurons + STDP (v13 hybrid)</h2>
       <div style="font-size:11px;color:var(--dim)">64 sensory → 20 action LIF neurons · leak, threshold, refractory, adaptation · reward-modulated STDP with eligibility</div>
       <canvas id="c_spike" width=330 height=110 style="height:100px"></canvas>
       <div style="font-size:10px;color:var(--dim);margin:2px 0 6px">action-population spike counts per decision tick (telemetry, sampled)</div>
@@ -222,27 +266,27 @@ try{
  k_td.textContent=m.td_errors&&m.td_errors.length?m.td_errors[m.td_errors.length-1].toFixed(3):'-';
  k_wr.textContent=(m.win_rate!=null?m.win_rate+'%':'-');
  if(m.record_source){document.getElementById('record_meta').textContent=m.record_source+' · lifetime '+m.wins_v+'-'+m.losses_v;}else{document.getElementById('record_meta').textContent='lifetime counters seeding — first match-end flush';}
- const erk=document.getElementById('k_wr');erk.style.color=(m.win_rate>=50?'#3fb950':'#f85149');
+ const erk=document.getElementById('k_wr');erk.style.color=(m.win_rate>=50?'#3fb950':'#f85c70');
  line(c_loss,m.losses&&m.losses.slice(-120),'#3fb950');
- const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d29922');
- const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85149')+'"></i>').join('');
+ const rw=(m.rewards||[]).filter(v=>Math.abs(v)>=1).slice(-120);line(c_rw,rw,'#d9a13b');
+ const wl=document.getElementById('wl');wl.innerHTML=(m.win_history||[]).slice(-60).map(w=>'<i style="background:'+(w?'#3fb950':'#f85c70')+'"></i>').join('');
  const n=m.neurons||{};vs.textContent=n.state_value_V;asp.textContent=n.advantage_spread;
  heat(n.layer1_neurons,'l1',1.5);heat(n.layer2_neurons,'l2',1.5);heat(n.layer3_neurons||n.layer2_neurons,'l3b',1.5);
  heat(n.layer4_neurons||n.layer3_neurons,'l4',1.5);heat(n.layer5_neurons||n.layer4_neurons,'l5',1.5);
  heat(n.layer8_neurons||n.layer6_neurons||n.layer5_neurons||n.layer3_neurons,'deepcortex',1.5);heat(n.limbic_neurons,'l3',1.5);
  if(n.sensory_neurons){const se=document.getElementById('senses');
-  if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
-  else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9ecbff':'#5a6572'))}}
+  if(!se.dataset.built){se.innerHTML=n.sensory_neurons.map(s=>'<div title="'+s.sense+'" style="padding:1px 4px;background:#10161d;border-radius:3px;color:'+(s.v>0.5?'#3fb950':(s.v>0.05?'#9dc4ff':'#5a6572'))+'">'+s.sense+' <b>'+s.v.toFixed(2)+'</b></div>').join('');se.dataset.built=1}
+  else{const kids=se.children;for(let i=0;i<kids.length&&i<n.sensory_neurons.length;i++){const s=n.sensory_neurons[i];const b=kids[i].querySelector('b');if(b){b.textContent=s.v.toFixed(2);kids[i].style.color=(s.v>0.5?'#3fb950':(s.v>0.05?'#9dc4ff':'#5a6572'))}}
    kids[0].title=n.sensory_neurons[0].sense}}
  if(n.advantage_neurons&&n.actions_desc){const mt=document.getElementById('motor');
   const mx=Math.max(1,...n.advantage_neurons.map(Math.abs));
   mt.innerHTML=n.actions_desc.map((nm,i)=>{const v=n.advantage_neurons[i]||0;
    const w=Math.round(4+Math.abs(v)/mx*36);
-   return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0"><span style="width:88px;color:'+(v>=0?'#3fb950':'#f85149')+'">'+nm+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+(v>=0?'#3fb950':'#f85149')+';border-radius:2px"></span><b style="color:#e6edf3">'+v.toFixed(2)+'</b></div>'}).join('')}
+   return '<div style="display:flex;align-items:center;gap:4px;margin:1px 0"><span style="width:88px;color:'+(v>=0?'#3fb950':'#f85c70')+'">'+nm+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+(v>=0?'#3fb950':'#f85c70')+';border-radius:2px"></span><b style="color:#e6edf3">'+v.toFixed(2)+'</b></div>'}).join('')}
  if(m.dopamine_events&&m.dopamine_events.length){const de=document.getElementById('dopa');
   const view=m.dopamine_events.slice(-40);const mx=Math.max(1,...view.map(e=>Math.abs(e.amount)));
   de.innerHTML=view.reverse().map(e=>{const w=Math.max(2,Math.round(Math.abs(e.amount)/mx*Math.min(120,de.clientWidth*0.18)));
-   const col=e.amount>0?'#3fb950':(e.amount<0?'#f85149':'#d29922');
+   const col=e.amount>0?'#3fb950':(e.amount<0?'#f85c70':'#d9a13b');
    return '<div><span class="t">'+e.t+'</span><span class="bar" style="width:'+w+'px;background:'+col+'"></span><span class="ev">'+e.event+'</span><span class="'+(e.amount>=0?'pos':'neg')+'">'+(e.amount>=0?'+':'')+e.amount+'</span></div>'}).join('')}
  if(m.pain_channels_top&&m.pain_channels_top.length){const pl=document.getElementById('painlist');
   pl.innerHTML='Σ pain memory (LTD): '+m.pain_channels_top.map(p=>'<div>channel '+p.slot+','+p.spot+' avg '+p.avg+'</div>').join('')}
@@ -262,11 +306,11 @@ try{
    document.getElementById('neuron_state').textContent=rate>0?`SPIKING (${rate} pop spikes)`:'integrating / refractory';
    const soma=document.getElementById('neuron_soma');
    soma.setAttribute('fill',rate>0?'rgba(147,112,219,0.55)':'#152238');
-   soma.setAttribute('stroke',rate>0?'#3fb950':'#58a6ff');
+   soma.setAttribute('stroke',rate>0?'#3fb950':'#3ad0b6');
    const dend=document.getElementById('neuron_dendrites');
-   if(dend)dend.setAttribute('stroke',ie>0.1?'#58a6ff':'#3d5a80');
+   if(dend)dend.setAttribute('stroke',ie>0.1?'#3ad0b6':'#3d5a80');
    const axon=document.getElementById('axon');
-   if(axon)axon.setAttribute('stroke',rate>0?'#3fb950':'#9ecbff');
+   if(axon)axon.setAttribute('stroke',rate>0?'#3fb950':'#9dc4ff');
    const nt=document.getElementById('synaptic_terminals');
    if(nt){
     const r_b=rate>0?4.5:2.8;
@@ -275,25 +319,25 @@ try{
    }
   }
   window._spkHist=window._spkHist||[];window._spkHist.push(m.spiking.action_spikes||0);if(window._spkHist.length>80)window._spkHist.shift();
-  line(document.getElementById('c_spike'),window._spkHist,'#9370db');
+  line(document.getElementById('c_spike'),window._spkHist,'#8b93ff');
   document.getElementById('spk').innerHTML=
    'observe '+m.spiking.observe_ms+'ms · sensory spikes '+m.spiking.sensory_spikes+' · motor spikes '+m.spiking.action_spikes+' · inhib '+m.spiking.inh_spikes+'<br>'+
-   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85149">'+m.spiking.dep_events+'</b>'+
-   (m.spiking.cortex?('<br><span style="color:#9370db">prefrontal deliberation</span>: working memory '+m.spiking.cortex.working_memory+' · vetoes <b style="color:#f85149">'+m.spiking.cortex.vetoes+'</b> · recalls served '+m.spiking.cortex.recalls_served+' · hippocampus '+m.spiking.cortex.hippo_size+' episodes'+(m.spiking.cortex.over_budget?' · <b style="color:#f85149">budget over-run detected</b>':'')):'');
+   'mean synaptic weight <b>'+m.spiking.mean_w+'</b> · LTP events <b style="color:#3fb950">'+m.spiking.pot_events+'</b> · LTD events <b style="color:#f85c70">'+m.spiking.dep_events+'</b>'+
+   (m.spiking.cortex?('<br><span style="color:#8b93ff">prefrontal deliberation</span>: working memory '+m.spiking.cortex.working_memory+' · vetoes <b style="color:#f85c70">'+m.spiking.cortex.vetoes+'</b> · recalls served '+m.spiking.cortex.recalls_served+' · hippocampus '+m.spiking.cortex.hippo_size+' episodes'+(m.spiking.cortex.over_budget?' · <b style="color:#f85c70">budget over-run detected</b>':'')):'');
   const aff=m.spiking.affect||{};
   document.getElementById('affect').innerHTML=Object.entries(aff).map(([k,v])=>{
-   const w=Math.round(v*54);const col=(k.startsWith('neg')||['danger','frustration','desperation','fatigue','uncertainty','strategic_conflict'].includes(k))?'#f85149':(['confidence','focus','control','composure'].includes(k)?'#58a6ff':'#3fb950');
+   const w=Math.round(v*54);const col=(k.startsWith('neg')||['danger','frustration','desperation','fatigue','uncertainty','strategic_conflict'].includes(k))?'#f85c70':(['confidence','focus','control','composure'].includes(k)?'#3ad0b6':'#3fb950');
    return '<div style="display:flex;align-items:center;gap:5px;margin:1px 0"><span style="width:86px;color:var(--dim)">'+k+'</span><span style="display:inline-block;height:8px;width:'+w+'px;background:'+col+';border-radius:2px"></span>'+v.toFixed(3)+'</div>'}).join('');
  } else if(m.spiking){document.getElementById('spk').textContent='nucleus offline — DQN fallback active'}
  if(m.game_memory&&m.game_memory.games_remembered){const gm=m.game_memory;document.getElementById('gmem').innerHTML=
-  '<div style="font-size:20px;font-weight:800;color:#d29922">'+gm.games_remembered+' games remembered</div>'+
+  '<div style="font-size:20px;font-weight:800;color:#d9a13b">'+gm.games_remembered+' games remembered</div>'+
   '<div style="margin-top:4px">win rate <b style="color:#3fb950">'+gm.recent_winrate+'%</b> recent · avg dopamine '+gm.avg_dopamine_per_match+'/match</div>'+
-  '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85149">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
+  '<div style="margin-top:4px">plays best: <b>'+gm.best_spots.map(x=>x[0]).join(', ')+'</b>'+(gm.avoid_spots.length?' · avoids: <b style="color:#f85c70">'+gm.avoid_spots.map(x=>x[0]).join(', ')+'</b>':'')+'</div>'+
   '<div style="margin-top:4px;color:#8b949e">'+gm.towers_destroyed_recent+' towers destroyed · '+gm.enemy_pushes_faced_recent+' pushes faced recently</div>'}
  if(m.reward_totals){const rt=m.reward_totals;const top=Object.entries(rt).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,9);
-  document.getElementById('ledger').innerHTML=top.map(([e,v])=>{const c=v>0?'#3fb950':(v<0?'#f85149':'#8b949e');
+  document.getElementById('ledger').innerHTML=top.map(([e,v])=>{const c=v>0?'#3fb950':(v<0?'#f85c70':'#8b949e');
    return '<div style="display:flex;gap:6px;margin:1px 0"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e+'</span><b style="color:'+c+'">'+(v>0?'+':'')+v+'</b></div>'}).join('')}
- if(m.decision){const d=m.decision;const oc=d.origin==='rules_referee'?'#d29922':(d.origin==='prefrontal_veto'?'#f85149':'#58a6ff');
+ if(m.decision){const d=m.decision;const oc=d.origin==='rules_referee'?'#d9a13b':(d.origin==='prefrontal_veto'?'#f85c70':'#3ad0b6');
   document.getElementById('decision_meta').innerHTML='chosen <b style="color:'+oc+'">'+d.action+'</b> by <b style="color:'+oc+'">'+d.origin+'</b>'+
    (d.rule_note&&d.rule_note!=='net'?' · rule: '+d.rule_note:'')+' · masked '+d.masked_actions+' · vetoes '+(d.vetoed_actions||[]).length+' · elixir '+d.elixir+' · lane '+(d.lane||'-')}
  if(m.prediction){const p=m.prediction;document.getElementById('prediction').innerHTML=
@@ -303,13 +347,13 @@ try{
   const la=T.last_assimilated;
   let assimHtml='';
   if(la){
-   assimHtml=`<br><span style="color:#9ecbff">Observed vs Predicted:</span> elixir obs <b>${la.obs_elixir}</b> vs pred <b>${la.pred_elixir}</b> (err ${la.elixir_err}) · tower err <b>${la.tower_hp_err}</b> · unc <b>${la.uncertainty}</b>`;
+   assimHtml=`<br><span style="color:#9dc4ff">Observed vs Predicted:</span> elixir obs <b>${la.obs_elixir}</b> vs pred <b>${la.pred_elixir}</b> (err ${la.elixir_err}) · tower err <b>${la.tower_hp_err}</b> · unc <b>${la.uncertainty}</b>`;
   }
   document.getElementById('twinpanel').innerHTML=
-  'synced transitions <b>'+T.buffer+'</b> (cap 25,000) · ready <b style="color:'+(T.ready?'#3fb950':'#d29922')+'">'+T.ready+'</b> · planner <b>'+T.planning+'</b><br>'+
+  'synced transitions <b>'+T.buffer+'</b> (cap 25,000) · ready <b style="color:'+(T.ready?'#3fb950':'#d9a13b')+'">'+T.ready+'</b> · planner <b>'+T.planning+'</b><br>'+
   'towers MAE: twin <b>'+(T.twin_mae_towers??'-')+'</b> vs persistence <b>'+(T.baseline_mae_towers??'-')+'</b> vs mean-delta <b>'+(T.mean_baseline_mae_towers??'-')+'</b><br>'+
   'elixir MAE: twin <b>'+(T.twin_mae_elixir??'-')+'</b> vs baseline <b>'+(T.baseline_mae_elixir??'-')+'</b> · reward MAE <b>'+(T.reward_mae??'-')+'</b><br>'+
-  'ensemble disagreement <b>'+(T.ensemble_spread??'-')+'</b> · drift <b>'+(T.prediction_drift??0)+'</b> · beats baseline <b style="color:'+(T.beats_baseline?'#3fb950':'#d29922')+'">'+T.beats_baseline+'</b>'+assimHtml;
+  'ensemble disagreement <b>'+(T.ensemble_spread??'-')+'</b> · drift <b>'+(T.prediction_drift??0)+'</b> · beats baseline <b style="color:'+(T.beats_baseline?'#3fb950':'#d9a13b')+'">'+T.beats_baseline+'</b>'+assimHtml;
   const cands=T.last_candidates||[];
   const chp=T.last_chosen_plan;
   document.getElementById('twindiag').innerHTML=
@@ -321,9 +365,9 @@ try{
   const staleStr=ci.meta_stale_days!=null?`${ci.meta_stale_days}d old (refresh policy: every ${ci.meta_refresh_policy_days||30}d)`:'fresh';
   document.getElementById('cardintel').innerHTML=
    '<b>My Autonomous Deck:</b> <span style="color:#3fb950">'+(ci.my_deck||[]).join(', ')+'</span><br>'+
-   '<b>Opponent Read (this match):</b> last wave <b style="color:#f85149">'+(ci.opponent_last_inferred||'none yet')+'</b> · seen: '+((ci.opponent_cards_seen||[]).join(', ')||'waiting for bridge push')+' · est spent: <b>'+(ci.opponent_elixir_est||0)+'</b> elixir<br>'+
+   '<b>Opponent Read (this match):</b> last wave <b style="color:#f85c70">'+(ci.opponent_last_inferred||'none yet')+'</b> · seen: '+((ci.opponent_cards_seen||[]).join(', ')||'waiting for bridge push')+' · est spent: <b>'+(ci.opponent_elixir_est||0)+'</b> elixir<br>'+
    '<b>Active Counter Matrix:</b> <b>'+(ci.counters_table_size||17)+'</b> card archetypes mapped ('+(ci.counter_preview||'hog→cannon/tesla, giant→minipekka, barrel→zap/arrows')+')<br>'+
-   '<b>30-Day Meta Engine:</b> fetched <b>'+(ci.meta_fetched_at||'2026-10-17')+'</b> ('+staleStr+') · ladder top: <span style="color:#9ecbff">'+((ci.top_meta_archetypes||[]).join(' · ')||'Hog 2.6 · PEKKA Spam · LavaLoon')+'</span>';
+   '<b>30-Day Meta Engine:</b> fetched <b>'+(ci.meta_fetched_at||'2026-10-17')+'</b> ('+staleStr+') · ladder top: <span style="color:#9dc4ff">'+((ci.top_meta_archetypes||[]).join(' · ')||'Hog 2.6 · PEKKA Spam · LavaLoon')+'</span>';
  }
  if(m.param_report){const pr=m.param_report;
   const hp=document.getElementById('hdr_profile');
@@ -338,9 +382,9 @@ try{
  }
  if(m.thinking){
  eq.textContent=`Q(s,a) = V(s) + A(s,a) − mean(A(s,·))\n target = r + γ·max_a' Q_target(s',a·)   γ=${m.thinking.gamma}\n chosen a=${m.thinking.chosen_action}  Qchosen=${m.thinking.chosen_q}  TD≈${m.thinking.td_error_recent}\n top3 = ${JSON.stringify(m.thinking.q_values_top3)}\n ${m.thinking.equation}\n ${m.thinking.hud}`}
- if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#58a6ff">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
+ if(m.vision){const v=m.vision;vision.innerHTML=`elixir <b style="color:#3ad0b6">${v.elixir}</b>/10 · affordable slots [${v.affordable_slots}]<br>`+
   `my towers L/R/K: <b>${v.towers.ally_left}/${v.towers.ally_right}/${v.towers.ally_king}</b><br>`+
-  `enemy towers L/R: <b style="color:#f85149">${v.towers.enemy_left}/${v.towers.enemy_right}</b><br>`+
+  `enemy towers L/R: <b style="color:#f85c70">${v.towers.enemy_left}/${v.towers.enemy_right}</b><br>`+
   `units on field — me ${v.arena_units.ally_left}/${v.arena_units.ally_right} enemy ${v.arena_units.enemy_left}/${v.arena_units.enemy_right}`}
  const cf=await(await fetch('/coach')).json();
  feed.innerHTML=cf.slice(-50).reverse().map(r=>'<div><span class="pun">'+r.t+'</span> played <b>'+(r.played||'')+'</b> — '+(r.critique||'')+
