@@ -1,13 +1,12 @@
 # android_main.py — on-phone entry point for the FULL NeuroML brain.
 #
-# Runs inside the same Android process as the app. The player phone here IS the
-# phone playing Clash Royale: no computer, no ADB, no WiFi pairing — the brain
-# sees the screen via MediaProjection (CaptureService) and taps via the
-# accessibility service (TapAccessibilityService). All learning, the coach
-# (through the maintainer's zero-key mentor proxy) and the federated
-# package-exchange loop run exactly as on desktop.
+# The player phone here IS the phone playing Clash Royale: no computer, no ADB,
+# no WiFi pairing — the brain sees the screen via MediaProjection
+# (CaptureService) and taps via the accessibility service
+# (TapAccessibilityService). All learning, the coach (through the maintainer's
+# zero-key mentor proxy) and the federated package-exchange loop run exactly as
+# on desktop.
 import os
-import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -18,37 +17,94 @@ os.environ.setdefault("NEUROML_DEVICE", "local")
 from com.neuroml.app import CaptureService, TapAccessibilityService, BrainService
 
 BRAIN_STATE = {"started": False, "result": ""}
+# phase: starting -> waiting_capture -> running ; detail: human-readable failure
+_STATE = {"phase": "starting", "detail": ""}
 
 
 def _log(msg):
-    line = f"[android] {msg}"
-    print(line, flush=True)
+    print(f"[android] {msg}", flush=True)
 
 
-def wait_capture(timeout_s=90.0):
-    """Handle the race where the service starts before the user grants capture."""
-    end = time.time() + timeout_s
-    while time.time() < end:
-        if CaptureService.ready():
-            return True
-        time.sleep(0.5)
-    return False
+def _fail(msg):
+    """Honest OFF + persist the reason (BrainService runs in THIS process, and
+    reportError mirrors it into the shared \"nml\" prefs the UI process reads)."""
+    BRAIN_STATE["result"] = msg
+    _STATE["phase"] = "stopped"
+    _STATE["detail"] = msg
+    _log(msg)
+    if _CTX is not None:
+        BrainService.reportError(_CTX, msg)
+    return msg
 
 
-def run(files_dir):
-    """Called by BrainService on its own thread: starts dashboard + brain loops,
-    returns immediately (never blocks the service thread)."""
+_CTX = None  # Android Context, passed in by BrainService
+
+
+def run(files_dir, ctx):
+    """Called by BrainService on its own thread: starts the dashboard server
+    FIRST (so the dashboard page always answers), waits for the capture grant,
+    then runs the brain loop."""
+    global _CTX
+    _CTX = ctx
     os.chdir(files_dir)  # relative paths (bot.log, cr_bot/, cards.json, *.pt)
     BRAIN_STATE["started"] = True
+    _STATE["phase"] = "waiting_capture"
+    _STATE["detail"] = ""
 
-    if not wait_capture(90.0):
-        BRAIN_STATE["result"] = "screen capture not granted — press Start again after step ①"
-        _log(BRAIN_STATE["result"])
-        BrainService.pythonCrashed = BRAIN_STATE["result"]
-        return BRAIN_STATE["result"]
+    # ---- dashboard server in-process: start EARLY --------------------------
+    import dashboard
 
+    def _android_screencap(retries=1):
+        if _STATE["phase"] != "running":
+            raise RuntimeError(
+                f"brain is {_STATE['phase']} — {_STATE['detail'] or 'screen capture not granted yet'}")
+        if CaptureService.screenshotPng(
+                os.path.join(files_dir, "cr_bot", "latest.png"), 5.0):
+            from PIL import Image
+            return Image.open(
+                open(os.path.join(files_dir, "cr_bot", "latest.png"), "rb")).convert("RGB")
+        raise RuntimeError("no frame yet (screen capture did not deliver)")
+
+    dashboard._screencap = _android_screencap
+
+    def _android_health():
+        if _STATE["phase"] == "running":
+            return {"bot": True, "device": "this phone (screen capture)",
+                    "mem": "brain data on device"}
+        d = {"bot": False, "device": "this phone", "mem": "brain data on device"}
+        if _STATE["detail"]:
+            d["detail"] = _STATE["detail"]
+        return d
+
+    dashboard.health = _android_health
+
+    def _serve():
+        try:
+            threading.Thread(target=dashboard._auto_refresher, daemon=True).start()
+            from http.server import ThreadingHTTPServer
+            ThreadingHTTPServer(("127.0.0.1", dashboard.PORT), dashboard.H).serve_forever()
+        except Exception as e:
+            _log(f"dashboard problem: {e!r}")
+            _fail(f"dashboard server failed: {e!r}")
+
+    threading.Thread(target=_serve, daemon=True, name="neuroml-dashboard").start()
+    _log("dashboard server up on 127.0.0.1:8765 (waiting for capture grant…)")
+
+    # ---- wait for the screen-capture grant ---------------------------------
+    end = time.time() + 90.0
+    while time.time() < end:
+        if CaptureService.ready():
+            break
+        if _STATE["phase"] == "stopped":  # dashboard thread failed → don't hang
+            return BRAIN_STATE["result"]
+        time.sleep(0.5)
+    else:
+        return _fail("screen capture not granted — toggle BRAIN OFF and ON, "
+                     "then pick Start Now (or Entire screen) in the dialog")
+
+    # ---- import the full brain (can take ~30-60 s on first run) ------------
     _log("importing full brain (torch DQN, spiking nucleus, referee, coach)")
-    import bot_ml  # same code as desktop
+    import bot_ml
 
     # ---- bridge phone I/O over Chaquopy ------------------------------------
     cfg = bot_ml.CFG
@@ -61,13 +117,10 @@ def run(files_dir):
 
     shot_path = os.path.join(files_dir, "cr_bot", "latest.png")
 
-    def _capture():
-        ok = CaptureService.screenshotPng(shot_path, 5.0)
-        if not ok:
-            _log("capture frame failed")
-
-    def _bridge_screenshot_async():
-        threading.Thread(target=_capture, daemon=True).start()
+    def _capture_async():
+        threading.Thread(
+            target=lambda: CaptureService.screenshotPng(shot_path, 5.0),
+            daemon=True).start()
 
     def _bridge_screenshot():
         if CaptureService.screenshotPng(shot_path, 5.0):
@@ -87,37 +140,10 @@ def run(files_dir):
 
     bot_ml.sh = _bridge_sh
     bot_ml.screenshot = _bridge_screenshot
-    bot_ml.screenshot_async = _bridge_screenshot_async
+    bot_ml.screenshot_async = _capture_async
     bot_ml.tap = _bridge_tap
     _log(f"bridge ready {real_w:.0f}x{real_h:.0f} (scale {sx:.3f},{sy:.3f})")
-
-    # ---- dashboard server in-process ---------------------------------------
-    import dashboard
-
-    def _android_screencap(retries=1):
-        p = _bridge_screenshot()
-        if p:
-            from PIL import Image
-            return Image.open(open(p, "rb")).convert("RGB")
-        raise RuntimeError("no frame yet")
-
-    dashboard._screencap = _android_screencap
-
-    def _android_health():
-        return {"bot": True, "device": "this phone (screen capture)", "mem": "brain data on device"}
-
-    dashboard.health = _android_health
-
-    def _serve():
-        try:
-            threading.Thread(target=dashboard._auto_refresher, daemon=True).start()
-            from http.server import ThreadingHTTPServer
-            ThreadingHTTPServer(("127.0.0.1", dashboard.PORT), dashboard.H).serve_forever()
-        except Exception as e:
-            _log(f"dashboard problem: {e!r}")
-            BrainService.pythonCrashed = f"dashboard: {e!r}"
-
-    threading.Thread(target=_serve, daemon=True, name="neuroml-dashboard").start()
+    dashboard._screencap = _android_screencap  # now safely usable
 
     # ---- the brain loop ----------------------------------------------------
     def _brain():
@@ -126,9 +152,12 @@ def run(files_dir):
             bot_ml.main()
         except Exception as e:
             _log(f"brain crashed: {e!r}")
-            BrainService.pythonCrashed = f"brain: {e!r}"
+            _fail(f"brain: {e!r}")
 
     threading.Thread(target=_brain, daemon=True, name="neuroml-runner").start()
+    _STATE["phase"] = "running"
+    _STATE["detail"] = ""
     BRAIN_STATE["result"] = "running"
+    BrainService.pythonCrashed = None
     _log("brain + dashboard running (playing the account signed in on this phone)")
     return "running"

@@ -128,7 +128,10 @@ public class MainActivity extends Activity {
             if (on) proceedToRun();
             else stopEverything();
         });
-        if (running) {
+        String err = p.getString("brain_error", "");
+        if (!running && err != null && !err.isEmpty()) {
+            status.setText("✖ Brain stopped: " + err + "\nToggle ON to try again.");
+        } else if (running) {
             status.setText("✓ Brain running — it plays the account signed in on this phone.\nDashboard: the in-app screen, or any browser at http://127.0.0.1:8765 while it runs.");
         }
     }

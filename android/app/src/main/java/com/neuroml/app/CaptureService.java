@@ -52,7 +52,14 @@ public class CaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null || !intent.hasExtra(EXTRA_RESULT)) return START_NOT_STICKY;
-        startForeground(1, buildNotif());
+        // Android 14+ requires the FGS to run with the mediaProjection type BEFORE
+        // getMediaProjection() is called — otherwise SecurityException.
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            startForeground(1, buildNotif(),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+        } else {
+            startForeground(1, buildNotif());
+        }
         Context c = getApplicationContext();
         MediaProjectionManager mgr =
                 (MediaProjectionManager) c.getSystemService(Context.MEDIA_PROJECTION_SERVICE);

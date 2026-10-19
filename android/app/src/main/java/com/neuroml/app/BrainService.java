@@ -25,6 +25,18 @@ import java.io.File;
 public class BrainService extends Service {
     private static final String CH = "neuroml";
     public static final String ACTION_STOP = "com.neuroml.app.STOP";
+    /** Last failure from the Python side ("screen capture not granted…" etc.).
+     *  Mirrored into the "nml" prefs so the MAIN process can read it — static
+     *  fields do NOT cross process boundaries. */
+    public static volatile String pythonCrashed;
+
+    /** Called from android_main on any failure: honest OFF + reason for the UI. */
+    public static void reportError(Context c, String msg) {
+        pythonCrashed = msg;
+        c.getSharedPreferences("nml", Context.MODE_PRIVATE).edit()
+                .putString("brain_error", msg == null ? "" : msg)
+                .putBoolean("brain_running", msg == null).apply();
+    }
 
     @Override
     public IBinder onBind(Intent i) { return null; }
@@ -33,13 +45,27 @@ public class BrainService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             setRunning(false);
-            startForeground(2, buildNotif("stopping…"));
+            reportError(this, null);
             stopForeground(true);
             stopSelf();
             hardExitPython();
             return START_NOT_STICKY;
         }
+        // START_STICKY auto-restart after the process was killed: only auto-run
+        // again if the previous run was HEALTHY (Android reclaimed memory). A
+        // failed run must never loop: fail → exit → restart → fail…
+        if (intent == null) {
+            boolean wasHealthy = pythonCrashed == null
+                    && getSharedPreferences("nml", MODE_PRIVATE)
+                            .getBoolean("brain_running", false);
+            if (!wasHealthy) {
+                setRunning(false);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+        }
         setRunning(true);
+        reportError(this, null);
         startForeground(2, buildNotif("running"));
 
         if (!Python.isStarted()) {
@@ -50,10 +76,15 @@ public class BrainService extends Service {
             try {
                 Python py = Python.getInstance();
                 PyObject mod = py.getModule("android_main");
-                mod.callAttr("run", filesDir.getAbsolutePath()).toString();
+                // pass this Service as the Context so android_main can report
+                // failures straight into the shared prefs we agreed on
+                Object res = mod.callAttr("run", filesDir.getAbsolutePath(), BrainService.this);
+                if (res != null && !"running".equals(res.toString())) {
+                    setRunning(false);   // android_main already called reportError
+                }
             } catch (Exception e) {
                 android.util.Log.e("NeuroML", "brain crashed: " + e, e);
-                setRunning(false);
+                reportError(this, String.valueOf(e));
                 hardExitPython();
             }
         }, "neuroml-brain").start();
