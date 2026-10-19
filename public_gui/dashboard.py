@@ -112,7 +112,7 @@ canvas{width:100%;height:130px;margin:4px 0}
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2>Phone vision (live capture)</h2>
-      <div class="phone"><img id="shot" src="/vision" alt="phone screen"></div>
+      <div class="phone"><img id="shot" src="/stream" alt="live phone screen (MJPEG)"></div>
       <div style="font-size:10px;color:var(--dim);margin-top:6px">🔵 ally tower HP · 🔴 enemy tower HP · 🟧 scan zones · 🟪 elixir bar · 🟩 affordable slot · <a href="/vision?fresh=1" target="_blank">refresh ↗</a></div></div>
     <div class="card"><h2>Vision state</h2>
       <div id="vision" style="font-size:12px;color:var(--dim)">waiting…</div></div>
@@ -389,7 +389,7 @@ try{
  const cf=await(await fetch('/coach')).json();
  feed.innerHTML=cf.slice(-50).reverse().map(r=>'<div><span class="pun">'+r.t+'</span> played <b>'+(r.played||'')+'</b> — '+(r.critique||'')+
   (r.reward_delta!=null?' <span class="pun">'+r.reward_delta+'</span>':'')+(r.recommended_spot?' <span class="men">teach:'+r.recommended_spot+'</span>':'')+'</div>').join('');
- shot.src='/vision?'+Date.now();
+ /* vision stream is MJPEG (/stream): the browser owns frame updates now */
 }catch(e){console.log('poll error',e)}}
 async function mem(){
 try{
@@ -467,6 +467,9 @@ _shot_lock = threading.Lock()
 _shot_cache = {"jpg": None, "t": 0, "vision": None}
 _refresh_thread = [None]
 _last_viewer = [0.0]          # last time /vision, /shot or the page was touched
+_stream_frame = {"jpg": None, "t": 0.0, "seq": 0}   # latest MJPEG frame (annotated)
+_stream_cond = threading.Condition()
+_stream_clients = [0]         # active /stream multipart viewers
 
 
 def _note_viewer():
@@ -474,52 +477,36 @@ def _note_viewer():
 
 
 def _refresh_background():
-    """Start refreshing the cached shot in a daemon thread; /shot always serves
-    instantly from the cache and never blocks."""
+    """Refresh the cached shot in a daemon thread (on-demand, e.g. ?fresh=1);
+    both /shot and /vision always serve instantly from the cache. Same single
+    capture path as the stream loop (no duplicate adb contention)."""
     if _refresh_thread[0] is not None and _refresh_thread[0].is_alive():
         return
-    def work():
-        with _shot_lock:
-            try:
-                img = _screencap()
-                # The overlay IS the star: annotate the frame with what the ML
-                # recognizes (tower HP boxes, elixir, slots, unit zones).
-                # Copy FIRST: vision_overlay mutates the image it draws on.
-                try:
-                    ov = vision_overlay(img.copy())
-                except Exception:
-                    import traceback
-                    try:
-                        open("dash_errors.log", "a").write(
-                            f"overlay failed: {traceback.format_exc()}\n")
-                    except Exception:
-                        pass
-                    ov = None
-                small = img.copy()
-                small.thumbnail((360, 780))
-                buf2 = io.BytesIO()
-                small.save(buf2, format="JPEG", quality=66)
-                _shot_cache["jpg"] = buf2.getvalue()
-                if ov is not None:
-                    bufov = io.BytesIO()
-                    ov.save(bufov, format="JPEG", quality=72)
-                    _shot_cache["vision"] = bufov.getvalue()
-                _shot_cache["t"] = time.time()
-            except Exception:
-                import traceback
-                try:
-                    open("dash_errors.log", "a").write(
-                        f"refresh failed: {traceback.format_exc()}\n")
-                except Exception:
-                    pass
-    _refresh_thread[0] = threading.Thread(target=work, daemon=True)
+    _refresh_thread[0] = threading.Thread(target=_capture_and_cache, daemon=True)
     _refresh_thread[0].start()
 
 
 def _screencap(retries=1):
-    # adb is shared with the bot loop; a concurrent grab can blip — retry once
+    """Raw-framebuffer capture: `screencap` without -p skips the phone-side PNG
+    encode entirely (measured 2.7s vs 3.8s on this device over Wi-Fi adb) and
+    decodes straight into PIL via the 12-byte w/h/format header. Falls back to
+    the PNG path if the raw buffer looks wrong."""
+    import struct
     for attempt in range(retries + 1):
         try:
+            out = subprocess.run(["adb", "-s", DEV, "exec-out", "screencap"],
+                                 capture_output=True, timeout=12)
+            raw = out.stdout
+            if raw and len(raw) > 16:
+                w, h = struct.unpack("<II", raw[:8])
+                if (0 < w < 20000 and 0 < h < 40000):
+                    for hdr_len in (12, 16):
+                        need = hdr_len + w * h * 4
+                        if len(raw) >= need:
+                            from PIL import Image
+                            return Image.frombuffer("RGBA", (w, h),
+                                                    raw[hdr_len:need]).convert("RGB")
+            # raw path unusable → classic PNG capture
             out = subprocess.run(["adb", "-s", DEV, "exec-out", "screencap", "-p"],
                                  capture_output=True, timeout=12)
             if out.stdout and len(out.stdout) > 5000:
@@ -532,30 +519,68 @@ def _screencap(retries=1):
     raise RuntimeError("screencap failed after retries")
 
 
+def _capture_and_cache():
+    """One capture → annotated JPEG + small JPEG. Updates the /vision and /shot
+    caches AND pushes into the MJPEG stream slot (notifies waiting viewers).
+    Returns the wall-clock duration."""
+    t0 = time.time()
+    with _shot_lock:
+        try:
+            img = _screencap()
+            try:
+                ov = vision_overlay(img.copy())
+            except Exception:
+                import traceback
+                try:
+                    open("dash_errors.log", "a").write(
+                        f"overlay failed: {traceback.format_exc()}\n")
+                except Exception:
+                    pass
+                ov = None
+            small = img.copy()
+            small.thumbnail((360, 780))
+            buf2 = io.BytesIO()
+            small.save(buf2, format="JPEG", quality=66)
+            _shot_cache["jpg"] = buf2.getvalue()
+            if ov is not None:
+                bufov = io.BytesIO()
+                ov.save(bufov, format="JPEG", quality=72)
+                _shot_cache["vision"] = bufov.getvalue()
+                with _stream_cond:
+                    _stream_frame["jpg"] = _shot_cache["vision"]
+                    _stream_frame["t"] = time.time()
+                    _stream_frame["seq"] += 1
+                    _stream_cond.notify_all()
+            _shot_cache["t"] = time.time()
+        except Exception:
+            import traceback
+            try:
+                open("dash_errors.log", "a").write(
+                    f"refresh failed: {traceback.format_exc()}\n")
+            except Exception:
+                pass
+    return time.time() - t0
+
+
 def _auto_refresher():
-    """Continuously refresh the frame cache in the background so the phone panel
-    is ALWAYS current. The old loop slept 2.3s AFTER a ~2-3s capture, so a new
-    frame landed only every ~5s and the panel showed a ~2-5s-old phone screen
-    (the reported 'really delayed'). Now:
-      * the cycle targets ~1.8s wall-clock (sleep shrinks by the capture time),
-      * captures PAUSE when nobody has viewed /vision or /shot for 6s, so the
-        dashboard never contends with the bot's own adb screencaps while
-        idle, and
+    """MJPEG stream heart: captures continuously and PUSHES every new frame to
+    any connected /stream viewer (no polling, no cache staleness — the viewer
+    sees the frame within ms of its capture). Two protections:
+      * when nobody is watching (0 stream clients, no /vision or /shot for 6s)
+        the loop parks — the dashboard never contends with the bot's own
+        adb captures while idle,
       * failed captures back off 2.5s instead of spinning hot."""
     fail_streak = 0
     while True:
-        idle = time.time() - _last_viewer[0]
-        if idle > 6:
-            time.sleep(min(2.0, idle))
+        if (_stream_clients[0] <= 0) and (time.time() - _last_viewer[0] > 6):
+            time.sleep(1.0)
             continue
-        t0 = time.time()
-        _refresh_background()
-        dt = time.time() - t0
+        dt = _capture_and_cache()
         if dt >= 11.5:                      # screencap timed out (12s) → failed
             fail_streak += 1
         else:
             fail_streak = 0
-        time.sleep(0.2 if fail_streak else max(0.05, 1.8 - dt))
+        time.sleep(2.5 if fail_streak else max(0.05, 1.0 - dt))
 
 
 def shot(force=False):
@@ -681,6 +706,38 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _stream_mjpeg(self):
+        """MJPEG multipart stream: each connected viewer gets EVERY new frame
+        the moment the capture loop produces it — no polling, no client-side
+        cache-busting, no staleness on top of the capture latency itself."""
+        import socket as _sk
+        self.close_connection = True
+        _stream_clients[0] += 1
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            last_seq = 0
+            _sk.setdefaulttimeout(60)
+            while True:
+                with _stream_cond:
+                    while _stream_frame["seq"] == last_seq:
+                        if not _stream_cond.wait(timeout=15.0):
+                            return              # no capture activity → stop
+                    last_seq = _stream_frame["seq"]
+                    jpg = _stream_frame["jpg"]
+                if jpg is None:
+                    continue
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n" +
+                                 f"Content-Length: {len(jpg)}\r\n\r\n".encode() +
+                                 jpg + b"\r\n")
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, _sk.timeout):
+            pass                                # viewer closed the tab: normal
+        finally:
+            _stream_clients[0] -= 1
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
@@ -696,6 +753,8 @@ class H(BaseHTTPRequestHandler):
             _note_viewer()
             fresh = "fresh=1" in (self.path or "")
             self._send(vision_bytes(force=fresh), "image/jpeg")
+        elif path == "/stream":
+            self._stream_mjpeg()
         elif path == "/health":
             self._send(json.dumps(health()).encode(), "application/json")
         else:
