@@ -313,7 +313,7 @@ public class MainActivity extends Activity {
                         while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
                     }
                     tmp.renameTo(apkFile);
-                    runOnUiThread(this::launchInstaller);
+                    runOnUiThread(() -> launchInstaller());
                 } catch (Exception e) {
                     runOnUiThread(() -> {
                         status.setTextColor(Color.parseColor("#f85c70"));
