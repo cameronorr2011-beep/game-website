@@ -142,6 +142,18 @@ def run(files_dir, ctx):
                      "then pick Start Now (or Entire screen) in the dialog")
 
     # ---- import the full brain (can take ~30-60 s on first run) ------------
+    # v27: point the NEW data modules at filesDir BEFORE importing the brain.
+    # card_index / deck_state compute their default data paths from __file__,
+    # which in Chaquopy resolves INSIDE the APK (not a readable filesystem
+    # location); their data now lives in filesDir like every other json
+    # (cards_v2.json etc. extracted by MainActivity.copyAssets).
+    import card_index
+    import deck_state
+    card_index.DB_PATH = os.path.join(files_dir, "cards_v2.json")
+    card_index._DB = None                    # force a re-load from filesDir
+    deck_state.ACTIVE_PATH = os.path.join(files_dir, "active_deck.json")
+    deck_state.RECO_PATH = os.path.join(files_dir, "recommended_deck.json")
+
     _log("importing full brain (torch DQN, spiking nucleus, referee, coach)")
     import bot_ml
 

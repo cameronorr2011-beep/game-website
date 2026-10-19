@@ -11,8 +11,8 @@ android {
         applicationId "com.neuroml.app"
         minSdk 24
         targetSdk 33
-        versionCode 26
-        versionName "26.0"
+        versionCode 27
+        versionName "27.0"
 
         ndk { abiFilters "arm64-v8a" }
 
@@ -74,7 +74,10 @@ tasks.register("copyBotPython", Copy) {
 
 tasks.register("copyBotData", Copy) {
     from(botSrc) {
-        include "cards.json", "my_deck.json", "meta_decks.json"
+        // cards_v2.json is REQUIRED: the canonical card DB the deck-aware
+        // counter hotfix validates every deck against. meta_decks/cards are
+        // shipped reference data too.
+        include "cards.json", "my_deck.json", "meta_decks.json", "cards_v2.json"
         // bot_config.json ships as an Android template instead (device: local)
     }
     into "src/main/assets/neuroml"

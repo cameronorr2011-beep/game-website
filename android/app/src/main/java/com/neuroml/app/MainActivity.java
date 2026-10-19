@@ -22,6 +22,7 @@ import android.widget.Toast;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -257,18 +258,60 @@ public class MainActivity extends Activity {
                 () -> pollCaptureReady(attempt + 1), 600);
     }
 
-    /** bot data files (json) → filesDir so relative-path logic in bot_ml.py works. */
+    /**
+     * bot data files (json) → filesDir so relative-path logic in bot_ml.py
+     * works. Two classes:
+     *  - USER data (my_deck.json, bot_config.json): once-only — an existing
+     *    file is NEVER overwritten (v26 explicit rule, kept).
+     *  - SHIPPED reference data (cards.json, cards_v2.json, meta_decks.json):
+     *    refreshed on app update when the bundled copy differs, otherwise the
+     *    phone keeps playing against an outdated card DB after every update
+     *    (the deck-aware counters hotfix depends on cards_v2.json).
+     */
     private void copyAssets() {
-        String[] files = {"cards.json", "bot_config.json", "my_deck.json", "meta_decks.json"};
-        for (String f : files) {
+        String[] userFiles = {"my_deck.json", "bot_config.json"};
+        String[] shippedFiles = {"cards.json", "cards_v2.json", "meta_decks.json"};
+        for (String f : userFiles) {
             File out = new File(getFilesDir(), f);
             if (out.exists()) continue; // never overwrite user memory/config
-            try (InputStream in = getAssets().open("neuroml/" + f);
-                 OutputStream os = new FileOutputStream(out)) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-            } catch (Exception ignored) { }
+            copyOne(f, out);
         }
+        for (String f : shippedFiles) {
+            File out = new File(getFilesDir(), f);
+            if (!out.exists()) { copyOne(f, out); continue; }
+            // refresh only when the bundled copy actually differs (cheap read)
+            byte[] onDisk = readAll(out);
+            byte[] bundled = readAllQuietly("neuroml/" + f);
+            if (bundled != null && !java.util.Arrays.equals(onDisk, bundled)) copyOne(f, out);
+        }
+    }
+
+    private void copyOne(String asset, File out) {
+        try (InputStream in = getAssets().open("neuroml/" + asset);
+             OutputStream os = new FileOutputStream(out)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+        } catch (Exception ignored) { }
+    }
+
+    private byte[] readAll(File f) {
+        try (InputStream in = new FileInputStream(f);
+             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } catch (Exception e) { return new byte[0]; }
+    }
+
+    private byte[] readAllQuietly(String asset) {
+        try (InputStream in = getAssets().open(asset);
+             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            return bos.toByteArray();
+        } catch (Exception e) { return null; }
     }
 }
