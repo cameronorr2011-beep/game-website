@@ -132,8 +132,11 @@ check("compact profile = 768-wide x 6 blocks (~7.89M measured)",
 _os.environ["QNET_PROFILE"] = "advanced"
 net_a = QNet()
 pr_a = param_report(net_a)
-check("advanced profile = mandated 1280-wide x 8 blocks (~27.93M measured)",
-      25_000_000 <= pr_a["trainable_params"] <= 32_000_000 and pr_a["depth"] == 8 and pr_a["width"] == 1280)
+# Advanced is now the 1 GiB-class policy (PROMPT 4 P4): 2560-wide x 20 blocks
+# = ~270M fp32 params ~ 1.03 GiB. Re-assert the REAL numbers from the
+# instantiated modules, never from comments.
+check("advanced profile = 2560-wide x 20 blocks (≈1 GiB fp32 policy — P4 tiled)",
+      250_000_000 <= pr_a["trainable_params"] <= 300_000_000 and pr_a["depth"] == 20 and pr_a["width"] == 2560)
 check("fp32 size claim matches parameter count", abs(pr_a["fp32_mb"] - pr_a["trainable_params"] * 4 / 1048576) < 0.5)
 out_a = net_a(_t.randn(1, 38))
 check("forward pass works on advanced profile", tuple(out_a.shape) == (1, 20))

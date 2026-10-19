@@ -66,7 +66,46 @@ PHONE_LOCAL_MODE = (os.environ.get("NEUROML_PHONE_LOCAL", "0") == "1"
 SHOT_DIR = "cr_bot"
 os.makedirs(SHOT_DIR, exist_ok=True)
 LOG = open("bot.log", "a", buffering=1, encoding="utf-8", errors="replace")
-CARDS_DB = json.load(open("cards.json"))
+# ---- canonical card database (PROMPT 4 P1B) -----------------------------
+# Cards now come from card_index (cards_v2.json: verified costs/roles/targets,
+# spell geometry, sources, confidence). The old cards.json shipped 13 cards
+# while the ACTIVE deck played ice_golem/ice_spirit/the_log — three unknown
+# cards were silently substituted (cost=9 → unplayable, role "support" →
+# wrong tactics) forever. Unknown cards now FAIL LOUDLY and tactical layers
+# gate on them; nothing is silently substituted.
+import card_index as _card_idx
+import deck_state as _deck_state
+import hand_tracker as _hand_tracker
+import spell_ledger as _spell_ledger
+import affect as _affect_mod
+import decision_log as _decision_log
+import brain_xl as _brain_xl
+
+_CARDS_RAW = _card_idx.load()
+CARDS_DB = {k: v for k, v in _CARDS_RAW.items() if not k.startswith("_")}
+
+# ---- the deck/hand/spell truth objects (PROMPT 4 P1A/C, P2A) ---------------
+# One live tracker + one spell ledger per process, shared by every consumer
+# (state build, referee, policy, attribution). Initialized from the ACTIVE
+# deck (deck_state.json, verified/uncertain semantics — never faked).
+_HT = _hand_tracker.HandTracker()
+_SPELLS = _spell_ledger.SpellLedger()
+_AFFECT = _affect_mod.Affect()
+_DLOG = _decision_log.DecisionLogger()
+
+
+def _hand_cards_costs():
+    """Live hand + per-slot verified costs (None = identity unknown).
+    Used by state building and every affordability consumer."""
+    hand = _HT.live_hand()
+    costs = []
+    for c in hand:
+        try:
+            costs.append(_card_idx.info(c).get("cost")) if c else None
+        except Exception:
+            costs.append(None)
+    return hand, costs
+
 
 # ============================================================
 # CARD COUNTERS & MATCHUP INTELLIGENCE (opponent & self card matrix)
@@ -641,9 +680,21 @@ def scan_arena_vision(img):
     }
 
 
+def spell_tower_damage_frac(name):
+    """Canonical (community-estimated, source-labeled in cards_v2.json) spell
+    damage as a fraction of a princess tower. UNKNOWN spell → 0.0: no invented
+    damage, no fake finisher."""
+    sp = _card_idx.spell_profile(_card_idx.normalize_card(name)) or {}
+    return float(sp.get("tower_damage_frac") or 0.0)
+
+
 def hand_affordability(img, mlxir):
-    """True pixel-level card affordability check: scans the pink/magenta elixir
-    drop badge beneath each of the 4 cards in hand (y=2160..2235)."""
+    """Three-state affordability per slot (P1D):
+       1.0 = pink elixir badge VISIBLE → affordable
+       0.0 = badge absent → unaffordable
+       0.5 = UNKNOWN (badge undetectable) → treated as not playable
+    The old fallback `afford[mlxir % 4] = 1.0` (fabricate an affordable slot
+    when vision failed) is REMOVED — no faith-based plays."""
     centers = [332, 543, 737, 931]
     afford = []
     for cx in centers:
@@ -654,8 +705,6 @@ def hand_affordability(img, mlxir):
             and img.getpixel((x, y))[1] < 100
         )
         afford.append(1.0 if pink >= 8 else 0.0)
-    if sum(afford) == 0 and mlxir >= 2:
-        afford[mlxir % 4] = 1.0
     return afford
 
 
@@ -677,13 +726,11 @@ ENEMY_TOWER_XY = {"left": (233, 470), "right": (845, 470)}
 
 
 def physics_finisher(towers, hand_deck, mlxir, afford=None):
-    """REAL PHYSICS targeting (deterministic, not advisory): find the LOWEST-HP
-    alive enemy tower and check whether ANY held, affordable spell's damage
-    covers its remaining HP. Spell damage as a fraction of a fresh tower's HP
-    (fireball ≈ 1/3, arrows ≈ 1/6, zap ≈ 1/10) comes from the spell-physics
-    table below. Returns the kill decision or None; never guesses."""
-    SPELL_TOWER_DAMAGE = {"fireball": 0.33, "arrows": 0.17, "zap": 0.12,
-                          "rocket": 0.38, "lightning": 0.40}
+    """REAL PHYSICS targeting (deterministic): find the LOWEST-HP alive enemy
+    tower and cast a held, affordable, VERIFIED spell whose canonical damage
+    covers its remaining HP. Damage fractions come from cards_v2.json (source-
+    labeled community estimates) — never invented. Slots with an unverified
+    hand identity never authorize a kill shot (P1C)."""
     alive = [(towers.get(k, 1.0), side) for side, k in
              (("left", "enemy_left"), ("right", "enemy_right"))]
     alive = [(hp, side) for hp, side in alive if hp > 0.03]   # alive towers only
@@ -691,13 +738,14 @@ def physics_finisher(towers, hand_deck, mlxir, afford=None):
         return None
     hp, side = min(alive)   # the LOWEST-HP tower is always the target
     for slot_idx, name in enumerate((hand_deck or [])[:4]):
-        info = CARDS_DB.get((name or "").lower(), {})
-        if info.get("role") != "spell":
+        norm = _card_idx.normalize_card(name)
+        info = CARDS_DB.get(norm, {})
+        if not name or info.get("role") != "spell":
             continue
         cost = info.get("cost", 9)
-        if cost > mlxir or afford is not None and slot_idx < len(afford) and afford[slot_idx] < 0.5:
+        if cost > mlxir or afford is not None and slot_idx < len(afford) and afford[slot_idx] < 0.9:
             continue
-        dmg = SPELL_TOWER_DAMAGE.get((name or "").lower(), 0.0)
+        dmg = spell_tower_damage_frac(name)
         if dmg >= hp - 0.02:
             return {"side": side, "slot": slot_idx, "hp": hp, "dmg": dmg,
                     "spell": name, "target_xy": ENEMY_TOWER_XY[side]}
@@ -712,15 +760,101 @@ def tower_finish_check(towers, hand_deck, mlxir):
     for side, key in (("left", "enemy_left"), ("right", "enemy_right")):
         hp = towers.get(key, 1.0)
         if 0.0 < hp <= TOWER_FINISH_THRESHOLD:
-            for slot_idx, name in enumerate(hand_deck[:4]):
-                info = CARDS_DB.get(name, {})
+            for slot_idx, name in enumerate((hand_deck or [])[:4]):
+                if not name:                    # unverified slot: NO finisher
+                    continue
+                info = CARDS_DB.get(_card_idx.normalize_card(name), {})
                 if info.get("role") == "spell" and info.get("cost", 9) <= mlxir:
-                    # Rough damage coverage: fireball 33%, arrows 17%, zap 12% of avg tower HP
-                    dmg_est = {"fireball": 0.33, "arrows": 0.17, "zap": 0.12}.get(name, 0.0)
+                    dmg_est = spell_tower_damage_frac(name)   # canonical, sourced
                     if dmg_est >= hp - 0.02:
                         finishers.append({"side": side, "slot": slot_idx,
                                           "dmg": dmg_est, "tower_hp": hp})
     return finishers
+
+
+def spell_cast_value_gate(name, arena, towers, spot_n=None, finishers=None):
+    """Data-driven per-spell tactical gate (P2B). Deterministic, measured-
+    evidence based: arena pixel counts + canonical spell profile decide.
+    Returns {ok, reason, spot_override?}. Spells are NOT interchangeable.
+      fireball   value = meaningful cluster (>=5 red px) OR finisher
+      arrows     value = swarm/air-swarm (>=6 px of small targets)
+      zap        value = swarm/reset/finisher (>=3 px) — cheap, so faster ok
+      the_log    value = ground bar mass along its path (>=4 px, ground only)
+      rocket     value = finisher only (6 elixir justified)
+      lightning  value = finisher OR heavy tank lock-on (>=15 px mass)
+      poison     value = zone over unit mass in a delay window (>=6 px)
+      rage/goblin_barrel/barbarian_barrel/tornado = zone/delivery families:
+      value only with real follow-up commitments (kept conservative here).
+    Defensive value allowed ONLY at defend rows with genuine lane evidence —
+    never blanket-banned (P2B's own rule)."""
+    norm = _card_idx.normalize_card(name)
+    inf = CARDS_DB.get(norm, {})
+    sp = (inf.get("spell") or {})
+    if inf.get("role") != "spell":
+        return {"ok": True, "reason": "not a spell"}
+    if finishers:
+        return {"ok": True, "reason": "finisher available (verified)"}
+    e_l = int(arena.get("enemy_left", 0) or 0)
+    e_r = int(arena.get("enemy_right", 0) or 0)
+    eb_l = int(arena.get("enemy_bridge_l", 0) or 0)
+    eb_r = int(arena.get("enemy_bridge_r", 0) or 0)
+    air = int(arena.get("air_threat", 0) or 0)
+    lane_mass = (e_l + eb_l) if "left" in (spot_n or "") else (e_r + eb_r)
+
+    if norm == "fireball":
+        if (e_l + e_r) >= 5:
+            return {"ok": True, "reason": f"cluster {e_l + e_r}px of red mass"}
+        return {"ok": False, "reason": "no meaningful cluster for fireball"}
+    if norm == "arrows":
+        if air >= 6:
+            return {"ok": True, "reason": f"air swarm {air}px"}
+        if (e_l + e_r) >= 6:
+            return {"ok": True, "reason": f"swarm {e_l + e_r}px"}
+        return {"ok": False, "reason": "no swarm worth arrows"}
+    if norm == "zap":
+        if (e_l + e_r) >= 3 or air >= 3:
+            return {"ok": True, "reason": f"swarm/reset target {e_l + e_r}+{air}px"}
+        return {"ok": False, "reason": "not enough zap value"}
+    if norm in ("the_log", "barbarian_barrel"):
+        if (e_l + e_r) >= 4 and air == 0:
+            return {"ok": True, "reason": f"ground mass {e_l + e_r}px on path"}
+        return {"ok": False, "reason": "log path value insufficient"}
+    if norm == "rocket":
+        return {"ok": False, "reason": "rocket only on verified finisher"}
+    if norm == "lightning":
+        if (e_l + e_r) >= 15:
+            return {"ok": True, "reason": f"heavy lock-on {e_l + e_r}px"}
+        return {"ok": False, "reason": "lightning needs a heavy target"}
+    if norm == "poison":
+        if (e_l + e_r) >= 6:
+            return {"ok": True, "reason": f"zone mass {e_l + e_r}px (delay window)"}
+        return {"ok": False, "reason": "poison zone without mass is waste"}
+    if norm in ("tornado", "rage", "goblin_barrel"):
+        return {"ok": False, "reason": f"{norm} requires a real follow-up plan (conservative)"}
+    return {"ok": False, "reason": "spell not in the gate table (conservative)"}
+
+
+def validate_final_action(action, hand_deck, afford, tracker=None):
+    """The LAST legality gate (P2C): every correction layer (rules/referee/
+    twin planner/spiking veto) may have produced an unreachable play; verify
+    slot, identity, afford and spot against the live truth before the tap.
+    Returns (ok, reason). The caller reverts to the network's masked choice
+    and logs the veto when False."""
+    slot, spot_i = divmod(action, 5)
+    if not (0 <= spot_i < 5):
+        return False, f"spot {spot_i} outside the 5-placement map"
+    if not (0 <= slot < 4):
+        return False, f"slot {slot} not a hand slot"
+    card = ((hand_deck or [None] * 4) + [None] * 4)[slot]
+    if not card:
+        return False, f"slot {slot} identity unknown (no verified observation)"
+    if afford and slot < len(afford) and afford[slot] < 0.9:
+        return False, f"slot {slot} not verified affordable"
+    if tracker is not None:
+        card2, why = tracker.authorize_play(slot)
+        if not card2:
+            return False, f"slot {slot} refused by tracker ({why})"
+    return True, "ok"
 
 
 def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, finishers=None, opponent=None):
@@ -735,21 +869,50 @@ def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, fini
     if not hand_deck:
         return action, "net"
     slot, spot_i = divmod(action, 5)
-    if slot >= len(hand_deck) or not afford or slot >= len(afford) or afford[slot] < 0.5:
+    if slot >= len(hand_deck) or not afford or slot >= len(afford) or afford[slot] < 0.9:
+        # 0.5 (UNKNOWN) is NOT playable: no fabricated affordability (P1D)
         return action, "net"
     name = (hand_deck[slot] or "").lower()
-    info = CARDS_DB.get(name, {})
+    if not name:
+        return action, "net:unverified-slot"
+    info = CARDS_DB.get(_card_idx.normalize_card(name), {})
     role = info.get("role", "support")
     spot_n = SPOT_NAMES[spot_i]
 
     # RULE 1: spell finisher — aim at the weak tower instead of a bridge drop
     if role == "spell" and finishers:
         f = min(finishers, key=lambda x: x["tower_hp"])
+        # P5 scenario 9: a big lane push is a genuine defensive emergency —
+        # the kill shot waits one tick unless we can afford defense AND finish.
+        threat = (int(arena.get("enemy_left", 0) or 0)
+                  + int(arena.get("enemy_bridge_l", 0) or 0)
+                  + int(arena.get("enemy_right", 0) or 0)
+                  + int(arena.get("enemy_bridge_r", 0) or 0))
+        fin_info = CARDS_DB.get(_card_idx.normalize_card((hand_deck or [""] * 4)[f["slot"]] or ""), {})
+        fcost = int(fin_info.get("cost", 9) or 9)
+        if threat >= 8 and mlxir < fcost + 2:
+            return action, (f"defer finisher: defensive emergency "
+                            f"(threat {threat}px, elixir {mlxir} < {fcost}+2)")
         finish_spot = 0 if f["side"] == "left" else 1   # bridge_left/bridge_right rows hit tower area
         return f["slot"] * 5 + finish_spot, f"finisher->{f['side']}"
-    # RULE 2: spells never "defend" — waste; prefer a finisher or center_back
-    if role == "spell" and spot_n in ("left_defend", "right_defend"):
-        return slot * 5 + 4, "spell_no_defend"   # center_back = cast mid-field (value)
+    # RULE 2 (P2B): per-spell VALUE gate — spells are not interchangeable.
+    # Defensive spell usage stays allowed when measured evidence justifies it;
+    # no more "cast because a slot was affordable".
+    if role == "spell":
+        gate = spell_cast_value_gate(name, arena, towers, spot_n, finishers)
+        if not gate["ok"]:
+            alt = None
+            for i in range(4):
+                if i >= len(hand_deck) or i >= len(afford):
+                    continue
+                c2 = (hand_deck[i] or "").lower()
+                inf2 = CARDS_DB.get(_card_idx.normalize_card(c2), {}) if c2 else {}
+                if c2 and inf2.get("role") != "spell" and inf2.get("cost", 9) <= mlxir and afford[i] >= 0.9:
+                    alt = i
+                    break
+            if alt is not None:
+                return alt * 5 + 2, f"spell_gate:{gate['reason']} -> {hand_deck[alt]} instead"
+            return slot * 5 + 4, f"spell_gate:{gate['reason']} (no affordable non-spell — will be judged honestly by the spell ledger)"
     # RULE 3: heavy commitment discipline — tank/win_condition needs elixir support
     if role in ("tank", "win_condition") and spot_n.startswith("bridge"):
         if mlxir < info.get("cost", 5) + 1:
@@ -764,7 +927,7 @@ def card_play_policy(action, mlxir, lane, arena, towers, afford, hand_deck, fini
         return slot * 5 + 4, "building pulls center"
     # RULE 6: opponent card-counter intelligence under active lane threat
     if lane and opponent and opponent.get("last_inferred_card"):
-        aff_slots = [i for i in range(min(4, len(afford))) if afford[i] > 0.5]
+        aff_slots = [i for i in range(min(4, len(afford))) if afford[i] >= 0.9]
         cnt = select_counter_card(opponent["last_inferred_card"], hand_deck, aff_slots, threat_lane=lane)
         if cnt and cnt["slot"] != slot and role not in ("building", "spell"):
             c_spot_idx = SPOT_TO_ACTION.get(cnt["recommended_spot"], 4)
@@ -1608,8 +1771,21 @@ class SynapticResBlock(nn.Module):
 QNET_PROFILES = {
     "compact": (768, 6),
     "standard": (1024, 6),
-    "advanced": (1280, 8),
+    # HONEST sizing for the 1 GiB-or-bigger Advanced brain (P4): measured-in-
+    # fp32 policy weights ≥ 1 GiB (bot_ml.brain_xl.measure_policy/checkpoint),
+    # separate cost accounting (target net + optimizer + replay NOT counted).
+    # ~270M params ≈ 1.03 GiB — deliberately DESKTOP ONLY (phone forces
+    # standard) and labeled train-limited until enough verified match data
+    # exists. Never loaded or trained on the UI thread.
+    "advanced": (2560, 20),
 }
+
+
+def qnet_profile_for_this_device():
+    """Profile resolution with the Android capability guard applied.
+    Phone builds never load Advanced (Ram guard), never on the UI thread."""
+    phone = bool(os.environ.get("NEUROML_PHONE_LOCAL"))
+    return _brain_xl.choose_profile(phone=phone)
 
 
 def param_report(net):
@@ -1664,6 +1840,9 @@ class QNet(nn.Module):
         import os as _os
         req_prof = profile or _os.environ.get("QNET_PROFILE") or _os.environ.get("NEUROML_PROFILE") or "standard"
         if req_prof not in QNET_PROFILES:
+            req_prof = "standard"
+        # Android/RAM guard: the phone (and any UI thread) never loads Advanced.
+        if "NEUROML_PHONE_LOCAL" in _os.environ and req_prof == "advanced":
             req_prof = "standard"
         self.profile = req_prof
         wide, depth = QNET_PROFILES[self.profile]
@@ -2116,17 +2295,20 @@ def build_state(mlxir, lv, rv, phase, last_slot, last_spot,
     state[0] = mlxir / 10.0
     state[1] = min(lv / 100.0, 1.0)
     state[2] = min(rv / 100.0, 1.0)
-    try:
-        hand_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or ["musketeer", "knight", "archers", "giant"]
-    except Exception:
-        hand_deck = ["musketeer", "knight", "archers", "giant"]
+    # LIVE HAND (P1C): the tracker owns the truth. No deck-file[:4] fake.
+    # Unknown slot identities propagate as None (no fabricated costs), and
+    # every consumer gates on verification before committing tactics.
+    hand_deck = _HT.live_hand()
     for i, name in enumerate(hand_deck[:4]):
-        c = CARDS_DB.get((name or "").strip().lower(), {}).get("cost", 4)
-        state[3 + i] = c / 10.0
+        info = CARDS_DB.get(_card_idx.normalize_card(name), {}) if name else {}
+        c = info.get("cost", None)
+        state[3 + i] = (c / 10.0) if c is not None else 0.0   # unknown → honest 0
         if afford is not None and i < len(afford):
             state[7 + i] = float(afford[i])
-        else:
+        elif c is not None:
             state[7 + i] = 1.0 if c <= mlxir else 0.0
+        else:
+            state[7 + i] = 0.0           # identity unknown → not playable
     state[11 + (phase % 3)] = 1.0
     state[14 + (last_slot % 4)] = 1.0
     state[18 + (last_spot % 5)] = 1.0
@@ -2325,9 +2507,14 @@ def main():
     cards_played = 0
     mentor_cooldown = 0.0
     from referee import CheapCycleMonitor, referee_evaluate
-    cheap_monitor = CheapCycleMonitor()
-    opp_memory_store = _load_opponent_memory()
-    _init_twin()   # restore local digital-twin ensemble if present (bounded caps)
+    # Deck state: ACTIVE deck truth (deck_state.json), then the hand tracker.
+    _ds = _deck_state.load_active(default_cards=None)
+    _HT.set_deck(_ds["deck"], verified=_ds.get("verified", False))
+    _metrics["deck_state"] = _deck_state.summary()
+    if _metrics["deck_state"].get("active_uncertain"):
+        log("DECK STATE: active deck is UNVERIFIED ("
+            + (_metrics["deck_state"]["active_uncertain"] or "unknown provenance")
+            + ") — no recommendation is ever silently applied")
     game_memory = _load_game_memory()
     # LIFETIME RECORD SEED: the W/L counters start from the durable game-memory
     # book instead of from zero on every restart (dashboard honesty fix).
@@ -2492,6 +2679,7 @@ def main():
                     forbidden |= spike_agent.vetoed
                 action = brain.act(state_s, forbidden=forbidden, pain_channels=pain_channels,
                                    bias=_spike_bias)
+                _net_action_orig = action   # masked-legal choice of record (P2C)
                 # Bounded Digital Twin planner check (active only when TWIN_PLAN_ENABLED
                 # AND the ensemble beats its persistence baseline on held-out data)
                 _twin_planned = None
@@ -2503,7 +2691,15 @@ def main():
                             value_fn=lambda sp: float(brain.policy(torch.tensor(sp, dtype=torch.float32)).max().item())
                         )
                         if _twin_planned and isinstance(_twin_planned.get("action"), int):
-                            action = _twin_planned["action"]
+                            # Legality guard (P2C #10): a planner correction may
+                            # never smuggle in an unmasked action.
+                            _twin_a = int(_twin_planned["action"])
+                            if _twin_a in legal_cand:
+                                action = _twin_a
+                            else:
+                                _metrics["twin_veto"] = (
+                                    f"planner proposed illegal action {_twin_a}; ignored (legality guard)")
+                                _twin_planned = None
                 except Exception:
                     _twin_planned = None
                 _metrics["pain_channels_active"] = sum(1 for v in pain_channels.values() if v <= PAIN_VETO_THRESHOLD)
@@ -2512,11 +2708,10 @@ def main():
                 mentor = None
 
                 # ---- GAME-KNOWLEDGE REFEREE (rules on top of the network) ----
-                hand_deck = []
-                try:
-                    hand_deck = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
-                except Exception:
-                    pass
+                # The REAL hand (P1C) — previously the deck file's first 4
+                # cards, an assumption that mis-fed the referee after every
+                # play.
+                hand_deck = _HT.live_hand()
                 finishers = tower_finish_check(towers, hand_deck, mlxir)
                 # ---- PHYSICS OVERRIDE (lowest-HP tower law): a kill shot is
                 # deterministic — if a held affordable spell can kill an enemy
@@ -2524,6 +2719,19 @@ def main():
                 # the network or the coach prefers. No Q-value may drop a
                 # 1-tap tower kill for a safer-looking play. ----
                 _kill = physics_finisher(towers, hand_deck, mlxir, afford)
+                # EMERGENCY GATE (P2C #9): with heavy lane pressure (≥6 bridge
+                # px) a defensive response outweighs a tower chip — the
+                # finisher is deferred and re-tried after the push is answered.
+                # A truly lethal shot (dmg ≥ tower hp) still wins immediately:
+                # physics_finisher only returns when the kill completes now.
+                if _kill:
+                    _brid = int(arena.get("enemy_bridge_l", 0) or 0) \
+                        + int(arena.get("enemy_bridge_r", 0) or 0)
+                    if lane is not None and _brid >= 8:
+                        log(f"RULES: defensive emergency overrides finisher "
+                            f"(bridge={_brid}px) — kill deferred, defense first")
+                        _metrics["physics"]["deferred"] = "defensive emergency"
+                        _kill = None
                 if _kill:
                     _metrics["physics"] = {
                         "law": "lowest-HP tower",
@@ -2592,39 +2800,39 @@ def main():
                 dmg_source = None
                 _events = []  # every labeled dopamine/punishment event this tick
 
-                # ---- SPELL VALUE TRACKING: did the spell cast ONE tick ago hit
-                # anything? (enemy units present, or enemy tower HP dropped)
-                # Hitting nothing = WASTED SPELL = heavy punishment. ----
-                if last_spell_played is not None and opponent_arena_prev is not None and prev_towers is not None:
-                    _slot_i, _spot_i = last_spell_played
-                    _spell_name = ""
-                    try:
-                        _deck_now = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
-                        _spell_name = _deck_now[_slot_i] if _slot_i < len(_deck_now) else ""
-                    except Exception:
-                        pass
-                    _role = CARDS_DB.get(str(_spell_name).lower(), {}).get("role")
-                    if _role == "spell":
-                        _hit_units = (opponent_arena_prev.get("enemy_left", 0) +
-                                      opponent_arena_prev.get("enemy_right", 0)) >= 1
-                        _el_tower_drop = max(0.0, prev_towers.get("enemy_left", 1) - towers.get("enemy_left", 1))
-                        _er_tower_drop = max(0.0, prev_towers.get("enemy_right", 1) - towers.get("enemy_right", 1))
-                        _hit_tower = (_el_tower_drop + _er_tower_drop) >= 0.03
-                        if _hit_units or _hit_tower or _finisher_cast:
-                            _v = "damaged units" if _hit_units else ("chipped enemy tower" if _hit_tower else "finisher attempt")
-                            _bonus = REWARD_WEIGHTS["spell_connected"]
-                            reward += _bonus
-                            _events.append((f"✨ spell connected: {_v}", _bonus))
-                            log(f"SPELL VALUE: {_spell_name} {_v} -> +{_bonus:.2f}")
-                        else:
-                            _punish = REWARD_WEIGHTS["spell_wasted"]
-                            record_pain(pain_channels, _slot_i, _spot_i, _punish)
-                            _save_pain_channels(pain_channels)
-                            reward += _punish
-                            _events.append((f"🚫 WASTED SPELL {_spell_name} — hit nothing", _punish))
-                            log(f"SPELL WASTED: {_spell_name} hit nothing -> {_punish:+.2f}")
-                _finisher_cast = False
-                last_spell_played = None
+                # ---- SPELL OUTCOME ACCOUNTING (spell_ledger, P2A) — honest
+                # per-cast records: identity AT CAST from the live tracker,
+                # in-area pixel evidence within each spell's own window, three
+                # outcomes, exactly-once attribution, REAL pain only on a
+                # verified WASTED, zero consequence on UNKNOWN. ----
+                try:
+                    if _SPELLS.casts:
+                        bars_post = _spell_ledger.collect_bars(img)
+                        for v in _SPELLS.evaluate(bars_post, towers):
+                            if v["outcome"] == _spell_ledger.RESULT_CONNECT:
+                                _b = _SPELLS.credit_for(v["outcome"],
+                                        CARDS_DB.get(_card_idx.normalize_card(v["card"]), {}).get("cost", 0),
+                                        v["finisher"])
+                                reward += _b
+                                _events.append((f"✨ spell CONNECTED {v['card']}: {v['reason']}", _b))
+                                _AFFECT.note_event(_b, "spell_connect")
+                                log(f"SPELL CONNECTED: {v['card']} — {v['reason']} (+{_b:.2f})")
+                            elif v["outcome"] == _spell_ledger.RESULT_WASTED:
+                                _cst = CARDS_DB.get(_card_idx.normalize_card(v["card"]), {}).get("cost", 0) or 0
+                                _p = _SPELLS.pain_for(v["outcome"], _cst)
+                                record_pain(pain_channels, int(v["slot_at_cast"]) % 4,
+                                            int(v["spot_at_cast"]) % 5, _p)
+                                _save_pain_channels(pain_channels)
+                                reward += _p
+                                _events.append((f"🚫 WASTED {v['card']} — REAL PAIN: {v['reason']}", _p))
+                                _AFFECT.note_event(_p, "spell_waste")
+                                log(f"SPELL WASTED: {v['card']} — {v['reason']} → pain {_p:+.2f}")
+                            else:   # UNKNOWN — the honest no-consequence outcome
+                                _events.append((f"❔ spell UNKNOWN {v['card']} — no reward, no punishment", 0.0))
+                                log(f"SPELL UNKNOWN: {v['card']} — {v['reason']} (evidence inconclusive)")
+                    _metrics["spell_ledger"] = _SPELLS.stats()
+                except Exception as e:
+                    log(f"spell ledger note: {e}")
 
                 if prev_towers is not None:
                     dl = max(0.0, prev_towers["ally_left"] - towers["ally_left"])
@@ -2788,6 +2996,19 @@ def main():
                         reward += REWARD_WEIGHTS["wrong_lane_defense"]
                         _events.append(("❌ defended the WRONG lane", REWARD_WEIGHTS["wrong_lane_defense"]))
 
+                # FINAL LEGALITY VETO (P2C #3): rules, twin planner and the
+                # spiking core may all have touched the action; the tap only
+                # executes when the LIVE truth (slot card, affordability, spot)
+                # validates. Anything illegal falls back to the network's
+                # already-masked choice, and every veto is logged with a reason.
+                _legal, _why = validate_final_action(action, hand_deck, afford, _HT)
+                if not _legal:
+                    log(f"FINAL-ACTION VETO: {_why} — reverting to the network's masked choice")
+                    _metrics["final_veto"] = {"vetoed": action, "reason": _why}
+                    action = _net_action_orig
+                    slot, spot_i = divmod(action, 5)
+                    spot_n = SPOT_NAMES[spot_i]
+
                 # Humanized swipe: tiny jitter on start point + variable duration
                 jx = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
                 jy = random.randint(-SWIPE_START_JITTER, SWIPE_START_JITTER)
@@ -2797,16 +3018,33 @@ def main():
                 sx, sy = (_cast_xy if _cast_xy else FIELD_SPOTS[spot_n])
                 sh(["shell", "input", "swipe", str(x + jx), str(y + jy), str(sx), str(sy), str(dur)])
                 time.sleep(0.45)
-                # Track spell casts for next-tick value judgment (hit vs wasted)
-                _played_name = ""
-                try:
-                    _deck_now = json.load(open(AUTONOMOUS_DECK_FILE)).get("deck") or []
-                    _played_name = _deck_now[slot] if slot < len(_deck_now) else ""
-                except Exception:
-                    pass
-                if CARDS_DB.get(str(_played_name).lower(), {}).get("role") == "spell":
-                    last_spell_played = (slot, spot_i)
-                    _finisher_cast = bool(finishers) and "finisher" in rule_note
+                # ---- LIVE HAND COMMIT + SPELL CAST RECORD (P1C + P2A) ----
+                # The tracker advances the cycle for VERIFIED plays only; the
+                # spell ledger records identity/geometry AT CAST (pre-frame
+                # evidence), then judges it on later frames in its own window.
+                _played_card, _commit_why = _HT.commit_play(slot)
+                _played_name = _played_card or ""
+                if _played_card and _card_idx.is_spell(_played_card):
+                    try:
+                        _sid = _SPELLS.record(
+                            card=_played_card, hand_slot=slot, spot_at_cast=spot_i,
+                            cast_xy=_cast_xy, pre_frame_stats=_spell_ledger.collect_bars(img),
+                            pre_towers=towers,
+                            card_info_spell=_card_idx.spell_profile(_played_card),
+                            screen_w=img.width, screen_h=img.height,
+                            lane=lane, finisher=_cast_xy is not None,
+                            tick=tick_in_match)
+                        last_spell_played = (slot, spot_i)
+                        _finisher_cast = bool(finishers) and "finisher" in rule_note
+                        log(f"SPELL CAST recorded #{_sid}: {_played_card} "
+                            f"slot{slot}->{spot_n} xy={_cast_xy} (#{len(_SPELLS.casts)} pending)")
+                    except Exception as e:
+                        log(f"spell ledger record note: {e}")
+                        last_spell_played = (slot, spot_i)
+                        _finisher_cast = bool(finishers) and "finisher" in rule_note
+                if not _played_card:
+                    log(f"HAND COMMIT: slot{slot} identity not verified — "
+                        f"cycle not advanced ({_commit_why})")
                 cards_played += 1
                 tick_in_match += 1
                 # game-memory accumulators
@@ -2823,6 +3061,40 @@ def main():
                     f"slot={slot} spot={spot_n} reward={reward:+.2f} eps={brain.epsilon:.2f} "
                     f"loss={f'{train_loss_ma:.4f}' if train_loss_ma else 'n/a'}"
                 )
+                # ---- P6 DECISION LOG + HONEST AFFECT (emote/self-model) ----
+                # One structured record per tick: hand belief, affordances,
+                # Q values, vetoes, spell state, reward components, training.
+                try:
+                    _deck_now = _deck_state.load_active()
+                    _HT_tick = _HT.describe()
+                    _AFFECT.note_event(reward, spot_n)
+                    _AFFECT.speak_state(_HT_tick, _HT.conservative_mode(), _SPELLS.stats(), mlxir)
+                    _metrics["hand"] = _HT_tick
+                    _metrics["affect"] = _AFFECT.snapshot()
+                    _metrics["deck_state"] = _deck_state.summary()
+                    _DLOG.tick(
+                        deck_id=_deck_now, deck_version=_deck_now.get("updated", "?"),
+                        hand=_HT_tick["hand"], conf=_HT_tick["conf"],
+                        cycle_ok=_HT_tick["cycle_known"], conservative=_HT_tick["conservative"],
+                        elixir=mlxir, afford=afford,
+                        legal_mask_n=int(_metrics.get("masked_actions", 0) or 0),
+                        q_top3=_metrics["thinking"]["q_values_top3"],
+                        chosen_q=_metrics["thinking"]["chosen_q"],
+                        slot=slot, spot=spot_n, card=_played_card or (_HT.live_hand()[slot] or "unknown-slot"),
+                        target_xy=_cast_xy or list(FIELD_SPOTS[spot_n]),
+                        origin=_origin, rule_note=rule_note,
+                        vetoes=sorted(spike_agent.vetoed),
+                        spell={"stats": _SPELLS.stats(), "pending": len(_SPELLS.casts),
+                               "recent": _SPELLS.dump(5)},
+                        reward_events=_comp,
+                        train_loss=train_loss_ma,
+                        td_err=_metrics["thinking"]["td_error_recent"],
+                        replay_size=len(brain.buffer), eps=brain.epsilon,
+                        model_profile=brain.profile,
+                        model_mb=_metrics.get("model_report", {}).get("fp32_mb"),
+                        affect=_metrics["affect"])
+                except Exception as e:
+                    log(f"decision-log note: {e}")
                 _metrics["epsilon"] = brain.epsilon
                 _metrics["neurons"] = brain.dopamine_report(state_s)
                 # Real-time ML equations panel (what the model is literally computing)
