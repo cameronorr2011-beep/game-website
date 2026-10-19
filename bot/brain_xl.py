@@ -25,19 +25,28 @@ import os
 PROFILE_TABLE = {
     "compact":  (768, 6),
     "standard": (1024, 6),
+    "extended": (1408, 8),   # desktop default from v27 (user: "more neuron parameters")
     "advanced": (2560, 20),
 }
 
 CHECKPOINTS = {
     "compact":  "ml_policy_compact.pt",
     "standard": "ml_policy.pt",
+    "extended": "ml_policy_extended.pt",
     "advanced": "ml_policy_advanced.pt",
 }
 
 
-def choose_profile(cfg=None, env=None, phone=False, default="standard"):
-    """Resolve the requested profile. Phone NEVER loads advanced (capability
-    guard, not a preference). Unknown names fall back to standard loudly."""
+def choose_profile(cfg=None, env=None, phone=False, default=None):
+    """Resolve the requested profile. Phone NEVER loads advanced/extended
+    (capability guard, not a preference). Since v27 a DESKTOP with no explicit
+    preference defaults to 'extended' — the user asked for more neuron
+    parameters, sized honestly and measured from instantiated modules.
+    Unknown names fall back loudly.
+    Note for tests/federated: pass default='standard' explicitly when a
+    specific profile must be pinned regardless of device."""
+    if default is None:
+        default = "standard" if phone else "extended"
     env = env if env is not None else os.environ
     requested = None
     try:
@@ -47,7 +56,7 @@ def choose_profile(cfg=None, env=None, phone=False, default="standard"):
     requested = requested or env.get("NEUROML_PROFILE") or env.get("QNET_PROFILE")
     requested = (requested or "").strip().lower() or None
     if phone and requested not in (None, "", "compact", "standard"):
-        return default, f"advanced requested but this is the phone build; forced {default}"
+        return default, f"requested profile too big for the phone build; forced {default}"
     if requested in PROFILE_TABLE:
         return requested, f"requested profile selected"
     if requested:

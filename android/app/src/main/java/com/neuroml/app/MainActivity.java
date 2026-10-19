@@ -18,6 +18,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Button;
 import android.widget.Toast;
 
 import java.io.BufferedReader;
@@ -40,6 +41,7 @@ public class MainActivity extends Activity {
     private static final String PREFS = "nml";
     private TextView status;
     private Switch brainSwitch;
+    private Button updateBtn;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -88,6 +90,13 @@ public class MainActivity extends Activity {
             startActivity(new Intent(this, DashboardActivity.class));
         }));
 
+        // ---- AUTOUPDATE (v27: every push publishes a new release — keep up) --
+        updateBtn = btn("⬇ Update available — tap to install", v -> installUpdate());
+        updateBtn.setVisibility(View.GONE);
+        updateBtn.setBackgroundColor(Color.parseColor("#123b33"));
+        root.addView(updateBtn);
+        startUpdateCheck();
+
         TextView note = new TextView(this);
         note.setText("Automating Clash Royale violates Supercell's ToS — use an account you accept losing. The bot taps only inside the game and never opens account or deck screens.");
         note.setTextColor(Color.parseColor("#6e7b8a"));
@@ -108,14 +117,20 @@ public class MainActivity extends Activity {
 
     /** Toggling OFF: stop the brain AND retire the screen-capture session
      *  (its process is going down; a fresh one-time grant is requested on the
-     *  next start — Android security calls for that anyway). */
+     *  next start — Android security calls for that anyway).
+     *  v27 hardening: the MAIN process commits its own truth synchronously
+     *  too, and stopService() runs beside the ACTION_STOP intent so a frozen
+     *  :brain process can never leave a zombie that the toggle can't kill. */
     private void stopEverything() {
         Intent stop = new Intent(this, BrainService.class);
         stop.setAction(BrainService.ACTION_STOP);
-        startService(stop);
+        try { startService(stop); } catch (Exception ignored) { }
+        try { stopService(new Intent(this, BrainService.class)); } catch (Exception ignored) { }
         try { stopService(new Intent(this, CaptureService.class)); } catch (Exception ignored) { }
-        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putBoolean("capture_ready", false).apply();
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putBoolean("capture_ready", false)
+                .putBoolean("brain_running", false)
+                .commit();   // synchronous: the toggle must reflect this NOW
         status.setText("Brain stopped — nothing is playing. Toggle ON to start again.");
     }
 
@@ -124,6 +139,23 @@ public class MainActivity extends Activity {
         super.onResume();
         SharedPreferences p = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         boolean running = p.getBoolean("brain_running", false);
+        // v27 truth check: a stale flag used to survive Android reclaiming the
+        // :brain process — the toggle then showed a LIE and OFF did nothing.
+        // The heartbeat (cr_bot/brain_alive, touched every 3s by the live
+        // brain) is the ground truth: stale heartbeat ≠ running.
+        if (running) {
+            File beat = new File(getFilesDir(), "cr_bot/brain_alive");
+            long beatMs = beat.lastModified();
+            boolean alive = beat.exists() && beatMs > 0
+                    && (System.currentTimeMillis() - beatMs) < 30_000;
+            if (!alive) {
+                p.edit().putBoolean("brain_running", false).commit();
+                p.edit().putBoolean("capture_ready", false).commit();
+                p.edit().putString("brain_error",
+                        "process was reclaimed by Android — toggle ON to restart").commit();
+                running = false;
+            }
+        }
         brainSwitch.setOnCheckedChangeListener(null);   // reflect state, don't retrigger
         brainSwitch.setChecked(running);
         brainSwitch.setOnCheckedChangeListener((CompoundButton sb, boolean on) -> {
@@ -212,6 +244,116 @@ public class MainActivity extends Activity {
         lp.setMargins(0, 12, 0, 12);
         b.setLayoutParams(lp);
         return b;
+    }
+
+    // ================= AUTO-UPDATE (v27) =====================================
+    // Every push publishes NeuroML-version.txt next to the APK in the `apps`
+    // release. On launch the app fetches it, compares with its own
+    // BuildConfig.VERSION_NAME, and if a NEWER version exists shows a one-tap
+    // "Update available" button that downloads the APK and hands it to the
+    // Android package installer (REQUEST_INSTALL_PACKAGES permission).
+    private void startUpdateCheck() {
+        new Thread(() -> {
+            try {
+                String v = readUrl("https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-version.txt");
+                if (v != null) v = v.trim();
+                String mine = getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).versionName;
+                if (v != null && !v.isEmpty() && !v.equals(mine)
+                        && versionValue(v) > versionValue(mine)) {
+                    runOnUiThread(() -> {
+                        updateBtn.setText("⬆ Update available: v" + v + " (installed " + mine + ")");
+                        updateBtn.setVisibility(View.VISIBLE);
+                    });
+                }
+            } catch (Exception e) {
+                android.util.Log.w("NeuroML-upd", "update check failed: " + e);
+            }
+        }, "neuroml-update").start();
+    }
+
+    private static long versionValue(String v) {
+        long acc = 0;
+        for (String part : v.replace("v", "").split("\\.")) {
+            try { acc = acc * 1000 + Long.parseLong(part); } catch (Exception e) { acc *= 1000; }
+        }
+        return acc;
+    }
+
+    private static String readUrl(String spec) {
+        java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(spec).openConnection();
+        c.setConnectTimeout(4000);
+        c.setReadTimeout(6000);
+        c.setInstanceFollowRedirects(true);
+        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream()));
+        return r.readLine();
+    }
+
+    private void installUpdate() {
+        try {
+            File apkFile = new File(getFilesDir(), "update/NeuroML-Android.apk");
+            if (apkFile.exists() && apkFile.length() > 1_000_000) {
+                // already downloaded — straight to the installer
+                launchInstaller(apkFile);
+                return;
+            }
+            status.setTextColor(Color.parseColor("#8b98a8"));
+            status.setText("Downloading update… (5-10 MB)");
+            new Thread(() -> {
+                try {
+                    File dir = new File(getFilesDir(), "update");
+                    dir.mkdirs();
+                    java.io.InputStream in = new java.net.URL(
+                            "https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-Android.apk")
+                            .openStream();
+                    File tmp = new File(dir, "NeuroML-Android.apk.tmp");
+                    try (java.io.OutputStream out = new FileOutputStream(tmp)) {
+                        byte[] buf = new byte[16384];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
+                    tmp.renameTo(apkFile);
+                    runOnUiThread(this::launchInstaller);
+                } catch (Exception e) {
+                    runOnUiThread(() -> {
+                        status.setTextColor(Color.parseColor("#f85c70"));
+                        status.setText("✖ Update download failed: " + e + "\nInstall manually from the GitHub releases page instead.");
+                    });
+                }
+            }, "neuroml-download").start();
+        } catch (Exception e) {
+            status.setText("✖ Update failed: " + e);
+        }
+    }
+
+    private void launchInstaller(File apkFile) {
+        try {
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, "com.neuroml.app.update", apkFile);
+            Intent i = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (android.os.Build.VERSION.SDK_INT >= 26
+                    && !getPackageManager().canRequestPackageInstalls()) {
+                status.setTextColor(Color.parseColor("#d9a13b"));
+                status.setText("Tap  Install unknown apps  and allow NeuroML, then tap ⬆ again — one-time.");
+                startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        android.net.Uri.parse("package:" + getPackageName())));
+                return;
+            }
+            status.setTextColor(Color.parseColor("#3ad0b6"));
+            status.setText("★ Confirm the installer that popped up — v" + updateApkVersion()
+                    + " installs over your current build (data kept).");
+            startActivity(i);
+        } catch (Exception e) {
+            status.setTextColor(Color.parseColor("#f85c70"));
+            status.setText("✖ Installer could not start: " + e + "\nInstall manually from the GitHub releases page.");
+        }
+    }
+
+    private String updateApkVersion() {
+        try { return readUrl("https://github.com/cameronorr2011-beep/game-website/releases/download/apps/NeuroML-version.txt").trim(); }
+        catch (Exception e) { return "?"; }
     }
 
     private void requestCapture() {

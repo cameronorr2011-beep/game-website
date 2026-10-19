@@ -1984,6 +1984,12 @@ class SynapticResBlock(nn.Module):
 QNET_PROFILES = {
     "compact": (768, 6),
     "standard": (1024, 6),
+    # "extended" — the desktop default from v27 (user-requested "more neuron
+    # parameters"): 1408-wide × 8 blocks ≈ measured ~34M params (~135 MB fp32).
+    # Old 1024-wide checkpoints migrate through the overlapping-slice migration
+    # path (epsilon + learned weights carried, fresh slices warm-start); the
+    # phone NEVER loads extended (RAM guard forces standard).
+    "extended": (1408, 8),
     # HONEST sizing for the 1 GiB-or-bigger Advanced brain (P4): measured-in-
     # fp32 policy weights ≥ 1 GiB (bot_ml.brain_xl.measure_policy/checkpoint),
     # separate cost accounting (target net + optimizer + replay NOT counted).
@@ -2051,11 +2057,17 @@ class QNet(nn.Module):
     def __init__(self, profile=None):
         super().__init__()
         import os as _os
-        req_prof = profile or _os.environ.get("QNET_PROFILE") or _os.environ.get("NEUROML_PROFILE") or "standard"
-        if req_prof not in QNET_PROFILES:
-            req_prof = "standard"
-        # Android/RAM guard: the phone (and any UI thread) never loads Advanced.
-        if "NEUROML_PHONE_LOCAL" in _os.environ and req_prof == "advanced":
+        phone = bool(_os.environ.get("NEUROML_PHONE_LOCAL"))
+        req_prof = (profile or _os.environ.get("QNET_PROFILE")
+                    or _os.environ.get("NEUROML_PROFILE") or "").strip().lower() or None
+        # Explicit profile wins (validated); otherwise brain_xl decides:
+        # desktop v27+ defaults to "extended" (user-requested bigger brain,
+        # honestly measured) while the phone stays "standard" (RAM guard).
+        if req_prof in (None, "") or req_prof not in QNET_PROFILES:
+            req_prof, _why = _brain_xl.choose_profile(phone=phone, default=None)
+        # Android/RAM guard: the phone (and any UI thread) never loads the
+        # big profiles — 2-lane desktop only, never on the UI thread.
+        if phone and req_prof in ("advanced", "extended"):
             req_prof = "standard"
         self.profile = req_prof
         wide, depth = QNET_PROFILES[self.profile]

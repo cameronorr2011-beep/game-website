@@ -36,11 +36,15 @@ public class BrainService extends Service {
      *  make the NEXT toggle skip the grant dialog and hang on a dead capture. */
     public static void reportError(Context c, String msg) {
         pythonCrashed = msg;
+        // v27: commit() (synchronous) — these flag writes are the ONLY truth
+        // the UI toggle gets, and the caller may os._exit() THIS PROCESS
+        // milliseconds later; apply() is async and could be lost mid-exit,
+        // which left the toggle permanently stuck ("can't be turned off").
         if (msg != null) c.getSharedPreferences("nml", Context.MODE_PRIVATE)
-                .edit().putBoolean("capture_ready", false).apply();
+                .edit().putBoolean("capture_ready", false).commit();
         c.getSharedPreferences("nml", Context.MODE_PRIVATE).edit()
                 .putString("brain_error", msg == null ? "" : msg)
-                .putBoolean("brain_running", msg == null).apply();
+                .putBoolean("brain_running", msg == null).commit();
     }
 
     @Override
@@ -119,7 +123,7 @@ public class BrainService extends Service {
 
     private void setRunning(boolean r) {
         getSharedPreferences("nml", Context.MODE_PRIVATE)
-                .edit().putBoolean("brain_running", r).apply();
+                .edit().putBoolean("brain_running", r).commit();
     }
 
     private Notification buildNotif(String text) {

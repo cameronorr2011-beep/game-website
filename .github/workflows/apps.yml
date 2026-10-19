@@ -53,9 +53,15 @@ jobs:
           CHAQUOPY_BUILD_PYTHON: ${{ steps.pyhost.outputs.python-path }}
 
       - name: Stage APK
+        # NeuroML-version.txt (e.g. "27.0") is the auto-update marker the app
+        # polls; NeuroML-Android.apk keeps its stable download name so the
+        # URL from before never changes.
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/debug/app-debug.apk dist/NeuroML-Android.apk
+          VER=$(grep -oE 'versionName "[0-9.]+"' android/app/build.gradle | head -1 | grep -oE '[0-9]+[.][0-9]+' | head -1)
+          test -n "$VER" && echo "$VER" > dist/NeuroML-version.txt
+          echo "apk version: $VER"
           ls -lh dist
 
       - uses: actions/upload-artifact@v4
@@ -70,7 +76,9 @@ jobs:
           name: NeuroML published apps
           draft: false
           prerelease: false
-          files: dist/NeuroML-Android.apk
+          files: |
+            dist/NeuroML-Android.apk
+            dist/NeuroML-version.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -224,4 +224,39 @@ def run(files_dir, ctx):
     BRAIN_STATE["result"] = "running"
     BrainService.pythonCrashed = None
     _log("brain + dashboard running (playing the account signed in on this phone)")
+
+    # ---- WATCHDOG + HEARTBEAT (v27 fixes: toggle desync after leaving screen)
+    # The UI process previously trusted a SharedPreferences flag that could go
+    # stale when Android reclaimed the :brain process or the MediaProjection
+    # died with the screen off — the toggle then showed a lie and OFF felt
+    # broken. Now Python writes a live heartbeat the UI can trust, and a
+    # genuinely dead capture is reported honestly instead of zombifying.
+    def _watchdog():
+        alive_path = os.path.join(files_dir, "cr_bot", "brain_alive")
+        dead_since = None
+        while True:
+            if _STATE["phase"] != "running":
+                break
+            try:
+                open(alive_path, "w").write(str(time.time()))
+                live = CaptureService.ready()
+                if not live and CaptureService.screenW() != 0:
+                    # projection existed once — so it DIED (screen off / revoke)
+                    dead_since = dead_since or time.time()
+                    if time.time() - dead_since > 20.0:
+                        _fail("screen capture died (screen off or Android revoked "
+                              "it) — the toggle was running a zombie; tap 🧠 OFF, "
+                              "then ON to restart cleanly")
+                        break
+                else:
+                    dead_since = None
+            except Exception:
+                pass
+            time.sleep(3.0)
+        try:
+            open(os.path.join(files_dir, "cr_bot", "brain_alive"), "w").close()
+        except Exception:
+            pass
+
+    threading.Thread(target=_watchdog, daemon=True, name="neuroml-watchdog").start()
     return "running"
