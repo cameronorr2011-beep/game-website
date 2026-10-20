@@ -147,6 +147,14 @@ canvas{width:100%;height:130px;margin:4px 0}
     </div>
     <div class="card"><h2>What the model is thinking (live equations)</h2>
       <div class="eq" id="eq">waiting for first battle tick…</div></div>
+    <div class="card"><h2>📜 Battle log (recent battles + live brain log)</h2>
+      <div id="battles" style="font-size:11px;font-family:var(--font-mono);color:var(--dim)">loading battle log…</div>
+      <div id="blog" style="height:210px;overflow-y:auto;font-size:10.5px;font-family:var(--font-mono);
+        background:var(--surface2);border:1px solid var(--line-soft);border-radius:var(--r-md);
+        padding:6px;margin-top:8px;white-space:pre-wrap;line-height:1.5">loading brain log…</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px">
+        every finished battle (verdict · dopamine · towers) and the live brain log — same feed on phone and desktop,
+        so a phone-side failure is never a silent dead screen.</div></div>
     <div class="card"><h2>Groq mentor (end-of-match summaries — zero reward authority)</h2>
       <div class="coach" id="feed">waiting…</div></div>
     <div class="card"><h2>🃏 Card counters, matchup read & 30-day meta engine</h2>
@@ -389,6 +397,24 @@ try{
  const cf=await(await fetch('/coach')).json();
  feed.innerHTML=cf.slice(-50).reverse().map(r=>'<div><span class="pun">'+r.t+'</span> played <b>'+(r.played||'')+'</b> — '+(r.critique||'')+
   (r.reward_delta!=null?' <span class="pun">'+r.reward_delta+'</span>':'')+(r.recommended_spot?' <span class="men">teach:'+r.recommended_spot+'</span>':'')+'</div>').join('');
+ try{const bl=await(await fetch('/battles')).json();
+  const be=document.getElementById('battles');
+  if(bl.length){be.innerHTML=bl.slice(0,14).map(b=>
+   '<div style="display:flex;gap:8px;padding:2px 0;border-bottom:1px solid var(--line-soft)">'+
+   '<span style="width:84px;color:var(--dim)">'+b.t+'</span>'+
+   '<b style="width:44px;color:'+(b.v==='WIN'?'#3fb950':'#f85c70')+'">'+b.v+'</b>'+
+   '<span>dop '+(b.dop>=0?'+':'')+b.dop+'</span>'+
+   '<span>⚔ '+b.towers_down+'/'+b.towers_lost+'</span>'+
+   '<span style="color:var(--dim);margin-left:auto">'+b.cards+' cards · '+b.rule_corrections+' rules</span></div>').join('')}
+  else{be.textContent='no finished battles recorded yet — the live log below shows exactly what the brain is doing'}}catch(e){}
+ try{const lg=await(await fetch('/logs')).json();
+  const lb=document.getElementById('blog');
+  const rows=(lg&&lg.log)?lg.log:[]; const errs=(lg&&lg.errors)?lg.errors:[];
+  if(rows.length||errs.length){lb.innerHTML=
+   errs.map(l=>'<div style="color:#f85c70">'+l.replace(/</g,'&lt;')+'</div>').join('')+
+   rows.map(l=>{const s=l.toLowerCase();const c=s.includes('win')?'#3fb950':(s.includes('loss')||s.includes('error')||s.includes('failed')||s.includes('crash')||s.includes('✖')?'#f85c70':(s.includes('match summary')?'#8b93ff':(s.includes('result')||s.includes('popup')||s.includes('lobby')?'#d9a13b':'#9aa7b8')));
+   return '<div style="color:'+c+'">'+l.replace(/</g,'&lt;')+'</div>'}).join('');
+   lb.scrollTop=lb.scrollHeight}}catch(e){}
  /* vision stream is MJPEG (/stream): the browser owns frame updates now */
 }catch(e){console.log('poll error',e)}}
 async function mem(){
@@ -461,6 +487,53 @@ def coach():
         return "[" + ",".join(lines[-60:]) + "]"
     except Exception:
         return "[]"
+
+
+def battles(limit=30):
+    """THE battle log: every finished match from the game-memory book —
+    timestamp, verdict, dopamine, towers, cards. Rendered in the dashboard on
+    ALL platforms so the phone finally shows battles it played (the desktop
+    could read game_memory.json by hand; the phone had no way to see it)."""
+    try:
+        mem = json.load(open("game_memory.json", encoding="utf-8"))
+    except Exception:
+        return "[]"
+    out = [{"t": m.get("t", "?"), "v": m.get("v", "?"),
+            "dop": m.get("dop", 0),
+            "towers_down": m.get("towers_down", 0),
+            "towers_lost": m.get("towers_lost", 0),
+            "cards": m.get("cards", 0),
+            "rule_corrections": m.get("rule_corrections", 0)}
+           for m in (mem.get("matches") or [])[-limit:]]
+    return json.dumps(list(reversed(out)))     # newest first
+
+
+def battle_log(tail_bytes=48000):
+    """Tail of the LIVE brain log (bot.log) + dashboard errors, as JSON lines.
+    Every result-screen verdict, score flush and match-end distillation is a
+    line in bot.log — served here so the phone's own dashboard shows the
+    battle narrative where no file inspector exists, and so a phone-side
+    failure is visible in plain text instead of a silent dead app."""
+    out = {"log": [], "errors": []}
+    try:
+        with open("bot.log", "rb") as f:
+            try:
+                f.seek(-tail_bytes, 2)
+            except OSError:
+                pass
+            lines = f.read(tail_bytes).decode("utf-8", errors="replace").splitlines()
+        # drop the partial first line produced by tailing a big file
+        if lines and not lines[0].startswith("["):
+            lines = lines[1:]
+        out["log"] = lines[-70:]
+    except Exception:
+        pass
+    try:
+        with open("dash_errors.log", "rb") as f:
+            out["errors"] = f.read(6000).decode("utf-8", errors="replace").splitlines()[-12:]
+    except Exception:
+        pass
+    return json.dumps(out)
 
 
 _shot_lock = threading.Lock()
@@ -757,6 +830,10 @@ class H(BaseHTTPRequestHandler):
             self._stream_mjpeg()
         elif path == "/health":
             self._send(json.dumps(health()).encode(), "application/json")
+        elif path == "/battles":
+            self._send(battles().encode(), "application/json")
+        elif path == "/logs":
+            self._send(battle_log().encode(), "application/json")
         else:
             self.send_response(404)
             self.end_headers()

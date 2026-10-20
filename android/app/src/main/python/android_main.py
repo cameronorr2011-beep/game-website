@@ -192,6 +192,20 @@ def run(files_dir, ctx):
         # TYPE_WINDOW_STATE_CHANGED broadcast, so we synthesize the exact two
         # lines foreground_app() parses from the service's tracked package.
         joined = " ".join(str(a) for a in args)
+        if "screencap" in joined:
+            # The desktop captures through `adb exec-out screencap -p`; the
+            # on-device brain makes the SAME call, so it must go through
+            # MediaProjection here and return real PNG bytes. Before v29 this
+            # bridge returned EMPTY stdout (returncode 0) for every sh-screencap:
+            # consumers like the post-result play-again transition loop saw
+            # nothing and silently skipped their logic.
+            try:
+                if CaptureService.screenshotPng(shot_path, 5.0):
+                    with open(shot_path, "rb") as fh:
+                        return SimpleNamespace(stdout=fh.read(), stderr=b"", returncode=0)
+            except Exception:
+                pass
+            return SimpleNamespace(stdout=b"", stderr=b"", returncode=1)
         if "dumpsys" in joined and "window" in joined:
             pkg = (TapAccessibilityService.foregroundPackage() or "").strip()
             if pkg:

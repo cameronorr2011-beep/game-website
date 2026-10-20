@@ -168,6 +168,11 @@ public class DashboardActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        // Desktop parity (v29): render the page at DESKTOP width (the same
+        // three-column layout the desktop app shows) instead of letting the
+        // WebView squish it into one reflowed column. Pinch-zoom navigates it.
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);
         web.setBackgroundColor(BG);
         web.setWebViewClient(new WebViewClient());
         setContentView(web);
