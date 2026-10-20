@@ -153,12 +153,22 @@ ex_n, sl_n, fr_n = TargetedDQN._migrate_overlapping_weights(net_s, net_c.state_d
 check("profile migration copies overlapping slices explicitly without crashing",
       sl_n > 0 and ex_n >= 1)
 
-# extended profile (desktop default v27+, user: "more neuron parameters"):
+# extended profile (desktop default v27-v30, user: "more neuron parameters"):
 # honestly measured from the instantiated module, never from the comment.
+import brain_xl as _bx
+_dprof, _dwhy = _bx.choose_profile(env={}, phone=False, default=None)
+check("v31 desktop DEFAULT profile is the 1 GiB 'advanced' brain",
+      _dprof == "advanced")  # detail: _dprof|_dwhy on failure above
+check("1 GiB claim measured, not claimed: advanced policy weights >= 1 GiB fp32",
+      _bx.measure_policy(net_a)["meets_1_gib_claim"] is True)
+check("compact/standard stay selectable as explicit fallbacks",
+      _bx.choose_profile(env={"NEUROML_PROFILE": "standard"}, phone=False, default=None)[0] == "standard"
+      and _bx.choose_profile(env={"NEUROML_PROFILE": "extended"}, phone=False, default=None)[0] == "extended")
+
 _os.environ["QNET_PROFILE"] = "extended"
 net_e = QNet()
 pr_e = param_report(net_e)
-check("extended profile = 1408-wide x 8 blocks (~34M measured, desktop default)",
+check("extended profile = 1408-wide x 8 blocks (~34M measured, former default)",
       30_000_000 <= pr_e["trainable_params"] <= 40_000_000
       and pr_e["depth"] == 8 and pr_e["width"] == 1408)
 out_e = net_e(_t.randn(1, 38))

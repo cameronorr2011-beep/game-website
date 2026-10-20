@@ -1973,13 +1973,16 @@ class SynapticResBlock(nn.Module):
 
 
 # ============================================================
-# MODEL PROFILES (scalable capacity, honestly counted / v18):
-#   compact   768 x 5  ≈ 7.5M params
-#   standard  1024 x 6 ≈ 13.7M params
-#   advanced  1280 x 10 ≈ 34-35M params (30-40M target band)
-# Chosen with NEUROML_PROFILE env var; parameter counts are computed from the
-# instantiated modules (never from hardcoded claims) and the active profile
-# plus its measured sizes are published to _metrics for the dashboard.
+# MODEL PROFILES (scalable capacity, honestly counted / v31):
+#   compact   768 x 6  ≈ 7.9M params   (fallback)
+#   standard  1024 x 6 ≈ 13.7M params  (fallback)
+#   extended  1408 x 8 ≈ 34M params    (desktop default v27–v30)
+#   advanced  2560 x 20 ≈ ~270M params ≈ 1.0+ GiB fp32 policy weights
+# Chosen with NEUROML_PROFILE env var; the DESKTOP DEFAULT is 'advanced'
+# since v31 (owner: "1 GB of neurons, computer only" — the mobile app is
+# no longer shipped). Parameter counts come from the instantiated modules
+# (never from hardcoded claims) and the active profile plus its measured
+# sizes are published to _metrics for the dashboard.
 # ============================================================
 QNET_PROFILES = {
     "compact": (768, 6),
@@ -1993,12 +1996,10 @@ QNET_PROFILES = {
     # HONEST sizing for the 1 GiB-or-bigger Advanced brain (P4): measured-in-
     # fp32 policy weights ≥ 1 GiB (bot_ml.brain_xl.measure_policy/checkpoint),
     # separate cost accounting (target net + optimizer + replay NOT counted).
-    # ~270M params ≈ 1.03 GiB. v30: no longer desktop-only — the phone now
-    # DEFAULTS to this profile (owner request: "270m params for phone; modern
-    # phones have the storage"), gated by a native pre-flight allocation in
-    # android_main that steps down loudly if the OS won't grant the memory.
-    # Still label-marked TRAIN-LIMITED until enough verified match data
-    # exists, and never trained on the UI thread.
+    # ~270M params ≈ 1.03 GiB. v31: DESKTOP DEFAULT (owner request: "1 GB of
+    # neurons"), after v30 made it phone-loadable too. Still label-marked
+    # TRAIN-LIMITED until enough verified match data exists; existing
+    # checkpoints migrate in via the overlapping-slice path.
     "advanced": (2560, 20),
 }
 
@@ -2065,10 +2066,8 @@ class QNet(nn.Module):
         req_prof = (profile or _os.environ.get("QNET_PROFILE")
                     or _os.environ.get("NEUROML_PROFILE") or "").strip().lower() or None
         # Explicit profile wins (validated); otherwise brain_xl decides:
-        # desktop defaults to "extended"; the phone now honors its own
-        # default too — android_main pre-flights native RAM and sets the
-        # requested profile BEFORE this import (v30, owner request: the
-        # 270M advanced brain is no longer desktop-only).
+        # desktop defaults to "advanced" (v31, owner request: 1 GB of
+        # neurons, computer-only operation).
         if req_prof in (None, "") or req_prof not in QNET_PROFILES:
             req_prof, _why = _brain_xl.choose_profile(phone=phone, default=None)
         # No silent downgrade here anymore: whatever reached this line IS the

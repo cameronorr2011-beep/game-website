@@ -1,11 +1,15 @@
 """NeuroML brain_xl — measurable model profiles (PROMPT 4 P4).
 
 Old claim: advanced ≈ 34-35M params (~140 MB). New honest plan:
-  compact   768  x 6   ≈ 7-8M     (phone-safe default)
-  standard  1024 x 6   ≈ 13.7M    (currently running default)
+  compact   768  x 6   ≈ 7-8M     small fallback
+  standard  1024 x 6   ≈ 13.7M    small fallback
+  extended  1408 x 8   ≈ 34M      (desktop default v27–v30)
   advanced  2560 x 20  ≈ ~270M   ≈ ~1.0+ GiB fp32 policy weights — REAL
                                     architecture, real save path, honestly
                                     labeled TRAIN-LIMITED (see below).
+                                    v31: DESKTOP DEFAULT (owner asked for
+                                    1 GB of neurons, brain runs on the
+                                    computer only).
 
 Honesty rules enforced here:
   * parameter counts come from instantiated modules (bot_ml.param_report),
@@ -19,6 +23,7 @@ Honesty rules enforced here:
     NATIVE PRE-FLIGHT before importing the brain: it proves the OS will
     actually grant the memory, and steps down LOUDLY (advanced -> extended
     -> standard) if it won't — never silently, never lying in the metrics.
+    (v31: the mobile app is no longer shipped — computer-only operation.)
   * the Advanced profile is still label-marked "train-limited until enough
     verified match data exists" (a few tens of matches cannot meaningfully
     train ~270M params) — loading it is fine, only the expectations are
@@ -29,8 +34,8 @@ import os
 PROFILE_TABLE = {
     "compact":  (768, 6),
     "standard": (1024, 6),
-    "extended": (1408, 8),   # desktop default from v27 (user: "more neuron parameters")
-    "advanced": (2560, 20),
+    "extended": (1408, 8),   # desktop default v27–v30
+    "advanced": (2560, 20),  # v31 desktop default — ~1.0+ GiB fp32 policy
 }
 
 CHECKPOINTS = {
@@ -42,17 +47,15 @@ CHECKPOINTS = {
 
 
 def choose_profile(cfg=None, env=None, phone=False, default=None):
-    """Resolve the requested profile. Since v30 the phone request is honored
-    (the v27-era hard guard was removed at the owner's request — the phone's
-    pre-flight allocation check is the only remaining gate, and it lives in
-    android_main). A DESKTOP with no explicit preference defaults to
-    'extended'; the phone's default comes from its pre-flight in
-    android_main (advanced first, stepping down only when the OS refuses
-    the allocation). Unknown names fall back loudly.
+    """Resolve the requested profile. Since v31 the DESKTOP default is
+    'advanced' — the ~270M ≈ 1.03 GiB-fp32 policy brain the owner asked for
+    (they run the brain ONLY on the computer now). Explicit requests still
+    win; unknown names fall back loudly. The phone-side pre-flight in
+    android_main is unchanged (though the mobile app is no longer shipped).
     Note for tests/federated: pass default='standard' explicitly when a
     specific profile must be pinned regardless of device."""
     if default is None:
-        default = "standard" if phone else "extended"
+        default = "standard" if phone else "advanced"
     env = env if env is not None else os.environ
     requested = None
     try:
