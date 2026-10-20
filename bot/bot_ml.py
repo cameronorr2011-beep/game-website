@@ -1987,22 +1987,26 @@ QNET_PROFILES = {
     # "extended" — the desktop default from v27 (user-requested "more neuron
     # parameters"): 1408-wide × 8 blocks ≈ measured ~34M params (~135 MB fp32).
     # Old 1024-wide checkpoints migrate through the overlapping-slice migration
-    # path (epsilon + learned weights carried, fresh slices warm-start); the
-    # phone NEVER loads extended (RAM guard forces standard).
+    # path (epsilon + learned weights carried, fresh slices warm-start). Since
+    # v30 the phone may load it too (owner request; pre-flight gates the RAM).
     "extended": (1408, 8),
     # HONEST sizing for the 1 GiB-or-bigger Advanced brain (P4): measured-in-
     # fp32 policy weights ≥ 1 GiB (bot_ml.brain_xl.measure_policy/checkpoint),
     # separate cost accounting (target net + optimizer + replay NOT counted).
-    # ~270M params ≈ 1.03 GiB — deliberately DESKTOP ONLY (phone forces
-    # standard) and labeled train-limited until enough verified match data
-    # exists. Never loaded or trained on the UI thread.
+    # ~270M params ≈ 1.03 GiB. v30: no longer desktop-only — the phone now
+    # DEFAULTS to this profile (owner request: "270m params for phone; modern
+    # phones have the storage"), gated by a native pre-flight allocation in
+    # android_main that steps down loudly if the OS won't grant the memory.
+    # Still label-marked TRAIN-LIMITED until enough verified match data
+    # exists, and never trained on the UI thread.
     "advanced": (2560, 20),
 }
 
 
 def qnet_profile_for_this_device():
-    """Profile resolution with the Android capability guard applied.
-    Phone builds never load Advanced (Ram guard), never on the UI thread."""
+    """Profile resolution. v30: both desktop and phone honor the requested
+    profile — the phone's only remaining gate is the native pre-flight in
+    android_main (proves the OS grants the RAM, steps down loudly if not)."""
     phone = bool(os.environ.get("NEUROML_PHONE_LOCAL"))
     return _brain_xl.choose_profile(phone=phone)
 
@@ -2061,14 +2065,16 @@ class QNet(nn.Module):
         req_prof = (profile or _os.environ.get("QNET_PROFILE")
                     or _os.environ.get("NEUROML_PROFILE") or "").strip().lower() or None
         # Explicit profile wins (validated); otherwise brain_xl decides:
-        # desktop v27+ defaults to "extended" (user-requested bigger brain,
-        # honestly measured) while the phone stays "standard" (RAM guard).
+        # desktop defaults to "extended"; the phone now honors its own
+        # default too — android_main pre-flights native RAM and sets the
+        # requested profile BEFORE this import (v30, owner request: the
+        # 270M advanced brain is no longer desktop-only).
         if req_prof in (None, "") or req_prof not in QNET_PROFILES:
             req_prof, _why = _brain_xl.choose_profile(phone=phone, default=None)
-        # Android/RAM guard: the phone (and any UI thread) never loads the
-        # big profiles — 2-lane desktop only, never on the UI thread.
-        if phone and req_prof in ("advanced", "extended"):
-            req_prof = "standard"
+        # No silent downgrade here anymore: whatever reached this line IS the
+        # profile. (The old hard "phone forces standard" guard was removed in
+        # v30; the pre-flight handles capability honestly and LOUDLY, with the
+        # chosen profile always echoed to the log.)
         self.profile = req_prof
         wide, depth = QNET_PROFILES[self.profile]
         self.W = wide          # instance width (WIDE/NARROW kept for older code)

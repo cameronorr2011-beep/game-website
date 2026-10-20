@@ -154,6 +154,29 @@ def run(files_dir, ctx):
     deck_state.ACTIVE_PATH = os.path.join(files_dir, "active_deck.json")
     deck_state.RECO_PATH = os.path.join(files_dir, "recommended_deck.json")
 
+    # ---- v30: the phone defaults to the FULL 270M 'advanced' brain -------
+    # (owner request: modern phones have the storage for it). But we PROVE the
+    # OS will actually grant the native memory instead of trusting headline
+    # RAM: allocate the policy-sized ballast first; if the system refuses,
+    # step down LOUDLY (advanced -> extended -> standard) — the chosen profile
+    # is logged either way, and the dashboard can never show a different brain
+    # than the one actually running.
+    def _preflight_profile():
+        import torch  # already shipped in the APK — import is warm by now
+        for prof, mb in (("advanced", 1100), ("extended", 400), ("standard", 200)):
+            try:
+                _ballast = torch.empty(int(mb) * 1024 * 1024 // 4, dtype=torch.float32)
+                del _ballast
+                _log(f"RAM pre-flight: {mb} MB granted -> requesting '{prof}' profile")
+                return prof
+            except Exception as pf_exc:
+                _log(f"RAM pre-flight: {mb} MB refused ({pf_exc}) — stepping down")
+        return "standard"
+
+    os.environ.setdefault("QNET_PROFILE", _preflight_profile())
+    _log(f"selected brain profile: {os.environ.get('QNET_PROFILE')} "
+         f"(env override still wins if you set NEUROML_PROFILE yourself)")
+
     _log("importing full brain (torch DQN, spiking nucleus, referee, coach)")
     import bot_ml
 

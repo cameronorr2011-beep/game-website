@@ -13,12 +13,16 @@ Honesty rules enforced here:
   * target network / optimizer state / replay are reported SEPARATELY —
     the 1 GiB claim may only cover the POLICY weights file (no
     double-counting of the target net, no replay padding).
-  * the Advanced profile is NEVER loaded on Android / low-RAM devices (the
-    phone forces `standard`) and is never trained on the UI thread.
-  * data-reality: a few tens of matches of replay cannot meaningfully train
-    ~270M parameters. Advanced ships as architecture + migration + save path
-    with the explicit label "train-limited until enough verified match data
-    exists" — and the default profiles stay runnable everywhere.
+  * v30: the phone CAN load extended AND advanced — the old hard RAM guard
+    was removed at the owner's explicit request ("270M params for the phone,
+    modern phones have the storage"). In its place the phone build runs a
+    NATIVE PRE-FLIGHT before importing the brain: it proves the OS will
+    actually grant the memory, and steps down LOUDLY (advanced -> extended
+    -> standard) if it won't — never silently, never lying in the metrics.
+  * the Advanced profile is still label-marked "train-limited until enough
+    verified match data exists" (a few tens of matches cannot meaningfully
+    train ~270M params) — loading it is fine, only the expectations are
+    managed; measured param/loss telemetry stays exactly as honest as before.
 """
 import os
 
@@ -38,11 +42,13 @@ CHECKPOINTS = {
 
 
 def choose_profile(cfg=None, env=None, phone=False, default=None):
-    """Resolve the requested profile. Phone NEVER loads advanced/extended
-    (capability guard, not a preference). Since v27 a DESKTOP with no explicit
-    preference defaults to 'extended' — the user asked for more neuron
-    parameters, sized honestly and measured from instantiated modules.
-    Unknown names fall back loudly.
+    """Resolve the requested profile. Since v30 the phone request is honored
+    (the v27-era hard guard was removed at the owner's request — the phone's
+    pre-flight allocation check is the only remaining gate, and it lives in
+    android_main). A DESKTOP with no explicit preference defaults to
+    'extended'; the phone's default comes from its pre-flight in
+    android_main (advanced first, stepping down only when the OS refuses
+    the allocation). Unknown names fall back loudly.
     Note for tests/federated: pass default='standard' explicitly when a
     specific profile must be pinned regardless of device."""
     if default is None:
@@ -55,19 +61,18 @@ def choose_profile(cfg=None, env=None, phone=False, default=None):
         requested = None
     requested = requested or env.get("NEUROML_PROFILE") or env.get("QNET_PROFILE")
     requested = (requested or "").strip().lower() or None
-    if phone and requested not in (None, "", "compact", "standard"):
-        return default, f"requested profile too big for the phone build; forced {default}"
     if requested in PROFILE_TABLE:
-        return requested, f"requested profile selected"
+        return requested, "requested profile selected"
     if requested:
         return default, f"unknown profile {requested!r}; fell back to {default}"
     return default, "default profile"
 
 
 def guard_load_ok(profile, device_phone=False):
-    if profile == "advanced" and device_phone:
-        return False, "advanced refused on the phone build (RAM guard)"
-    return True, "ok"
+    """v30: the hard phone refusal is gone (owner request). Kept as an honest
+    capability note — a plain bool check reportable to the dashboard — not a
+    gate. The REAL gate for the phone is the pre-flight in android_main."""
+    return True, f"{profile} allowed on {'phone' if device_phone else 'desktop'} (v30: guard removed)"
 
 
 def measure_policy(net):

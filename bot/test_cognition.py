@@ -171,6 +171,28 @@ ex_e, sl_e, fr_e = TargetedDQN._migrate_overlapping_weights(net_e, net_s.state_d
 check("standard checkpoint migrates into extended (overlap carried, fresh slices added)",
       sl_e > 0 and fr_e > 0 and ex_e >= 1)
 
+# v30: the phone-level hard guard is GONE (owner request: 270M params on the
+# phone). The phone must now honor an explicitly requested big profile, and
+# the guard check must no longer REFUSE advanced — the only remaining phone
+# gate is the native pre-flight in android_main.
+import brain_xl as _bx
+prof_p, why_p = _bx.choose_profile(env={"NEUROML_PROFILE": "advanced"}, phone=True)
+check("phone honors an explicitly requested advanced profile (v30 guard removed)",
+      prof_p == "advanced")
+ok_g, _g = _bx.guard_load_ok("advanced", device_phone=True)
+check("guard_load_ok no longer refuses advanced on the phone",
+      ok_g is True)
+
+_os.environ["NEUROML_PHONE_LOCAL"] = "1"
+_os.environ["QNET_PROFILE"] = "advanced"
+net_p = QNet()
+pr_p = param_report(net_p)
+check("phone-requested advanced brain instantiates at 2560-wide x 20 (~270M measured)",
+      250_000_000 <= pr_p["trainable_params"] <= 300_000_000
+      and pr_p["width"] == 2560 and pr_p["depth"] == 20)
+_os.environ["NEUROML_PHONE_LOCAL"] = "0"
+_os.environ["QNET_PROFILE"] = "extended"
+
 # ---------------- federated averaging (real math, including 2 & 4 w/ 1 & 3 -> 3.5) ----------------
 import federated
 
