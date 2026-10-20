@@ -157,13 +157,28 @@ check("profile migration copies overlapping slices explicitly without crashing",
 # honestly measured from the instantiated module, never from the comment.
 import brain_xl as _bx
 _dprof, _dwhy = _bx.choose_profile(env={}, phone=False, default=None)
-check("v31 desktop DEFAULT profile is the 1 GiB 'advanced' brain",
-      _dprof == "advanced")  # detail: _dprof|_dwhy on failure above
-check("1 GiB claim measured, not claimed: advanced policy weights >= 1 GiB fp32",
+check("v32 desktop DEFAULT profile is the ~630M 'apex' brain",
+      _dprof == "apex")  # detail: _dprof|_dwhy on failure above
+check("1 GiB-plus claim measured, not claimed: apex policy weights >= 1 GiB fp32",
       _bx.measure_policy(net_a)["meets_1_gib_claim"] is True)
-check("compact/standard stay selectable as explicit fallbacks",
+check("compact/standard/extended/advanced stay selectable as explicit fallbacks",
       _bx.choose_profile(env={"NEUROML_PROFILE": "standard"}, phone=False, default=None)[0] == "standard"
-      and _bx.choose_profile(env={"NEUROML_PROFILE": "extended"}, phone=False, default=None)[0] == "extended")
+      and _bx.choose_profile(env={"NEUROML_PROFILE": "extended"}, phone=False, default=None)[0] == "extended"
+      and _bx.choose_profile(env={"NEUROML_PROFILE": "advanced"}, phone=False, default=None)[0] == "advanced")
+
+# apex: measured from the instantiated module (owner escalation, v32)
+_os.environ["QNET_PROFILE"] = "apex"
+net_x = QNet()
+pr_x = param_report(net_x)
+check("apex profile = 3584-wide x 24 blocks (~630M measured, desktop default)",
+      550_000_000 <= pr_x["trainable_params"] <= 750_000_000
+      and pr_x["depth"] == 24 and pr_x["width"] == 3584)
+out_x = net_x(_t.randn(1, 38))
+check("forward pass works on apex profile", tuple(out_x.shape) == (1, 20))
+# the in-place upgrade path: the v31 270M checkpoint migrates into apex too
+ex_x, sl_x, fr_x = TargetedDQN._migrate_overlapping_weights(net_x, net_s.state_dict())
+check("standard checkpoint migrates into apex (overlap carried, slices added)",
+      sl_x > 0 and fr_x > 0)
 
 _os.environ["QNET_PROFILE"] = "extended"
 net_e = QNet()

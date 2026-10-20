@@ -1973,16 +1973,16 @@ class SynapticResBlock(nn.Module):
 
 
 # ============================================================
-# MODEL PROFILES (scalable capacity, honestly counted / v31):
-#   compact   768 x 6  ≈ 7.9M params   (fallback)
-#   standard  1024 x 6 ≈ 13.7M params  (fallback)
-#   extended  1408 x 8 ≈ 34M params    (desktop default v27–v30)
-#   advanced  2560 x 20 ≈ ~270M params ≈ 1.0+ GiB fp32 policy weights
-# Chosen with NEUROML_PROFILE env var; the DESKTOP DEFAULT is 'advanced'
-# since v31 (owner: "1 GB of neurons, computer only" — the mobile app is
-# no longer shipped). Parameter counts come from the instantiated modules
-# (never from hardcoded claims) and the active profile plus its measured
-# sizes are published to _metrics for the dashboard.
+# MODEL PROFILES (scalable capacity, honestly counted / v32):
+#   compact   768 x 6   ≈ 7.9M params    (fallback)
+#   standard  1024 x 6  ≈ 13.7M params   (fallback)
+#   extended  1408 x 8  ≈ 34M params     (desktop default v27–v30)
+#   advanced  2560 x 20 ≈ ~270M params ≈ 1.0+ GiB fp32 (v31 default)
+#   apex      3584 x 24 ≈ ~630M params ≈ 2.4+ GiB fp32 policy weights
+# Chosen with NEUROML_PROFILE env var; the DESKTOP DEFAULT is 'apex' since
+# v32 (owner: "only 270M... more"). Parameter counts come from the
+# instantiated modules (never from hardcoded claims) and the active profile
+# plus its measured sizes are published to _metrics for the dashboard.
 # ============================================================
 QNET_PROFILES = {
     "compact": (768, 6),
@@ -2001,6 +2001,11 @@ QNET_PROFILES = {
     # TRAIN-LIMITED until enough verified match data exists; existing
     # checkpoints migrate in via the overlapping-slice path.
     "advanced": (2560, 20),
+    # "apex" — v32 DESKTOP DEFAULT (owner escalation: "only 270M... more"):
+    # 3584-wide × 24 blocks ≈ measured ~630M params (~2.4 GiB fp32 policy).
+    # Same honesty rules as every profile: measured from the instantiated
+    # module, migration path shared, TRAIN-LIMITED label still applies.
+    "apex": (3584, 24),
 }
 
 
@@ -2066,8 +2071,8 @@ class QNet(nn.Module):
         req_prof = (profile or _os.environ.get("QNET_PROFILE")
                     or _os.environ.get("NEUROML_PROFILE") or "").strip().lower() or None
         # Explicit profile wins (validated); otherwise brain_xl decides:
-        # desktop defaults to "advanced" (v31, owner request: 1 GB of
-        # neurons, computer-only operation).
+        # desktop defaults to "apex" (v32, owner escalation: MORE than the
+        # 270M v31 brain).
         if req_prof in (None, "") or req_prof not in QNET_PROFILES:
             req_prof, _why = _brain_xl.choose_profile(phone=phone, default=None)
         # No silent downgrade here anymore: whatever reached this line IS the

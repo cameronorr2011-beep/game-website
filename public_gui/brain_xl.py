@@ -7,9 +7,12 @@ Old claim: advanced ≈ 34-35M params (~140 MB). New honest plan:
   advanced  2560 x 20  ≈ ~270M   ≈ ~1.0+ GiB fp32 policy weights — REAL
                                     architecture, real save path, honestly
                                     labeled TRAIN-LIMITED (see below).
-                                    v31: DESKTOP DEFAULT (owner asked for
-                                    1 GB of neurons, brain runs on the
-                                    computer only).
+                                    v31 DESKTOP DEFAULT — superseded by
+                                    'apex' in v32 (owner: "more").
+  apex      3584 x 24  ≈ ~630M  ≈ ~2.4 GiB fp32 policy weights
+                                    v32: DESKTOP DEFAULT (owner asked for
+                                    MORE neurons; brain runs on the
+                                    computer only). Same honest rules.
 
 Honesty rules enforced here:
   * parameter counts come from instantiated modules (bot_ml.param_report),
@@ -36,6 +39,7 @@ PROFILE_TABLE = {
     "standard": (1024, 6),
     "extended": (1408, 8),   # desktop default v27–v30
     "advanced": (2560, 20),  # v31 desktop default — ~1.0+ GiB fp32 policy
+    "apex":    (3584, 24),   # v32 DESKTOP DEFAULT — ~630M params, ~2.4 GiB fp32
 }
 
 CHECKPOINTS = {
@@ -47,15 +51,16 @@ CHECKPOINTS = {
 
 
 def choose_profile(cfg=None, env=None, phone=False, default=None):
-    """Resolve the requested profile. Since v31 the DESKTOP default is
-    'advanced' — the ~270M ≈ 1.03 GiB-fp32 policy brain the owner asked for
-    (they run the brain ONLY on the computer now). Explicit requests still
-    win; unknown names fall back loudly. The phone-side pre-flight in
-    android_main is unchanged (though the mobile app is no longer shipped).
+    """Resolve the requested profile. Since v32 the DESKTOP default is
+    'apex' — the ~630M ≈ 2.4 GiB-fp32 policy brain the owner escalated to
+    ("only 270M... more"; they run the brain ONLY on the computer now).
+    Explicit requests still win; unknown names fall back loudly. The
+    phone-side pre-flight in android_main is unchanged (though the mobile
+    app is no longer shipped).
     Note for tests/federated: pass default='standard' explicitly when a
     specific profile must be pinned regardless of device."""
     if default is None:
-        default = "standard" if phone else "advanced"
+        default = "standard" if phone else "apex"
     env = env if env is not None else os.environ
     requested = None
     try:
