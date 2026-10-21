@@ -7,12 +7,16 @@ Endpoints:
   /brain       live per-neuron firing + Q-values + equations (reads latest bot decision)
   /shot        live phone screenshot JPEG (cached 1.2s so page stays fast)
   /health      quick status of bot process + adb device
+  /toggle      POST {"on":true|false} — start/stop the bot process (works from
+               the in-page button in BOTH the Electron app window and plain
+               localhost: same endpoint, same behavior everywhere)
 """
 import base64
 import io
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # threaded: /shot never blocks other endpoints
@@ -108,7 +112,11 @@ canvas{width:100%;height:130px;margin:4px 0}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body>
 <h1><span class="mark">NeuroML</span> — battle brain · live dashboard</h1>
-<div class="sub"><span id="hdr_profile">13.72M-param 1024-wide × 6-layer</span> residual cortex · 90 LIF spiking neurons · 21-channel affective core · 6-layer local Digital Twin · deterministic Referee · <a href="/vision" target="_blank">raw vision overlay ↗</a></div>
+<div class="sub" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+  <button id="botToggle" class="btn" style="font-weight:700;min-width:150px;border-radius:8px" aria-label="start or stop the bot">Brain: …</button>
+  <span id="botState" style="color:var(--faint)">checking…</span>
+  <span><span id="hdr_profile">13.72M-param 1024-wide × 6-layer</span> residual cortex · 90 LIF spiking neurons · 21-channel affective core · 6-layer local Digital Twin · deterministic Referee · <a href="/vision" target="_blank">raw vision overlay ↗</a></span>
+</div>
 <div class="grid" style="grid-template-columns:310px 1fr 360px">
   <div>
     <div class="card"><h2>Phone vision (live capture)</h2>
@@ -417,10 +425,30 @@ try{
    lb.scrollTop=lb.scrollHeight}}catch(e){}
  /* vision stream is MJPEG (/stream): the browser owns frame updates now */
 }catch(e){console.log('poll error',e)}}
+function setToggle(on){
+  const b=document.getElementById('botToggle'), st=document.getElementById('botState');
+  if(!b)return;
+  b.textContent=on?'⏹ Stop brain':'▶ Start brain';
+  b.style.borderColor=on?'var(--bad)':'var(--accent)';
+  b.style.color=on?'var(--bad)':'var(--accent)';
+  if(st){st.textContent=on?'playing — the brain moves the phone':'off — nothing is playing';
+    st.style.color=on?'var(--ok)':'var(--faint)'}
+}
+async function toggleBot(){
+  const b=document.getElementById('botToggle'); if(!b||b.disabled)return;
+  const on=b.textContent.indexOf('Start')>=0;
+  b.disabled=true;
+  try{await fetch('/toggle',{method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({on})})}catch(e){}
+  b.disabled=false;
+  mem();                       // refresh right away instead of waiting 5s
+}
+document.getElementById('botToggle').addEventListener('click',toggleBot);
 async function mem(){
 try{
  const h=await(await fetch('/health')).json();
  memviz.textContent=h.mem||'';
+ setToggle(!!h.bot);
 }catch(e){}}
 setInterval(()=>{if(!document.hidden)poll()},1500);poll();
 setInterval(mem,5000);mem();
@@ -745,9 +773,63 @@ def vision_overlay(img):
 
 _health_cache = {"data": None, "t": 0}
 
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _bot_pids():
+    """PIDs of every live bot_ml.py process, regardless of who started it
+    (Electron launch, the dashboard toggle, or a manual run). Fires one cached
+    PowerShell CIM query — the old 'python.exe in tasklist' check also matched
+    the dashboard itself and any random python process."""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object {$_.CommandLine -like '*bot_ml.py*'} | "
+             "Select-Object -ExpandProperty ProcessId"],
+            capture_output=True, timeout=20, creationflags=_NO_WINDOW,
+        ).stdout.decode(errors="ignore")
+        return [int(p) for p in out.split() if p.strip().isdigit()]
+    except Exception:
+        return []
+
+
+_bot_proc = {"popen": None}
+
+
+def bot_toggle(on):
+    """Turn the brain process on/off. Same action from the desktop app window
+    and plain localhost: the button POSTs here and this kills/spawns the REAL
+    bot process tree (taskkill /T so its children go too)."""
+    pids = _bot_pids()
+    if on:
+        if pids:
+            _health_cache["t"] = 0
+            return {"ok": True, "on": True, "already": True}
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "bot_ml.py"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_NO_WINDOW)
+            _bot_proc["popen"] = proc
+            _health_cache["t"] = 0
+            return {"ok": True, "on": True, "pid": proc.pid}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    for p in pids:
+        try:
+            subprocess.run(["taskkill", "/PID", str(p), "/T", "/F"],
+                           capture_output=True, timeout=15, creationflags=_NO_WINDOW)
+        except Exception:
+            pass
+    _bot_proc["popen"] = None
+    _health_cache["t"] = 0
+    return {"ok": True, "on": False, "killed": len(pids)}
+
 
 def health():
-    """Cached 4s: the tasklist subprocess made every health poll ~0.6s."""
+    """Cached 4s: the PowerShell bot-process probe made every health poll
+    noticeable on its own."""
     if _health_cache["data"] is not None and time.time() - _health_cache["t"] < 4.0:
         return _health_cache["data"]
     items = []
@@ -760,8 +842,7 @@ def health():
             items.append(f"✔ {note} ({s // 1024} KB)")
         except Exception:
             items.append(f"✖ {note} missing")
-    bg = subprocess.run(["tasklist"], capture_output=True).stdout.decode(errors="ignore")
-    bot_running = "python.exe" in bg
+    bot_running = bool(_bot_pids())
     data = {"bot": bot_running, "device": DEV, "mem": " ".join(items)}
     _health_cache["data"] = data
     _health_cache["t"] = time.time()
@@ -834,6 +915,19 @@ class H(BaseHTTPRequestHandler):
             self._send(battles().encode(), "application/json")
         elif path == "/logs":
             self._send(battle_log().encode(), "application/json")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        if self.path.split("?")[0] == "/toggle":
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                body = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except Exception:
+                body = {}
+            result = bot_toggle(bool(body.get("on")))
+            self._send(json.dumps(result).encode(), "application/json")
         else:
             self.send_response(404)
             self.end_headers()

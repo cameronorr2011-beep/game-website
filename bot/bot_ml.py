@@ -2264,7 +2264,11 @@ class TargetedDQN:
         self.n_steps = 3
         self.epsilon = 0.35
         self.gamma = 0.95
-        self.batch = 128     # massive cortex deserves massive minibatches
+        # massive cortex deserves massive minibatches — but a GB-scale brain
+        # makes a 128-sample CPU step cost ~10 full-core minutes, freezing live
+        # play. Apex-class profiles drop the minibatch to 16 (user-approved
+        # throttle) so warm train steps stay inside the battle-tick loop.
+        self.batch = 128 if pr["trainable_params"] < 300_000_000 else 16
         self.train_every = 2  # Train every 2 battle ticks for faster convergence
         self.per_alpha = 0.6
         self.per_beta = 0.4
