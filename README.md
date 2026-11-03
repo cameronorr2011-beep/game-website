@@ -6,7 +6,7 @@ A provenance-first computational neuroscience **research foundation**, migrated 
 
 The deployed static workspace exposes the imported FlyWire FAFB v783.0 graph at `/connectome` and its supporting views at `/neurons`, `/connectivity`, `/pathways`, `/regions`, `/statistics`, `/simulations`, `/datasets`, and `/documentation`. The existing `/sleep` route remains a real short-window spiking-circuit endpoint and keeps its model-output disclosures.
 
-The browser queries a 48.5 MB compressed indexed asset containing all **139,255 proofread root IDs** and all **15,091,983 imported directed neuron-pair records**. It does not bundle the 852 MB source Feather table or the 9.5 GB individual-synapse archive. The index is generated with `python scripts/build_connectome_asset.py` from a validated local import and is described by `public/data/manifest.json`.
+The browser queries a 48.5 MB compressed indexed asset containing all **139,255 proofread root IDs** and all **15,091,983 imported directed neuron-pair records**. The API builds its transposed incoming index once per warm function instance with NumPy. It does not bundle the 852 MB source Feather table or the 9.5 GB individual-synapse archive. The index is generated with `python scripts/build_connectome_asset.py` from a validated local import and is described by `public/data/manifest.json`.
 
 Run the public site locally after preparing the asset:
 ```bash

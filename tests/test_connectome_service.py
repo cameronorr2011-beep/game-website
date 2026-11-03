@@ -22,8 +22,8 @@ def graph():
 def test_deployment_asset_reconciles_manifest(graph):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert graph.n == manifest["counts"]["neurons"] == 139255
-    assert graph.outgoing.nnz == manifest["counts"]["directed_pairs"] == 15091983
-    assert int(graph.outgoing.data.sum()) == manifest["counts"]["anatomical_synapses"] == 54492922
+    assert len(graph.out_data) == manifest["counts"]["directed_pairs"] == 15091983
+    assert int(graph.out_data.sum()) == manifest["counts"]["anatomical_synapses"] == 54492922
 
 
 def test_exact_id_search_and_directed_neighbors(graph):
@@ -32,7 +32,7 @@ def test_exact_id_search_and_directed_neighbors(graph):
     assert neuron_id.isdigit()
     record = graph.neuron(neuron_id, 3)
     assert record["id"] == neuron_id
-    assert record["degree"]["out"] == len(graph._row(graph.outgoing, record["index"], 100, 1)) or record["degree"]["out"] > 100
+    assert record["degree"]["out"] == len(graph._row(graph.out_indptr, graph.out_indices, graph.out_data, record["index"], 100, 1)) or record["degree"]["out"] > 100
     edges = graph.connections(neuron_id, "outgoing", 1, 3)["records"]
     assert edges
     assert all(edge["source"] == neuron_id for edge in edges)

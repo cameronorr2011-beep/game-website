@@ -27,9 +27,10 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def build(root: Path, output: Path) -> dict:
-    processed = root / "datasets/flywire/v783-processed"
-    source = root / "datasets/flywire/v783"
+def build(root: Path, output: Path, source_root: Path | None = None) -> dict:
+    source_root = source_root or root
+    processed = source_root / "datasets/flywire/v783-processed"
+    source = source_root / "datasets/flywire/v783"
     ids = np.load(processed / "ids.npy", allow_pickle=False).astype(np.uint64)
     adjacency = sparse.load_npz(processed / "adjacency.npz").tocsc()
     statistics = json.loads((processed / "statistics.json").read_text(encoding="utf-8"))
@@ -40,8 +41,9 @@ def build(root: Path, output: Path) -> dict:
     with tempfile.NamedTemporaryFile(dir=output.parent, prefix=output.name + ".", suffix=".npz", delete=False) as temporary:
         temporary_path = Path(temporary.name)
     try:
-        np.savez_compressed(temporary_path, ids=ids.astype("<u8"), indices=adjacency.indices.astype("<i4"),
-                            indptr=adjacency.indptr.astype("<i8"), data=np.rint(adjacency.data).astype("<i4"),
+        np.savez_compressed(temporary_path, ids=ids.astype("<u8"),
+                            out_indices=adjacency.indices.astype("<i4"), out_indptr=adjacency.indptr.astype("<i8"),
+                            out_data=np.rint(adjacency.data).astype("<i4"),
                             shape=np.asarray(adjacency.shape, dtype="<i8"))
         temporary_path.replace(output)
     finally:
@@ -50,7 +52,7 @@ def build(root: Path, output: Path) -> dict:
     processed_files = []
     for path in sorted(processed.iterdir()):
         if path.is_file():
-            processed_files.append({"file": str(path.relative_to(root)).replace("\\", "/"), "bytes": path.stat().st_size, "sha256": digest(path)})
+            processed_files.append({"file": str(path.relative_to(source_root)).replace("\\", "/"), "bytes": path.stat().st_size, "sha256": digest(path)})
     manifest = {
         "schema_version": 2,
         "generated_utc": datetime.now(timezone.utc).isoformat(),
@@ -75,7 +77,7 @@ def build(root: Path, output: Path) -> dict:
             "isolated_neurons": statistics["isolated_neurons"],
             "weak_components": statistics["weak_components"],
         },
-        "asset": {"file": str(output.relative_to(root)).replace("\\", "/"), "bytes": output.stat().st_size, "sha256": digest(output), "format": "NumPy compressed CSC index with exact IDs, target indices, source indptr, and integer weights"},
+        "asset": {"file": str(output.relative_to(root)).replace("\\", "/"), "bytes": output.stat().st_size, "sha256": digest(output), "format": "NumPy compressed canonical source-column index with exact IDs, target indices, source indptr, and integer weights"},
         "source_files": source_manifest["files"],
         "processed_files": processed_files,
         "annotation_coverage": {"cell_type": {"status": "not imported", "records": 0}, "class": {"status": "not imported", "records": 0}, "neuropil_per_neuron": {"status": "not imported", "records": 0}, "morphology": {"status": "not imported", "records": 0}, "predicted_neurotransmitter": {"status": "available in local processed import, not assigned as cell annotation", "records": statistics["neurons"]}},
@@ -91,11 +93,12 @@ def build(root: Path, output: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--source-root", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
     root = args.root.resolve()
     output = (args.output or root / "public/data/flywire-v783.npz").resolve()
-    result = build(root, output)
+    result = build(root, output, args.source_root.resolve() if args.source_root else None)
     print(json.dumps({"asset": result["asset"], "counts": result["counts"]}, indent=2))
 
 

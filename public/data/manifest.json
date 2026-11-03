@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_utc": "2026-11-03T06:51:23.901461+00:00",
+  "generated_utc": "2026-11-03T18:20:37.345842+00:00",
   "dataset": {
     "name": "FlyWire FAFB whole-brain connectome",
     "organism": "Drosophila melanogaster",
@@ -24,9 +24,9 @@
   },
   "asset": {
     "file": "public/data/flywire-v783.npz",
-    "bytes": 48560448,
-    "sha256": "745b68e670f3f4b8497874a5516ec7c0c6f1a76bbffaad5dff1bd6856b5097f7",
-    "format": "NumPy compressed CSC index with exact IDs, target indices, source indptr, and integer weights"
+    "bytes": 48560472,
+    "sha256": "ddf717f5c53883da1a131e7a2d71fbde3f900a2202ab087e796bcd2059632e5b",
+    "format": "NumPy compressed canonical source-column index with exact IDs, target indices, source indptr, and integer weights"
   },
   "source_files": [
     {

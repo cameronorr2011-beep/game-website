@@ -13,7 +13,6 @@ import json
 from typing import Any
 
 import numpy as np
-from scipy import sparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,19 +48,28 @@ class CompactConnectome:
         with np.load(asset, allow_pickle=False) as packed:
             self.ids = packed["ids"].astype(np.uint64, copy=True)
             shape = tuple(int(value) for value in packed["shape"])
-            stored = sparse.csc_matrix(
-                (packed["data"].astype(np.float64), packed["indices"], packed["indptr"]),
-                shape=shape,
-            )
-        if stored.shape != (len(self.ids), len(self.ids)):
+            self.out_indices = packed["out_indices"].astype(np.int32, copy=True)
+            self.out_indptr = packed["out_indptr"].astype(np.int64, copy=True)
+            self.out_data = packed["out_data"].astype(np.int32, copy=True)
+        if shape != (len(self.ids), len(self.ids)):
             raise ValueError("connectome asset dimensions do not match IDs")
-        # The source import stores rows=targets and columns=sources. Keep both
-        # orientations explicit so API direction cannot be accidentally flipped.
-        self.incoming = stored.tocsr()
-        self.outgoing = stored.transpose().tocsr()
+        if len(self.out_indices) != len(self.out_data):
+            raise ValueError("connectome asset index/data dimensions do not match")
+        # The browser asset stores the canonical source-column representation.
+        # Build the target-row view once per warm function instance without
+        # importing SciPy into the serverless bundle.
+        sources = np.repeat(np.arange(len(self.ids), dtype=np.int32), np.diff(self.out_indptr))
+        order = np.argsort(self.out_indices, kind="stable")
+        self.in_indices = sources[order]
+        self.in_data = self.out_data[order]
+        counts = np.bincount(self.out_indices, minlength=len(self.ids))
+        self.in_indptr = np.empty(len(self.ids) + 1, dtype=np.int64)
+        self.in_indptr[0] = 0
+        np.cumsum(counts, out=self.in_indptr[1:])
+        del sources, order, counts
         self.id_to_index = {int(value): index for index, value in enumerate(self.ids)}
-        self.out_degree = np.diff(self.outgoing.indptr)
-        self.in_degree = np.diff(self.incoming.indptr)
+        self.out_degree = np.diff(self.out_indptr)
+        self.in_degree = np.diff(self.in_indptr)
         self.total_degree = self.out_degree + self.in_degree
         self.manifest = json.loads(manifest.read_text(encoding="utf-8"))
 
@@ -78,10 +86,10 @@ class CompactConnectome:
             raise KeyError("neuron ID is not present in FAFB v783")
         return index
 
-    def _row(self, matrix: sparse.csr_matrix, index: int, limit: int, threshold: int) -> list[dict[str, Any]]:
-        start, end = int(matrix.indptr[index]), int(matrix.indptr[index + 1])
-        indices = matrix.indices[start:end]
-        values = matrix.data[start:end]
+    def _row(self, indptr: np.ndarray, indices: np.ndarray, values: np.ndarray, index: int, limit: int, threshold: int) -> list[dict[str, Any]]:
+        start, end = int(indptr[index]), int(indptr[index + 1])
+        indices = indices[start:end]
+        values = values[start:end]
         keep = values >= threshold
         indices, values = indices[keep], values[keep]
         order = np.argsort(values, kind="stable")[::-1][:limit]
@@ -93,16 +101,16 @@ class CompactConnectome:
     def neuron(self, value: str, limit: int = 20) -> dict[str, Any]:
         index = self.resolve(value)
         limit = max(1, min(int(limit), 100))
-        outgoing = self._row(self.outgoing, index, limit, 1)
-        incoming = self._row(self.incoming, index, limit, 1)
+        outgoing = self._row(self.out_indptr, self.out_indices, self.out_data, index, limit, 1)
+        incoming = self._row(self.in_indptr, self.in_indices, self.in_data, index, limit, 1)
         return {
             "id": _id(self.ids[index]),
             "index": index,
             "dataset": self.manifest["dataset"],
             "degree": {"in": int(self.in_degree[index]), "out": int(self.out_degree[index])},
             "anatomical_synapses": {
-                "in": int(self.incoming.data[self.incoming.indptr[index]:self.incoming.indptr[index + 1]].sum()),
-                "out": int(self.outgoing.data[self.outgoing.indptr[index]:self.outgoing.indptr[index + 1]].sum()),
+                "in": int(self.in_data[self.in_indptr[index]:self.in_indptr[index + 1]].sum()),
+                "out": int(self.out_data[self.out_indptr[index]:self.out_indptr[index + 1]].sum()),
             },
             "annotations": {
                 "cell_type": None,
@@ -157,8 +165,10 @@ class CompactConnectome:
             raise ValueError("direction must be incoming or outgoing")
         threshold = max(1, min(int(threshold), 10_000))
         limit = max(1, min(int(limit), 1_000))
-        matrix = self.outgoing if direction == "outgoing" else self.incoming
-        rows = self._row(matrix, index, limit, threshold)
+        indptr, indices, values = ((self.out_indptr, self.out_indices, self.out_data)
+                                    if direction == "outgoing" else
+                                    (self.in_indptr, self.in_indices, self.in_data))
+        rows = self._row(indptr, indices, values, index, limit, threshold)
         records = []
         for row in rows:
             if direction == "outgoing":
@@ -179,7 +189,7 @@ class CompactConnectome:
             "minimum_synapses": threshold,
             "records": records,
             "truncated": len(rows) >= limit,
-            "total_matching": int(np.count_nonzero(matrix.data[matrix.indptr[index]:matrix.indptr[index + 1]] >= threshold)),
+            "total_matching": int(np.count_nonzero(values[indptr[index]:indptr[index + 1]] >= threshold)),
         }
 
     def overview(self, nodes: int = 240) -> dict[str, Any]:
@@ -199,9 +209,9 @@ class CompactConnectome:
             })
         edges = []
         for source in indexes:
-            start, end = int(self.outgoing.indptr[source]), int(self.outgoing.indptr[source + 1])
-            targets = self.outgoing.indices[start:end]
-            weights = self.outgoing.data[start:end]
+            start, end = int(self.out_indptr[source]), int(self.out_indptr[source + 1])
+            targets = self.out_indices[start:end]
+            weights = self.out_data[start:end]
             order = np.argsort(weights, kind="stable")[::-1]
             count = 0
             for offset in order:
@@ -228,9 +238,9 @@ class CompactConnectome:
                 current, depth = queue.popleft()
                 if depth >= max_hops:
                     continue
-                begin, end = int(self.outgoing.indptr[current]), int(self.outgoing.indptr[current + 1])
-                candidates = [(int(self.outgoing.indices[i]), int(self.outgoing.data[i]))
-                              for i in range(begin, end) if self.outgoing.data[i] >= threshold]
+                begin, end = int(self.out_indptr[current]), int(self.out_indptr[current + 1])
+                candidates = [(int(self.out_indices[i]), int(self.out_data[i]))
+                              for i in range(begin, end) if self.out_data[i] >= threshold]
                 candidates.sort(key=lambda item: item[1], reverse=True)
                 for neighbor, _weight in candidates[:5000]:
                     if neighbor not in parents:
@@ -252,9 +262,9 @@ class CompactConnectome:
             path.reverse()
         edges = []
         for left, right in zip(path, path[1:]):
-            begin, end = int(self.outgoing.indptr[left]), int(self.outgoing.indptr[left + 1])
-            match = np.flatnonzero(self.outgoing.indices[begin:end] == right)
-            weight = int(self.outgoing.data[begin + int(match[0])]) if match.size else None
+            begin, end = int(self.out_indptr[left]), int(self.out_indptr[left + 1])
+            match = np.flatnonzero(self.out_indices[begin:end] == right)
+            weight = int(self.out_data[begin + int(match[0])]) if match.size else None
             edges.append({"source": _id(self.ids[left]), "target": _id(self.ids[right]), "synapse_count": weight})
         return {"found": True, "source": _id(self.ids[start]), "target": _id(self.ids[goal]),
                 "threshold": threshold, "max_hops": max_hops, "objective": "fewest directed edges; ties expand stronger edges first",

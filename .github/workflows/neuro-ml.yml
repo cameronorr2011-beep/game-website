@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install scientific runtime
-        run: python -m pip install -r requirements.txt pytest
+        run: python -m pip install -e '.[dev]'
       - name: Python checks
         run: python -m pytest -q
       - name: Frontend syntax check
