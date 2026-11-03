@@ -23,7 +23,7 @@ Open `http://127.0.0.1:8787`. The API is read-only and supports exact/prefix roo
 - Computational working/episodic memory, experiment provenance/performance reports and a local read-only activity/report dashboard.
 
 ## Install
-Python 3.12+ required. No API keys required.
+Python 3.11+ required. No API keys required.
 ```bash
 python -m venv .venv
 # Git Bash on Windows:

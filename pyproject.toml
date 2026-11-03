@@ -8,10 +8,10 @@ version = "0.1.0"
 description = "Provenance-first sparse connectome simulation research foundation"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["numpy>=1.26,<3", "scipy>=1.12,<2", "pyarrow>=16,<24", "psutil>=5.9,<8"]
+dependencies = ["numpy>=1.26,<3"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10"]
+dev = ["pytest>=8,<10", "scipy>=1.12,<2", "pyarrow>=16,<24", "psutil>=5.9,<8"]
 
 [project.scripts]
 neuro-ml = "neuro_ml.__main__:main"

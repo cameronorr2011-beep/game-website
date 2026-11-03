@@ -6,7 +6,7 @@
     "api/connectome.py": {
       "maxDuration": 60,
       "memory": 1024,
-      "includeFiles": ["public/data/flywire-v783.npz", "public/data/manifest.json"]
+      "includeFiles": "public/data/**"
     },
     "api/sleep.py": { "maxDuration": 60, "memory": 1024 }
   },
