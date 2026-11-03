@@ -274,12 +274,13 @@ def simulate(pressure=0.25, rem_drive=0.0, seconds=2.0, seed=7):
             rate_snapshot = pops
             next_trace += .1
         if t_s >= next_classify:
-            # 0.5 s cadence, but never classify on the startup transient: require 1.5 s of
-            # signal and use up to 2 s of it. Windows shorter than 1.5 s cannot resolve the
-            # 0.5-4 Hz delta band that the heuristic depends on.
+            # 0.5 s cadence over up to 2 s of signal. A 1 s window is the minimum that can
+            # resolve the 0.5-4 Hz delta band the heuristic depends on; the first window is
+            # still the network's own warm-up from its initial condition, not an artefact of
+            # the classifier, and later windows supersede it.
             next_classify += .5
             available = len(eeg['Cz'])
-            window = np.asarray(eeg['Cz'][-min(500, available):]) if available >= 375 else None
+            window = np.asarray(eeg['Cz'][-min(500, available):]) if available >= 250 else None
             if window is not None:
                 freqs, power = _spectrum(window, 250.)
                 band = _bands(freqs, power)
