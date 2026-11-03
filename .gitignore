@@ -1,0 +1,52 @@
+# Local environments, credentials and caches
+.venv/
+.venvs/
+.env
+.env.*
+!.env.example
+.secrets/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+*.egg-info/
+build/
+dist/
+
+# Immutable local preservation and unlicensed reference materials
+.migration-backup/
+legacy/neuroml_reference/
+legacy/hasty_cr/.venv/
+legacy/hasty_cr/.venvs/
+legacy/hasty_cr/tmp/
+legacy/hasty_cr/vendor/*/
+legacy/hasty_cr/checkpoints/
+legacy/hasty_cr/data/vod/
+legacy/hasty_cr/data/il_replay/
+legacy/hasty_cr/data/replays_xy/
+legacy/hasty_cr/data/il_rows/
+legacy/hasty_cr/data/rs_rows/
+legacy/hasty_cr/data/rs_rows_live60/
+legacy/hasty_cr/reports/rl_sprint4/matches/
+legacy/hasty_cr/research/csv_history/
+legacy/hasty_cr/tools/scrcpy/
+
+# Downloaded/versioned scientific data and generated runs (manifests remain local)
+/datasets/
+/checkpoints/
+/experiments/runs/
+*.pt
+*.pth
+*.ckpt
+*.log
+
+# Editor/agent local state
+.claude/
+.codex/
+.opencode/
+.cursor/
+.continue/
+.aider*
+.roo/
+.kiro/
+.gemini/
