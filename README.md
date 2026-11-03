@@ -2,6 +2,19 @@
 
 A provenance-first computational neuroscience **research foundation**, migrated from HASTY-CR. This is not a trained human brain, a complete whole-brain simulator, or a validated sleep physiology model.
 
+## Public research workspace
+
+The deployed static workspace exposes the imported FlyWire FAFB v783.0 graph at `/connectome` and its supporting views at `/neurons`, `/connectivity`, `/pathways`, `/regions`, `/statistics`, `/simulations`, `/datasets`, and `/documentation`. The existing `/sleep` route remains a real short-window spiking-circuit endpoint and keeps its model-output disclosures.
+
+The browser queries a 48.5 MB compressed indexed asset containing all **139,255 proofread root IDs** and all **15,091,983 imported directed neuron-pair records**. It does not bundle the 852 MB source Feather table or the 9.5 GB individual-synapse archive. The index is generated with `python scripts/build_connectome_asset.py` from a validated local import and is described by `public/data/manifest.json`.
+
+Run the public site locally after preparing the asset:
+```bash
+python scripts/build_connectome_asset.py
+python tools/local_neuro_server.py --port 8787
+```
+Open `http://127.0.0.1:8787`. The API is read-only and supports exact/prefix root-ID search, neuron records, incoming/outgoing partners, explicit synapse thresholds, bounded directed pathways, overview rendering, and graph-wide statistics.
+
 ## Implemented and measured
 - Published FlyWire FAFB **v783.0** imported: **139,255 proofread neuron IDs**, **15,091,983 directed pairs**, **54,492,922 summed anatomical synapses**. All-neuron anatomy is separate from simulated-network size. Source integrity, uint64 IDs and missing transmitter evidence are handled explicitly.
 - Sparse delayed current-based LIF, seeded noise/adaptation, exact checkpoint continuation, optional pair STDP and numerical validation.

@@ -1,0 +1,24 @@
+name: Neuro-ML research checks
+
+on:
+  push:
+    branches: [neuro-ml]
+  pull_request:
+    branches: [neuro-ml]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install scientific runtime
+        run: python -m pip install -r requirements.txt pytest
+      - name: Python checks
+        run: python -m pytest -q
+      - name: Frontend syntax check
+        run: node --check public/app.js
+      - name: Validate deployment manifest and asset
+        run: python -c "import json; from pathlib import Path; m=json.loads(Path('public/data/manifest.json').read_text()); assert m['counts']['neurons']==139255; assert m['counts']['directed_pairs']==15091983; assert Path('public/data/flywire-v783.npz').stat().st_size==m['asset']['bytes']"
