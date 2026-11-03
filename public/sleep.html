@@ -1,0 +1,190 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NeuroML · Sleep Lab</title>
+<meta name="description" content="Live spiking-circuit sleep simulation: 329 conductance-based neurons, thalamocortical and hypothalamic coupling, normalized neuromodulators and a synthetic EEG forward model.">
+<style>
+:root{--bg:#080d12;--panel:#0e1921;--line:#1e333f;--text:#dcebf0;--muted:#8aa3b0;--accent:#6fe0c8;--accent2:#8fb8ff;--warn:#e0a458}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;padding:20px 4vw;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:1.05rem;letter-spacing:.26em;color:var(--accent)}
+header a{color:var(--muted);text-decoration:none;font-size:.82rem;border:1px solid var(--line);padding:5px 10px;border-radius:6px}
+header a:hover{color:var(--accent);border-color:var(--accent)}
+main{max-width:1340px;margin:0 auto;padding:18px 4vw 64px}
+.warn{border-left:3px solid var(--warn);background:#181208;color:#f0d6ad;padding:10px 14px;border-radius:0 8px 8px 0;font-size:.85rem}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:16px 0;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:grid;gap:4px}
+input{background:#0b1620;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:96px;font:inherit}
+button{background:#17313b;color:#e8f7f4;border:1px solid #2d5561;border-radius:8px;padding:10px 18px;font:inherit;cursor:pointer}
+button.primary{background:#1c6a5e;border-color:#2d9081;font-weight:600}
+button:disabled{opacity:.45;cursor:wait}
+#status{font-size:.82rem;color:var(--muted);margin-left:auto}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:9px;margin:14px 0}
+.stats div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.stats span{display:block;font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.stats b{font-size:1.02rem;color:#c7f4e8;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+h2{margin:0 0 10px;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
+canvas{width:100%;display:block;background:#070e13;border-radius:7px}
+#net{height:420px;cursor:crosshair}
+.eeg{height:190px}#psd{height:170px}#hyp{height:130px}#mods{height:170px}#rates{height:170px}
+.inspector{font-size:.82rem;color:var(--muted);margin-top:8px;min-height:3.4em;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid #172833;font-variant-numeric:tabular-nums}
+th{color:var(--muted);font-size:.66rem;letter-spacing:.07em;text-transform:uppercase}
+.tag{font-size:.66rem;padding:1px 7px;border-radius:99px;border:1px solid var(--line)}
+.tag.lit{color:#9ff0d8;border-color:#2d7f6d}.tag.asm{color:#ffd9a8;border-color:#7a5a2a}
+.legend{display:flex;flex-wrap:wrap;gap:10px;font-size:.72rem;color:var(--muted);margin:10px 0 0}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+.limits{font-size:.8rem;color:var(--muted)}.limits li{margin:4px 0}
+@media(max-width:720px){#net{height:300px}h1{font-size:.92rem}}
+</style></head><body>
+<header><h1>NEUROML · SLEEP LAB</h1>
+<a href="/">Download</a><a href="/api/sleep?pressure=0.25&amp;seconds=1">Raw JSON</a>
+<span style="color:var(--muted);font-size:.76rem">real spiking simulation per request</span></header>
+<main>
+<p class="warn"><b>Model output, not a recording.</b> EEG is produced by a single-dipole-per-population
+forward model in arbitrary units. Stages come from a heuristic classifier. Synaptic weights are assumed
+parameters, not measured conductances. No clinical claim.</p>
+
+<div class="controls">
+  <label>Sleep pressure<input id="pressure" type="number" min="0" max="1" step="0.05" value="0.25"></label>
+  <label>REM drive (pA)<input id="rem" type="number" min="0" max="400" step="20" value="0"></label>
+  <label>Duration (s)<input id="seconds" type="number" min="0.5" max="4" step="0.5" value="2"></label>
+  <label>Seed<input id="seed" type="number" min="0" max="9999" step="1" value="7"></label>
+  <button class="primary" id="run">Run simulation</button>
+  <span id="status">idle</span>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="grid">
+  <section style="grid-column:1/-1"><h2>All instantiated neurons · click any cell to inspect</h2>
+    <canvas id="net"></canvas>
+    <div class="legend" id="legend"></div>
+    <div class="inspector" id="inspector">Select a neuron in the canvas.</div>
+  </section>
+  <section><h2>Synthetic EEG <select id="channel" style="float:right;background:#0b1620;color:inherit;border:1px solid var(--line);border-radius:5px;padding:3px 6px"></select></h2>
+    <canvas id="eeg" class="eeg"></canvas></section>
+  <section><h2>Power spectrum (Cz)</h2><canvas id="psd"></canvas></section>
+  <section><h2>Estimated stage</h2><canvas id="hyp"></canvas></section>
+  <section><h2>Neuromodulators (normalized)</h2><canvas id="mods"></canvas></section>
+  <section style="grid-column:1/-1"><h2>Population firing rates (Hz)</h2><canvas id="rates"></canvas></section>
+</div>
+
+<div class="grid" style="margin-top:14px">
+  <section><h2>Populations</h2><table id="pops"><thead><tr><th>Population</th><th>Neurons</th><th>Role</th><th>Rate</th></tr></thead><tbody></tbody></table></section>
+  <section><h2>Connection rules and provenance</h2><table id="conns"><thead><tr><th>Source → target</th><th>Synapse</th><th>nS</th><th>Delay</th><th>Provenance</th></tr></thead><tbody></tbody></table></section>
+</div>
+
+<section style="margin-top:14px"><h2>What this page does and does not show</h2>
+<ul class="limits">
+  <li>Each request integrates a fresh network (329 conductance-based neurons, ~4.6k synapses, 10 populations) — nothing is replayed or animated.</li>
+  <li>Requests are stateless and capped at 4 s of biological time, so a full night and its ultradian cycling cannot be shown here. Long runs need an always-on host.</li>
+  <li>Deep slow-wave sleep (N3) is not produced by this circuit and most low-arousal windows classify as N1; REM also rarely certifies because the circuit has no theta-generating pathway, so theta never clearly exceeds delta. Both failures are displayed rather than hidden.</li>
+  <li>Thalamic cells carry a low-threshold Ca²⁺ current; cortical cells are conductance-based integrate-and-fire, not Hodgkin–Huxley.</li>
+</ul></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const COLORS=['#6fe0c8','#8fb8ff','#e0a458','#c58fff','#ff9db1','#9ad36b','#66d3ff','#ffd166','#8ea7ff','#e58cff'];
+const STAGE_COLORS={Wake:'#8fb8ff',N1:'#6fe0c8',N2:'#9ad36b',N3:'#c58fff',REM:'#e0a458'};
+let DATA=null,POPINDEX={},SELECTED=null,CHANNEL='Cz';
+function fit(c){const r=devicePixelRatio||1;c.width=c.clientWidth*r;c.height=c.clientHeight*r;return c.getContext('2d');}
+function line(canvas,series,colors,labels){
+  const ctx=fit(canvas),W=canvas.width,H=canvas.height;ctx.clearRect(0,0,W,H);
+  const all=series.flat().filter(v=>Number.isFinite(v));if(!all.length)return;
+  let lo=Math.min(...all),hi=Math.max(...all);if(hi-lo<1e-9){hi=lo+1;lo-=1}
+  series.forEach((s,i)=>{ctx.beginPath();ctx.strokeStyle=colors[i%colors.length];ctx.lineWidth=1.5*(devicePixelRatio||1);
+    s.forEach((v,k)=>{if(!Number.isFinite(v))return;const x=10+k*(W-20)/Math.max(1,s.length-1),y=H-10-(v-lo)/(hi-lo)*(H-20);
+      k?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke()});
+  if(labels){ctx.font=(11*(devicePixelRatio||1))+'px system-ui';ctx.fillStyle='#7d95a2';
+    labels.forEach((t,i)=>ctx.fillText(t,10,16*(devicePixelRatio||1)+i*13*(devicePixelRatio||1)))}
+}
+function showStats(d){
+  const m=d.meta,h=d.hypnogram,occ=d.metrics.stage_occupancy;
+  const tiles=[['neurons',m.neurons],['synapses',m.synapses],['populations',m.populations],
+    ['rules',m.connection_rules],['literature',m.literature_rules],['assumed',m.assumed_rules],
+    ['simulated',m.simulated_s+' s'],['wall',m.wall_seconds+' s'],['realtime',m.realtime_factor+'×'],
+    ['estimates',h.length],['peak Hz',d.metrics.peak_hz],['Wake / REM',`${hist(occ.Wake)}/${hist(occ.REM)}`]];
+  $('stats').innerHTML=tiles.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('');
+}
+function hist(x){return (x*100).toFixed(0)+'%'}
+function drawNetwork(d){
+  const canvas=$('net'),ctx=fit(canvas),W=canvas.width,H=canvas.height,r=devicePixelRatio||1;
+  ctx.clearRect(0,0,W,H);const pad=40*r;const sx=(W-2*pad),sy=(H-2*pad);
+  d.connections.forEach(c=>{
+    const a=d.neurons.find(n=>n.pop===c.source),b=d.neurons.find(n=>n.pop===c.target);
+    if(!a||!b)return;
+    ctx.beginPath();ctx.strokeStyle=c.provenance==='literature'?'rgba(111,224,200,0.13)':'rgba(224,164,88,0.13)';
+    ctx.lineWidth=1*r;ctx.moveTo(pad+a.x*sx,pad+a.y*sy);ctx.lineTo(pad+b.x*sx,pad+b.y*sy);ctx.stroke();});
+  d.neurons.forEach(n=>{
+    const x=pad+n.x*sx,y=pad+n.y*sy,rad=(2.2+Math.min(3.4,Math.sqrt(n.spikes)/2.2))*r;
+    ctx.beginPath();ctx.fillStyle=COLORS[POPINDEX[n.pop]%COLORS.length];
+    ctx.globalAlpha=SELECTED===n.id?1:0.85;ctx.arc(x,y,rad,0,6.2832);ctx.fill();
+    if(SELECTED===n.id){ctx.globalAlpha=1;ctx.strokeStyle='#fff';ctx.lineWidth=1.6*r;ctx.stroke()}});
+  ctx.globalAlpha=1;ctx.font=(11*r)+'px system-ui';ctx.fillStyle='#7d95a2';
+  ctx.fillText(`${d.neurons.length} neurons · radius scales with spikes in window · colour = population`,10,18*r);
+}
+function drawHypnogram(d){
+  const canvas=$('hyp'),ctx=fit(canvas),W=canvas.width,H=canvas.height,r=devicePixelRatio||1;
+  ctx.clearRect(0,0,W,H);const h=d.hypnogram;
+  if(!h.length){ctx.fillStyle='#7d95a2';ctx.fillText('no estimates yet',10,20*r);return}
+  const w=W/Math.max(1,h.length);
+  h.forEach((e,i)=>{const bh=(H-30*r)/5;ctx.fillStyle=STAGE_COLORS[e.stage]||'#888';
+    ctx.fillRect(i*w,6*r+(4-e.index)*bh,Math.max(w-1,1),bh-1)});
+  ctx.fillStyle='#7d95a2';ctx.font=(11*r)+'px system-ui';
+  ctx.fillText(`1 s classifier windows · ${h.map(e=>e.stage).slice(-6).join(' ')}`,10,H-8*r);
+}
+function render(d){
+  DATA=d;
+  $('legend').innerHTML=d.populations.map((p,i)=>`<span><i style="background:${COLORS[i%COLORS.length]}"></i>${p.name} (${p.n})</span>`).join('');
+  const ch=$('channel');ch.innerHTML=d.eeg.channels.map(c=>`<option ${c===CHANNEL?'selected':''}>${c}</option>`).join('');
+  showStats(d);drawNetwork(d);drawHypnogram(d);
+  const idx=d.eeg.channels.indexOf(CHANNEL);
+  line($('eeg'),[d.eeg.samples[idx]],['#8fb8ff'],[`${CHANNEL} · 250 Hz · model units`]);
+  const top=d.psd.freqs.slice(1,90),pw=d.psd.power.slice(1,90);
+  const ctx=fit($('psd')),W=$('psd').width,H=$('psd').height,r=devicePixelRatio||1;
+  ctx.clearRect(0,0,W,H);const mx=Math.max(...pw,1e-12);
+  pw.forEach((p,i)=>{const y=H-14*r-(p/mx)*(H-28*r);ctx.fillStyle='rgba(143,184,255,0.8)';
+    ctx.fillRect(10+i*(W-20)/pw.length,y,(W-20)/pw.length-1,14*r+(p/mx)*(H-28*r)-H+ (H-14*r) -((p/mx)*(H-28*r)) + (p/mx)*(H-28*r) - 14*r)});
+  ctx.fillStyle='#7d95a2';ctx.font=(10*r)+'px system-ui';
+  ctx.fillText(`0–35 Hz · delta ${d.psd.bands.delta.toFixed(1)} · theta ${d.psd.bands.theta.toFixed(1)} · sigma ${d.psd.bands.sigma.toFixed(1)}`,10,H-4*r);
+  const t=d.trace,mods=Object.keys(t.modulators[0]||{});
+  line($('mods'),mods.map(k=>t.modulators.map(m=>m[k])),['#6fe0c8','#8fb8ff','#e0a458','#c58fff'],mods);
+  const pops=['cortex_e','tc','vlpo','ach_rem'];
+  line($('rates'),pops.map(p=>t.rates.map(x=>x[p]??0)),['#6fe0c8','#8fb8ff','#e0a458','#c58fff'],pops);
+  $('pops').querySelector('tbody').innerHTML=d.populations.map(p=>
+    `<tr><td>${p.name}</td><td>${p.n}</td><td>${p.role}</td><td>${p.rate_hz.toFixed(1)}</td></tr>`).join('');
+  $('conns').querySelector('tbody').innerHTML=d.connections.map(c=>
+    `<tr><td>${c.source} → ${c.target}</td><td>${c.synapse}</td><td>${c.weight_ns}</td><td>${c.delay_ms} ms</td>
+     <td><span class="tag ${c.provenance==='literature'?'lit':'asm'}">${c.provenance}</span></td></tr>`).join('');
+}
+async function run(){
+  $('run').disabled=true;$('status').textContent='integrating circuit…';
+  const qs=new URLSearchParams({pressure:$('pressure').value,rem:$('rem').value,seconds:$('seconds').value,seed:$('seed').value});
+  try{
+    const res=await fetch('/api/sleep?'+qs,{cache:'no-store'});
+    const body=await res.json();
+    if(!res.ok)throw new Error(body.error||res.status);
+    POPINDEX={};body.populations.forEach((p,i)=>POPINDEX[p.name]=i);
+    render(body);
+    $('status').textContent=`done · ${body.meta.wall_seconds}s wall · ${body.meta.realtime_factor}× real time`;
+  }catch(e){$('status').textContent='error: '+e.message}
+  finally{$('run').disabled=false}
+}
+$('run').onclick=run;
+$('channel').onchange=e=>{CHANNEL=e.target.value;if(DATA)render(DATA)};
+$('net').onclick=ev=>{
+  if(!DATA)return;const c=$('net'),rect=c.getBoundingClientRect();
+  const r=devicePixelRatio||1,pad=40*r,W=c.width,H=c.height;
+  const px=(ev.clientX-rect.left)*r,py=(ev.clientY-rect.top)*r;
+  let best=null,bd=1e9;
+  DATA.neurons.forEach(n=>{const x=pad+n.x*(W-2*pad),y=pad+n.y*(H-2*pad);
+    const dist=Math.hypot(x-px,y-py);if(dist<bd){bd=dist;best=n}});
+  if(best&&bd<26*r){SELECTED=best.id;drawNetwork(DATA);
+    $('inspector').textContent=`#${best.id} · ${best.pop} (${best.cell}) · ${best.spikes} spikes in window · ${best.rate.toFixed(2)} Hz`}
+};
+run();
+</script></body></html>
