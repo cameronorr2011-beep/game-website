@@ -5,6 +5,34 @@ suggests brains do: perception → prediction → decision → plastic feedback,
 with every mechanism named for the biology it abstracts and every metric
 pinned to a measurement — no decorative science.
 
+## FlyWire v783 connectome atlas
+
+**`/` or `/connectome`** explores a real adult female *Drosophila melanogaster*
+FAFB brain: **139,255 neurons, 15,091,983 directed pairs and 54,492,922
+structural contacts**. The entire unthresholded pair graph, including
+12,391,470 pairs below five contacts, is queryable. Exact IDs, annotated cell
+types, source-linked neuropils, real directed paths, whole-network aggregates,
+WebGL anatomical point navigation, data provenance and missing-data states are
+exposed by the read-only `/api/connectome` endpoint. The official-derived pair
+index is record-level crosschecked against an independently imported pair
+source. **Regional attribution is partial, not the full original Zenodo
+pair-by-neuropil table; full skeleton morphology is unavailable.** The
+separate, existing sleep simulation is not biological connectome data.
+
+Run the prepackaged atlas locally:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python tools/connectome_server.py --host 0.0.0.0 --port 8000
+```
+
+See **[the dataset card, reconciliation evidence, API contract, import/rebuild
+steps and deployment limits](docs/connectome.md)** before reusing the data.
+The versioned serverless package is committed under `public/data/`; source
+clones and the 1.55 GB local import are not. App downloads remain at
+**`/download`** (with the sleep workspace at `/sleep`).
+
 ## Sleep Lab connectome explorer
 
 The hosted `/sleep` page runs a separate, short sleep-circuit simulation and
@@ -30,7 +58,7 @@ forward 109 ms, train step **280 ms** — all far under the 5 s battle tick.
 
 ## Download the app (two ways, no API keys needed)
 
-**Download page: https://game-website-two-tau.vercel.app** — pick EITHER:
+**Download page: https://game-website-two-tau.vercel.app/download** — pick EITHER:
 
 - **📱 Android app (`NeuroML-Android.apk`)** — the full-size brain runs ON the phone that
   plays Clash. Screen capture = seeing, accessibility taps = playing. No computer, no ADB,

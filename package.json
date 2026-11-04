@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "name": "neuroml-connectome-atlas",
+  "version": "1.0.0",
+  "description": "Browser smoke-test dependencies only; the site itself is static HTML/CSS/ES modules.",
+  "scripts": {
+    "test:browser": "node tools/test_connectome_browser.cjs",
+    "test:browser:portable": "NEUROML_FORCE_PORTABLE=1 node tools/test_connectome_browser.cjs",
+    "check:js": "node --check public/connectome.js && node --check public/graph.js"
+  },
+  "devDependencies": {
+    "@sparticuz/chromium": "153.0.0",
+    "playwright-core": "1.64.1"
+  }
+}

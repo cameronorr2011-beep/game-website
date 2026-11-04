@@ -17,3 +17,10 @@ android/app/src/main/assets/neuroml/my_deck.json
 android/app/src/main/assets/neuroml/meta_decks.json
 electron_app/node_modules/
 __pycache__/
+.venv/
+# Source connectome files, indexes, SQLite WAL/staging, and generated views are large
+# and may carry FlyWire CC BY-NC attribution requirements. Reproduce with importer.
+/data/
+# Versioned production assets under public/data are intentionally tracked; export
+# staging files are not valid until the checksummed manifest has been published.
+/public/data/.portable-*

@@ -3,8 +3,11 @@
   "outputDirectory": "public",
   "cleanUrls": true,
   "functions": {
-    "api/sleep.py": { "maxDuration": 60, "memory": 1024 }
+    "api/sleep.py": { "maxDuration": 60, "memory": 1024 },
+    "api/connectome.py": { "maxDuration": 60, "memory": 1024, "includeFiles": "public/data/**" }
   },
+  "rewrites": [{ "source": "/connectome", "destination": "/index.html" }],
+  "redirects": [{ "source": "/datasets", "destination": "/#integrity", "permanent": false }],
   "headers": [
     {
       "source": "/NeuroMLCR.zip",

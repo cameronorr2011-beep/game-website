@@ -1,0 +1,61 @@
+name: FlyWire connectome integrity and browser smoke
+
+on:
+  push:
+    paths:
+      - 'connectome/**'
+      - 'api/connectome.py'
+      - 'api/sleep.py'
+      - 'public/**'
+      - 'tests/**'
+      - 'tools/connectome_server.py'
+      - 'tools/test_connectome_browser.cjs'
+      - 'tools/test_serverless_bundle.py'
+      - 'requirements*.txt'
+      - 'package*.json'
+      - 'vercel.json'
+      - '.github/workflows/connectome.yml'
+  pull_request:
+    paths:
+      - 'connectome/**'
+      - 'api/connectome.py'
+      - 'api/sleep.py'
+      - 'public/**'
+      - 'tests/**'
+      - 'tools/connectome_server.py'
+      - 'tools/test_connectome_browser.cjs'
+      - 'tools/test_serverless_bundle.py'
+      - 'requirements*.txt'
+      - 'package*.json'
+      - 'vercel.json'
+      - '.github/workflows/connectome.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile-and-explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Python API and test-only importer dependencies
+        run: python -m pip install -r requirements.txt -r requirements-ingest.txt
+      - name: Reconcile importer fixtures, packaged real IDs, storage equivalence and sleep simulation
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          python test_sleep_connectome.py
+      - name: Cold-start the real serverless handler without a local full database
+        run: python tools/test_serverless_bundle.py
+      - name: Install test-only Chromium and Playwright
+        run: npm ci --no-audit --no-fund
+      - name: Test source JavaScript and desktop/mobile read-only exploration
+        run: |
+          npm run check:js
+          npm run test:browser:portable

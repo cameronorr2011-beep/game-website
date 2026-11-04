@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "exported_utc": "2026-11-04T03:35:36.930681+00:00",
+  "counts": {
+    "neurons": 139255,
+    "directed_pairs": 15091983,
+    "synaptic_contacts": 54492922,
+    "regional_rows": 3869878
+  },
+  "graph": {
+    "file": "flywire-v783.npz",
+    "bytes": 48560472,
+    "sha256": "ddf717f5c53883da1a131e7a2d71fbde3f900a2202ab087e796bcd2059632e5b"
+  },
+  "metadata": {
+    "file": "portable-meta.sqlite.gz",
+    "bytes": 54552800,
+    "sha256": "cf5836ce839ca2c00373f517342918a9deb9f76f6ebf11c08006c1fb37dfa5eb",
+    "sqlite_bytes": 206454784,
+    "sqlite_sha256": "5e377d7d287d1f72c4cb4a028943a4106ea7219364b3769f84e9da4c817d0286"
+  },
+  "overview": {
+    "file": "overview.bin",
+    "bytes": 3342128,
+    "sha256": "155258ad1f2a386ca45e60e576fe2941f660cd57ec7262a0e2bc3867dc7aac5d"
+  },
+  "crosscheck": {
+    "matched": true,
+    "matched_directed_pairs": 15091983,
+    "matched_neurons": 139255,
+    "record_fingerprint": "e013c235acd22a36713544780763e71b",
+    "official_derived_asset_sha256": "ddf717f5c53883da1a131e7a2d71fbde3f900a2202ab087e796bcd2059632e5b",
+    "original_asset_commit": "66e9e267afceaf4e12ecd83dd001adc7c6c8e705",
+    "original_feather_sha256_reported": "24f960ae3e7d4f8cd30db3b62e99fb5179cc3d1e76d8c155bfb441e9737d3faf",
+    "publisher_md5_recorded_by_original_import": "f48f972d262323a102aed49af1396b8a",
+    "original_feather_reopened_in_this_export": false,
+    "meaning": "All pair identities, directions and weights in the separately published official-derived index match the independently checksum-verified Shiu pair import. Original pair-by-neuropil rows were not reimported here."
+  },
+  "scope": "All 15,091,983 official-matched directed neuron pairs; Codex neuropil attribution is partial; representative points only, no skeleton morphology"
+}

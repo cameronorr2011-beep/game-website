@@ -1,132 +1,76 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NeuroML — Download</title>
-<meta name="description" content="NeuroML: the RL brain that plays Clash Royale. Download the Android APK (runs on the phone itself, no computer) or the Windows desktop app with a Wi-Fi pairing wizard. No API keys required.">
-<style>
-  :root{--bg:#0b0e13;--panel:#121820;--line:#232d3a;--text:#e8edf4;--muted:#8fa0b8;--accent:#3ad0b6;--accent2:#8b93ff;}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-  .wrap{max-width:960px;margin:0 auto;padding:48px 24px}
-  h1{font-size:2.4rem;margin:0 0 8px;letter-spacing:-.02em}
-  h2{font-size:1.3rem;margin:40px 0 12px;color:var(--accent)}
-  p.sub{color:var(--muted);font-size:1.05rem;margin-top:0}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px;margin:20px 0}
-  .duo{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  @media (max-width:760px){.duo{grid-template-columns:1fr}}
-  .opt{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
-  .opt h3{margin:0 0 6px;font-size:1.15rem;color:var(--accent2)}
-  .opt .tag{display:inline-block;font-size:.75rem;color:#04211f;background:var(--accent);border-radius:99px;padding:2px 10px;font-weight:700;margin-bottom:10px}
-  .btn{display:inline-block;background:var(--accent);color:#04211f;font-weight:700;text-decoration:none; padding:12px 22px;border-radius:10px;font-size:1rem}
-  .btn:hover{filter:brightness(1.1)}
-  .btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
-  .btn.blk{width:100%;text-align:center;margin-top:6px}
-  ul{margin:10px 0}
-  li{margin:6px 0}
-  code{background:#0a1017;border:1px solid var(--line);border-radius:6px;padding:2px 7px;font-size:.92em;color:var(--accent2)}
-  a{color:var(--accent)}
-  table{border-collapse:collapse;width:100%}
-  td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
-  .warn{border-left:4px solid #e5484d;padding:12px 16px;background:#1a1216;border-radius:0 10px 10px 0;color:#ffd9db}
-  footer{margin-top:48px;color:var(--muted);font-size:.9rem;border-top:1px solid var(--line);padding-top:20px}
-  .step{display:inline-block;background:#0a1017;border:1px solid var(--line);border-radius:6px;padding:1px 8px;color:var(--accent2);font-weight:700}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1015">
+  <meta name="description" content="NeuroML: traceable FlyWire FAFB v783 neuron and synapse-connectivity exploration. Import status, source coverage and limitations are always visible.">
+  <title>NeuroML — FlyWire connectome atlas</title>
+  <link rel="stylesheet" href="/connectome.css">
+  <script type="module" src="/connectome.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <h1>NeuroML</h1>
-  <p><a class="btn" href="/sleep">◈ Sleep Lab — explore the connectome</a></p>
-  <p class="sub">A computational-neuroscience testbed that learns a real game the way brains are
-  thought to: perception &rarr; prediction &rarr; decision &rarr; plastic feedback. It plays
-  Clash&nbsp;Royale on the phone — either from <strong>inside the phone itself</strong> or from
-  your PC over Wi-Fi. <strong>No API keys are ever required</strong> — the AI coach runs through
-  NeuroML's own hosted endpoint.</p>
-
-  <div class="duo">
-    <div class="opt">
-      <span class="tag">RECOMMENDED · PHONE ONLY</span>
-      <h3>📱 Android app (APK)</h3>
-      <p>The <strong>full-size brain runs on the phone itself</strong> — the phone that plays
-      Clash&nbsp;Royale. No computer, no Wi-Fi pairing, works on Wi-Fi or mobile data.</p>
-      <ul>
-        <li>Screen capture (you grant it once) = how it <strong>sees</strong> the game</li>
-        <li>A tap service = how it <strong>plays</strong> (only taps inside the game)</li>
-        <li>Installs like any app: download <code>NeuroML-Android.apk</code>, tap it,
-            allow &ldquo;install from unknown sources&rdquo;, follow the 3 steps on screen</li>
-        <li>Same full DQN cortex + spiking nucleus, same learning, federated opt-in</li>
-        <li>The dashboard (tiny neuron dots, win record, coach feed) shows the live
-            account signed in on <strong>that phone</strong> — the player's account</li>
-      </ul>
-      <a class="btn blk" href="https://github.com/cameronorr2011-beep/game-website/releases/latest/download/NeuroML-Android.apk">Download NeuroML-Android.apk</a>
-      <p style="color:var(--muted);font-size:.85rem;margin-top:8px">arm64 phones (every modern Android). The
-      APK is older-keystore signed, so Android may warn — that warning is normal for sideloaded apps.</p>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="/" aria-label="NeuroML connectome atlas home">
+      <svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M9 10 20 20 30 8M20 20l11 11M20 20 8 12" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10" r="3" fill="currentColor"/><circle cx="30" cy="8" r="3" fill="currentColor"/><circle cx="31" cy="31" r="3" fill="currentColor"/><circle cx="8" cy="32" r="3" fill="currentColor"/><circle cx="20" cy="20" r="3.5" fill="#101d1f" stroke="currentColor" stroke-width="2"/></svg>
+      <span><strong>NEUROML</strong><small>CONNECTOME ATLAS</small></span>
+    </a>
+    <div class="sidebar-dataset"><span class="micro">ACTIVE SPECIMEN <span class="tiny-dot"></span> 01</span><strong>FlyWire / FAFB</strong><span>Female adult fly brain <em>v783</em></span></div>
+    <div class="nav-label">WORKSPACE</div>
+    <nav class="nav-list" aria-label="Main navigation">
+      <button type="button" data-view="explorer" class="nav-item active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="19" cy="18" r="2"/><path d="m7 11 9-5M7 13l10 4M18 7v9"/></svg>Connectome Explorer</button>
+      <button type="button" data-view="anatomy" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9Z"/><path d="M12 3v18M4 11c4 2 7 2 8 1 2-2 5-1 8 1M7 5c-1 3 0 5 2 6M17 5c1 3 0 5-2 6"/></svg>Brain Anatomy</button>
+      <button type="button" data-view="neurons" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 9V3m-2 7L5 6m4 6H3m7 2-4 5m6-4v6m2-9 5-5m-4 6h6m-7 2 4 5"/></svg>Neuron Explorer</button>
+      <button type="button" data-view="analysis" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 20h18M6 17V9m5 8V4m5 13v-6m4 6V7"/></svg>Connectivity Analysis</button>
+      <button type="button" data-view="tracer" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="4" cy="18" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="20" cy="5" r="2"/><path d="m6 17 4-4m4-2 4-4M5 5h7v4m0 6v4h7"/></svg>Pathway Tracer</button>
+      <button type="button" data-view="populations" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="2"/><circle cx="17" cy="7" r="2"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/><path d="M9 7h6M7 9v6m10-6v6m-8 2h6"/></svg>Population Analysis</button>
+      <button type="button" data-view="integrity" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m12 2 8 3v7c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V5l8-3Z"/><path d="m8 12 3 3 5-6"/></svg>Dataset Integrity</button>
+      <button type="button" data-view="settings" class="nav-item"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="#0b1015"/><circle cx="16" cy="12" r="2" fill="#0b1015"/><circle cx="11" cy="18" r="2" fill="#0b1015"/></svg>Settings</button>
+    </nav>
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-foot"><span class="micro">SEPARATE WORKSPACES</span><a href="/sleep">Sleep circuit simulation <span>↗</span></a><a href="/download">Legacy app downloads <span>↗</span></a><div class="version">NEUROML / RESEARCH INTERFACE</div></div>
+  </aside>
+  <div class="app-main">
+    <header class="topbar">
+      <button class="mobile-menu icon-button" type="button" id="menu-toggle" aria-label="Open navigation" aria-expanded="false">☰</button>
+      <div class="breadcrumb"><span>ATLAS</span><span class="slash">/</span><strong id="breadcrumb-view">CONNECTOME EXPLORER</strong></div>
+      <div class="top-search">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg>
+        <label class="sr-only" for="global-search">Search neuron ID, type, class or region</label>
+        <input id="global-search" autocomplete="off" spellcheck="false" placeholder="Search ID, cell type, class…" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="search-suggestions">
+        <span class="search-hint">/</span>
+        <div class="search-suggestions" id="search-suggestions" role="listbox" hidden></div>
+      </div>
+      <div class="header-status" id="header-status"><span class="status-pip"></span>CHECKING DATA</div>
+    </header>
+    <div class="status-ribbon" id="status-ribbon" role="status">Discovering the configured dataset…</div>
+    <div class="workspace" id="workspace">
+      <main class="primary-col" id="main-content">
+        <div class="page-intro"><div><div class="eyebrow" id="view-number">01 / NETWORK WORKSPACE</div><h1 id="view-title">Connectome Explorer</h1><p id="view-description">An anatomically grounded view of every imported neuron. Connections remain in the indexed graph, not an on-screen sample.</p></div><div class="intro-badge" id="intro-badge">FAFB · 783</div></div>
+        <div class="graph-section">
+          <div class="graph-header"><div><span class="eyebrow">SPATIAL VIEW <span class="header-divider">/</span> REPRESENTATIVE NEURON POINTS</span><strong id="graph-title">Whole-brain connectome</strong></div><div class="graph-header-right"><span class="live-dot"></span><span id="graph-summary">Awaiting dataset</span></div></div>
+          <div class="graph-stage" id="graph-stage">
+            <canvas id="brain-canvas" aria-label="Interactive spatial map of imported FlyWire neuron positions; click a neuron to inspect it"></canvas>
+            <canvas id="edge-canvas" aria-hidden="true"></canvas>
+            <div class="graph-grid" aria-hidden="true"></div>
+            <div class="graph-utility left"><span class="projection-tag" id="projection-tag">XY / ANATOMICAL NM</span><span class="graph-utility-sub" id="graph-utility-sub">Drag to pan · Shift-drag to rotate · Scroll to zoom</span></div>
+            <div class="graph-utility right"><button type="button" class="graph-tool" id="zoom-in" aria-label="Zoom in">+</button><button type="button" class="graph-tool" id="zoom-out" aria-label="Zoom out">−</button><button type="button" class="graph-tool tool-fit" id="fit-brain">FIT</button></div>
+            <div class="graph-placeholder" id="graph-placeholder"><span class="placeholder-symbol">∿</span><strong>Checking source data</strong><p>The visualization loads only validated, imported neurons. No synthetic points are displayed.</p></div>
+            <div class="graph-selection" id="graph-selection" hidden></div>
+            <div class="graph-bottom"><span><span class="scale-mark"></span> SOURCE COORDINATES · NM <span class="graph-separator">/</span> ORTHOGRAPHIC PROJECTION</span><span id="graph-render-count">—</span></div>
+          </div>
+          <div class="graph-legend"><div class="legend-items" id="class-legend"><span>CLASSIFICATION FROM SOURCE ANNOTATIONS</span></div><div class="legend-note" id="legend-note">All displayed points are source records.</div></div>
+        </div>
+        <div id="content-panel" class="content-panel" aria-live="polite"></div>
+      </main>
+      <aside class="inspector" id="inspector" aria-label="Neuron and connection inspector">
+        <div class="inspector-head"><span class="eyebrow">SPECIMEN / INSPECTOR</span><span class="inspector-top-actions"><button type="button" id="inspector-close" aria-label="Close inspector" class="icon-button inspector-close">×</button></span></div>
+        <div id="inspector-content" class="inspector-content"><div class="empty-inspector"><span class="ring-glyph">◎</span><h2>No neuron selected</h2><p>Search by root ID or cell type, or select a neuron from the anatomical map.</p></div></div>
+      </aside>
     </div>
-
-    <div class="opt">
-      <span class="tag">NERD PATH · PC + PHONE</span>
-      <h3>🖥️ Windows desktop app</h3>
-      <p>A real installed app (not a browser tab). On first run it sets up Python&nbsp;+ torch itself,
-      then walks you through the <strong>Wi-Fi developer pairing</strong> to link to the phone that
-      plays the game.</p>
-      <ul>
-        <li>The wizard shows every step: unlock <strong>Developer options</strong> (7× Build number),
-            enable <strong>Wireless debugging</strong>, <strong>Pair device with pairing code</strong>,
-            then connect</li>
-        <li>It reads the phone's real resolution automatically and writes the config</li>
-        <li>The app window becomes the live dashboard: phone view, micro-dot neuron layers,
-            coach feed, win/loss record — showing the connected player's account</li>
-        <li>Remote (different Wi-Fi / mobile data): pair once, then use Tailscale
-            (<code>100.x.y.z</code>) or router port-forward 5555</li>
-      </ul>
-      <a class="btn blk" href="https://github.com/cameronorr2011-beep/game-website/releases/latest/download/NeuroML-Windows-Setup.exe">Download NeuroML-Windows-Setup.exe</a>
-      <a class="btn blk ghost" href="https://github.com/cameronorr2011-beep/game-website/releases/latest/download/NeuroML-Windows-Portable.exe">…or the portable .exe (no install)</a>
-    </div>
   </div>
-
-  <div class="card">
-    <h2 style="margin-top:0">The pretrained brain</h2>
-    <p><strong>Both apps fetch it automatically</strong> when one is published on the
-    Releases page (<code>fetch_brain.py</code> / first launch). If none is published you start with a
-    fresh brain that learns live from its first match — nothing is faked. Existing training files are
-    never overwritten.</p>
-    <table>
-      <tr><td><code>ml_policy.pt</code></td><td>DQN policy + target weights — ~100 MB total (13.7 M params fp32, two networks)</td></tr>
-      <tr><td><code>spiking_brain.json</code></td><td>LIF/STDP nucleus + affect state — a few MB</td></tr>
-    </table>
-    <p>Replay memory (<code>ml_replay.json</code>, up to 60 000 episodes) is personal training
-    experience and is not shared. Federated learning stays <strong>opt-in and anonymized</strong>:
-    packages carry only policy/target weights and stats — no account, no screenshots, no keys.</p>
-    <a class="btn secondary" href="https://github.com/cameronorr2011-beep/game-website/releases">Releases page</a>
-  </div>
-
-  <h2>Do I need a Groq API key?</h2>
-  <p><strong>No.</strong> The AI mentor (end-of-match critiques, deck suggestions) is routed through
-  NeuroML's own endpoint, which holds the key server-side. You download, install, launch — the coach
-  just works. A local <code>groq_key.txt</code> still works too, for power users who prefer direct calls.</p>
-
-  <h2>Power-user path (zip + scripts)</h2>
-  <p>The classic route is still available: a small zip with launchers and the full brain code you run
-  yourself from a terminal.</p>
-  <a class="btn ghost" href="/NeuroMLCR.zip" download>Download NeuroMLCR.zip (code only)</a>
-  <ol>
-    <li>Unzip, double-click <code>install.bat</code></li>
-    <li>Double-click <code>connect_phone.bat</code> for Wi-Fi ADB pairing</li>
-    <li>Double-click <code>NeuroMLCR.bat</code> — dashboard + brain start</li>
-  </ol>
-
-  <div class="warn">
-    <strong>Fair play:</strong> automating Clash Royale violates Supercell's ToS. Use an account you
-    accept losing. The app never force-relaunches the game and only taps inside it.
-  </div>
-
-  <h2>Honest limitations</h2>
-  <p>Vision is pixel-scanning + statistics, not object detection. Internal &ldquo;valence&rdquo; channels are
-  computational reward signals, not claims of sentience. The world model is a scored 1-tick baseline,
-  still accumulating ablation data. On-phone training is slower than desktop — same brain, mobile CPU.</p>
-
-  <footer>NeuroML — measured, not claimed. Everything it learns stays on your device.</footer>
 </div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </body>
 </html>

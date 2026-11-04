@@ -1,0 +1,203 @@
+{
+  "schema_version": 2,
+  "generated_utc": "2026-11-03T18:20:37.345842+00:00",
+  "dataset": {
+    "name": "FlyWire FAFB whole-brain connectome",
+    "organism": "Drosophila melanogaster",
+    "scope": "female adult brain, central brain and optic lobes",
+    "version": "783.0",
+    "source": "https://zenodo.org/records/10676866",
+    "license": "CC-BY-4.0",
+    "citation": "FlyWire Consortium; Dorkenwald et al., Nature 2024, https://doi.org/10.1038/s41586-024-07558-y",
+    "connection_definition": "proofread_connections_783 rows aggregated by presynaptic root ID, postsynaptic root ID, and summed synapse count across neuropils",
+    "id_definition": "FlyWire proofread root ID, serialized as an exact decimal uint64 string",
+    "neurotransmitter_definition": "source predicted probabilities are preserved in the local import; this deployment asset does not assign physiological sign"
+  },
+  "counts": {
+    "neurons": 139255,
+    "directed_pairs": 15091983,
+    "source_connection_records": 16847997,
+    "anatomical_synapses": 54492922,
+    "self_connections": 0,
+    "isolated_neurons": 616,
+    "weak_components": 705
+  },
+  "asset": {
+    "file": "public/data/flywire-v783.npz",
+    "bytes": 48560472,
+    "sha256": "ddf717f5c53883da1a131e7a2d71fbde3f900a2202ab087e796bcd2059632e5b",
+    "format": "NumPy compressed canonical source-column index with exact IDs, target indices, source indptr, and integer weights"
+  },
+  "source_files": [
+    {
+      "file": "proofread_connections_783.feather",
+      "source": "https://zenodo.org/api/records/10676866/files/proofread_connections_783.feather/content",
+      "bytes": 852022274,
+      "sha256": "24f960ae3e7d4f8cd30db3b62e99fb5179cc3d1e76d8c155bfb441e9737d3faf",
+      "publisher_md5": "f48f972d262323a102aed49af1396b8a",
+      "download_utc": "2026-11-03T02:43:17.397455+00:00"
+    },
+    {
+      "file": "proofread_root_ids_783.npy",
+      "source": "https://zenodo.org/api/records/10676866/files/proofread_root_ids_783.npy/content",
+      "bytes": 1114168,
+      "sha256": "7c7b7e818e9232e5ab64793d52ba20574dbe9da3a6509fbc74193b0f259a01be",
+      "publisher_md5": "e0e6c19732fd8c7a4e39a2d170105421",
+      "download_utc": "2026-11-03T02:43:20.125635+00:00"
+    }
+  ],
+  "processed_files": [
+    {
+      "file": "datasets/flywire/v783-processed/adjacency.npz",
+      "bytes": 49341886,
+      "sha256": "39cf59b1f058d2de310ce1f6e3ab64a1b30b8b2c1fb1a9731587493ea88758f3"
+    },
+    {
+      "file": "datasets/flywire/v783-processed/ids.npy",
+      "bytes": 1114168,
+      "sha256": "5daed2803738fd701d480786b59506f17c4b7fc58a0c09f08de5a2923e3dbcf7"
+    },
+    {
+      "file": "datasets/flywire/v783-processed/neurotransmitters.npz",
+      "bytes": 6384899,
+      "sha256": "2d94dc217594a9ab4de271f8dd191fa81b555f2332efa9b68f383c81262e09ac"
+    },
+    {
+      "file": "datasets/flywire/v783-processed/provenance.json",
+      "bytes": 3687,
+      "sha256": "08b1e20eca078ef352217ca1767cd47a43a929601228bc265ac866b718b4985b"
+    },
+    {
+      "file": "datasets/flywire/v783-processed/statistics.json",
+      "bytes": 344,
+      "sha256": "78aba652f18b88eb85824a11f17e66afe53dc1d4a8a681965dcc615c9476f120"
+    }
+  ],
+  "annotation_coverage": {
+    "cell_type": {
+      "status": "not imported",
+      "records": 0
+    },
+    "class": {
+      "status": "not imported",
+      "records": 0
+    },
+    "neuropil_per_neuron": {
+      "status": "not imported",
+      "records": 0
+    },
+    "morphology": {
+      "status": "not imported",
+      "records": 0
+    },
+    "predicted_neurotransmitter": {
+      "status": "available in local processed import, not assigned as cell annotation",
+      "records": 139255
+    }
+  },
+  "validation": {
+    "id_dtype": "uint64",
+    "duplicate_neuron_ids": 0,
+    "missing_connection_endpoints": 0,
+    "duplicate_pair_records_after_aggregation": 0,
+    "self_connections": 0,
+    "integrity": "source publisher MD5 and local SHA-256 verified before import; deployment asset hashed after generation",
+    "threshold_rule": "source release proofread pair table; a displayed threshold filters imported pair weights and cannot recover omitted raw synapses"
+  },
+  "neuropil_synapses": {
+    "AVLP_R": 2000857,
+    "SLP_R": 723028,
+    "SMP_R": 898333,
+    "SMP_L": 816580,
+    "LAL_R": 437642,
+    "AL_L": 760542,
+    "SIP_R": 229288,
+    "AVLP_L": 1510021,
+    "AOTU_L": 182479,
+    "LA_R": 273732,
+    "MB_ML_R": 250422,
+    "CRE_L": 322237,
+    "GNG": 2713213,
+    "CRE_R": 342435,
+    "EB": 282714,
+    "PRW": 352333,
+    "MB_ML_L": 325421,
+    "AL_R": 727451,
+    "MB_VL_R": 113967,
+    "MB_VL_L": 94051,
+    "GA_L": 15863,
+    "GA_R": 10283,
+    "AOTU_R": 215603,
+    "FLA_R": 129153,
+    "LAL_L": 432296,
+    "FLA_L": 99577,
+    "MB_PED_R": 124306,
+    "SAD": 527408,
+    "AMMC_R": 101793,
+    "SIP_L": 197040,
+    "PVLP_R": 704599,
+    "MB_PED_L": 133514,
+    "UNASGD": 4185,
+    "AMMC_L": 98011,
+    "LO_L": 3792886,
+    "ME_R": 8821540,
+    "LOP_L": 1189689,
+    "LO_R": 3877311,
+    "PLP_R": 664786,
+    "SCL_L": 245157,
+    "ME_L": 7712403,
+    "LOP_R": 1901109,
+    "LH_L": 602473,
+    "VES_R": 282167,
+    "LH_R": 664653,
+    "MB_CA_L": 263221,
+    "IPS_L": 500696,
+    "SLP_L": 544953,
+    "PLP_L": 746323,
+    "SPS_L": 569251,
+    "IPS_R": 480261,
+    "GOR_R": 76880,
+    "FB": 897766,
+    "SPS_R": 731877,
+    "PVLP_L": 895615,
+    "ICL_L": 327927,
+    "SCL_R": 280743,
+    "ICL_R": 360940,
+    "ATL_R": 33747,
+    "IB_R": 158215,
+    "NO": 103904,
+    "AME_L": 11001,
+    "VES_L": 263765,
+    "WED_L": 196091,
+    "MB_CA_R": 230379,
+    "WED_R": 254680,
+    "LA_L": 169170,
+    "ATL_L": 37726,
+    "EPA_R": 47698,
+    "PB": 63306,
+    "IB_L": 142166,
+    "EPA_L": 58224,
+    "GOR_L": 76258,
+    "CAN_R": 15540,
+    "AME_R": 12524,
+    "OCG": 10030,
+    "CAN_L": 13368,
+    "BU_R": 10029,
+    "BU_L": 4097
+  },
+  "query_capabilities": [
+    "exact root-ID search",
+    "prefix root-ID search",
+    "full incoming/outgoing directed neighbor retrieval",
+    "minimum imported synapse threshold",
+    "bounded shortest directed pathway",
+    "full-network degree statistics",
+    "deterministic topological overview rendering"
+  ],
+  "limitations": [
+    "This asset is connectivity pairs, not the 9.5 GB individual-synapse table.",
+    "Cell-type, neuropil-per-neuron, hemisphere, morphology, synaptic delay, receptor and membrane annotations are not imported here.",
+    "Overview coordinates are a topological layout and are not anatomical coordinates.",
+    "Structural synapse counts are not conductances or recorded activity."
+  ]
+}
