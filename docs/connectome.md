@@ -205,9 +205,14 @@ npm run test:browser:portable  # exercises real packaged data without the 1.55 G
 The tests include synthetic **test-only** importer fixtures, changed-identity
 integrity detection, direct equivalence of full/portable API behavior, a
 packaged real-ID smoke test, and Chromium desktop/mobile WebGL/inspector/search/
-trace tests. Test fixtures are never shipped as biological data. A real Vercel
-build and cold deployment should be rechecked after merging; the repository
-cannot itself certify that the hosting provider's bundle quotas or routing
-will remain unchanged. If that build rejects the bundle, host the same
-validated import on a persistent server and use the documented upstream
-override instead of substituting a fake or partial graph.
+trace tests. Test fixtures are never shipped as biological data. Both Vercel
+projects built this branch's PR #2 previews successfully; the public preview's
+real `/api/connectome` status/search responses and root, sleep and download
+pages were checked. `/connectome` needs a redirect to `/` with this
+`outputDirectory` configuration: a rewrite to `/index.html` returned 404 in
+an actual preview and was replaced. The second preview project requires Vercel
+SSO, and the post-merge **production** deployment has not been exercised.
+Hosting quotas/routing and live graph interactions should be rechecked on the
+final preview and after merging. If a future build rejects the bundle, host
+the same validated import on a persistent server and use the documented
+upstream override instead of substituting a fake or partial graph.
