@@ -1,0 +1,3 @@
+# CLI importer only; keep separate from the lightweight Vercel API requirements.
+pyarrow>=20,<24
+numpy>=2,<3
