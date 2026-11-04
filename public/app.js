@@ -58,6 +58,7 @@ function note(text) { return `<div class="note">${esc(text)}</div>`; }
 
 function drawGraph(canvas, graph, onSelect) {
   if (!canvas || !graph?.nodes?.length) return;
+  canvas.__graph = graph; canvas.__onSelect = onSelect;
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || 800;
   const height = canvas.clientHeight || 500;
@@ -159,6 +160,12 @@ function neighborList(title, rows, direction) {
   return `<h3>${title}</h3><div class="neighbor-list">${rows?.length ? rows.map((row) => `<div class="neighbor"><a href="/connectome?neuron=${encodeURIComponent(row.neuron_id)}" class="id">${shortId(row.neuron_id)}</a><span>${fmt(row.synapse_count)} syn</span></div>`).join('') : '<div class="data-status">No imported partners.</div>'}</div>`;
 }
 
+function hashY(id) {
+  let h = 0;
+  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return ((h % 1000) / 1000 - 0.5) * 1.5;
+}
+
 async function selectNeuron(id) {
   const inspector = $('#connectome-inspector');
   if (!inspector) return;
@@ -170,7 +177,7 @@ async function selectNeuron(id) {
     inspector.innerHTML = `<p class="eyebrow">Selected neuron</p><h2>Root ID</h2><span class="id">${esc(neuron.id)}</span><div class="button-row"><a class="button small ghost" href="/neurons?neuron=${encodeURIComponent(neuron.id)}">Open record</a><button class="button small" id="copy-id" type="button">Copy ID</button></div><div class="kv"><span>In-degree</span><strong>${fmt(neuron.degree.in)}</strong><span>Out-degree</span><strong>${fmt(neuron.degree.out)}</strong><span>Incoming synapses</span><strong>${fmt(c.in)}</strong><span>Outgoing synapses</span><strong>${fmt(c.out)}</strong></div>${neighborList('Strongest incoming', neuron.incoming, 'incoming')}${neighborList('Strongest outgoing', neuron.outgoing, 'outgoing')}<div class="note">${esc(neuron.annotation_status)}</div>`;
     $('#copy-id').onclick = () => navigator.clipboard?.writeText(neuron.id);
     const graph = { nodes: [{ id: neuron.id, x: 0, y: 0, degree: neuron.degree.in + neuron.degree.out }], edges: [] };
-    const partners = [...neuron.incoming.map((x) => ({ id: x.neuron_id, x: -.35, y: (Math.random() - .5) * 1.5, degree: x.synapse_count })), ...neuron.outgoing.map((x) => ({ id: x.neuron_id, x: .35, y: (Math.random() - .5) * 1.5, degree: x.synapse_count }))];
+    const partners = [...neuron.incoming.map((x) => ({ id: x.neuron_id, x: -.35, y: hashY(x.neuron_id), degree: x.synapse_count })), ...neuron.outgoing.map((x) => ({ id: x.neuron_id, x: .35, y: hashY(x.neuron_id), degree: x.synapse_count }))];
     graph.nodes.push(...partners); neuron.incoming.forEach((x, i) => graph.edges.push({ source: x.neuron_id, target: neuron.id, weight: x.synapse_count })); neuron.outgoing.forEach((x) => graph.edges.push({ source: neuron.id, target: x.neuron_id, weight: x.synapse_count }));
     drawGraph($('#connectome-canvas'), graph, selectNeuron);
     $('#viewer-count').textContent = `${fmt(neuron.degree.in + neuron.degree.out)} total neighbors · selected ${shortId(neuron.id)}`;
@@ -297,3 +304,11 @@ async function start() {
 }
 
 start();
+
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    for (const canvas of $$('canvas')) if (canvas.__graphPoints && canvas.__graph) drawGraph(canvas, canvas.__graph, canvas.__onSelect);
+  }, 150);
+});
