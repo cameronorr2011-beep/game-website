@@ -5,6 +5,16 @@ suggests brains do: perception → prediction → decision → plastic feedback,
 with every mechanism named for the biology it abstracts and every metric
 pinned to a measurement — no decorative science.
 
+## Sleep Lab connectome explorer
+
+The hosted `/sleep` page runs a separate, short sleep-circuit simulation and
+lets you inspect its instantiated synapses. Select a population or neuron,
+then filter incoming and outgoing connections. Counts include parallel and
+self-connections; colors distinguish excitatory and inhibitory conductance
+families. The grouped layout is schematic, not anatomical, and lines indicate
+connectivity rather than spike timing. Each run builds a fresh seeded network;
+the serverless simulation does not persist state between runs.
+
 ## Architecture (measured, not claimed)
 
 | Region | Mechanism | Size |

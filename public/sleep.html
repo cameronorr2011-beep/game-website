@@ -23,11 +23,22 @@ button:disabled{opacity:.45;cursor:wait}
 .stats div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .stats span{display:block;font-size:.66rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .stats b{font-size:1.02rem;color:#c7f4e8;font-variant-numeric:tabular-nums}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:14px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
 h2{margin:0 0 10px;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)}
 canvas{width:100%;display:block;background:#070e13;border-radius:7px}
-#net{height:420px;cursor:crosshair}
+#net{height:500px;cursor:crosshair;border:1px solid #1c3440}
+.connectome-head{display:flex;justify-content:space-between;gap:16px;align-items:start;flex-wrap:wrap}
+.connectome-head h2{font-size:.85rem;margin-bottom:4px}.connectome-head p{margin:0;color:var(--muted);font-size:.82rem}
+.connectome-tools{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:18px 0 12px}
+.connectome-tools select{background:#0b1620;color:var(--text);border:1px solid #294652;border-radius:7px;padding:9px 28px 9px 10px;font:inherit;min-width:150px}
+.connectome-layout{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:14px}
+.connectome-side{background:#0a151c;border:1px solid #1c3440;border-radius:8px;padding:16px;min-width:0}
+.connectome-side h3{margin:0 0 8px;color:#c6eee5;font-size:.83rem}.connectome-side p{font-size:.8rem;color:var(--muted);margin:0 0 14px}
+.connectome-side dl{margin:0}.connectome-side dl div{display:flex;justify-content:space-between;gap:10px;border-top:1px solid #1c303a;padding:8px 0;font-size:.78rem}.connectome-side dt{color:var(--muted)}.connectome-side dd{margin:0;text-align:right;color:var(--text);overflow-wrap:anywhere}
+.net-key{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:.72rem;margin-top:10px}.net-key i{display:inline-block;width:16px;border-top:2px solid;vertical-align:middle;margin-right:6px}
+#net-empty{color:var(--muted);font-size:.8rem;margin:8px 0 0}
+@media(max-width:850px){.connectome-layout{grid-template-columns:1fr}.connectome-side{min-height:0}}
 .eeg{height:190px}#psd{height:170px}#hyp{height:130px}#mods{height:170px}#rates{height:170px}
 .inspector{font-size:.82rem;color:var(--muted);margin-top:8px;min-height:3.4em;font-variant-numeric:tabular-nums}
 table{width:100%;border-collapse:collapse;font-size:.78rem}
@@ -60,10 +71,22 @@ parameters, not measured conductances. No clinical claim.</p>
 <div class="stats" id="stats"></div>
 
 <div class="grid">
-  <section style="grid-column:1/-1"><h2>All instantiated neurons · click any cell to inspect</h2>
-    <canvas id="net"></canvas>
+  <section style="grid-column:1/-1" aria-labelledby="connectome-title">
+    <div class="connectome-head"><div><h2 id="connectome-title">Connectome explorer</h2>
+      <p>Explore the simulated circuit, one neuron and synapse at a time.</p></div>
+      <span class="tag">INSTANTIATED NETWORK · NOT ANATOMICAL</span></div>
+    <div class="connectome-tools">
+      <label>Population<select id="population"><option value="all">All populations</option></select></label>
+      <label>Neuron<select id="neuron"><option value="">Choose a neuron</option></select></label>
+      <label>Connections<select id="direction"><option value="both">Incoming + outgoing</option><option value="in">Incoming</option><option value="out">Outgoing</option></select></label>
+      <button id="clear-selection" type="button">Clear selection</button>
+    </div>
+    <div class="connectome-layout"><div>
+      <canvas id="net" role="img" aria-label="Simulated network. Choose a neuron from the neuron menu to inspect its connections."></canvas>
+      <div class="net-key"><span><i style="border-color:#6fe0c8"></i>Excitatory</span><span><i style="border-color:#ff9db1"></i>Inhibitory</span><span>Node size = spikes in window</span></div>
+      <p id="net-empty">Run a simulation to explore the network.</p>
+    </div><aside class="connectome-side" id="inspector" aria-live="polite"><h3>Neuron inspector</h3><p>Select a neuron on the map or from the menu to see its actual connections.</p></aside></div>
     <div class="legend" id="legend"></div>
-    <div class="inspector" id="inspector">Select a neuron in the canvas.</div>
   </section>
   <section><h2>Synthetic EEG <select id="channel" style="float:right;background:#0b1620;color:inherit;border:1px solid var(--line);border-radius:5px;padding:3px 6px"></select></h2>
     <canvas id="eeg" class="eeg"></canvas></section>
@@ -111,21 +134,56 @@ function showStats(d){
   $('stats').innerHTML=tiles.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('');
 }
 function hist(x){return (x*100).toFixed(0)+'%'}
+// Positions are a deterministic, population-grouped display layout, not anatomy.
+function networkPositions(d,W,H){
+  const groups=d.populations.length, scale=Math.min(W,H), cx=W/2, cy=H/2;
+  const orbit=scale*.34, positions={};
+  d.populations.forEach((p,i)=>{
+    const angle=-Math.PI/2+i*2*Math.PI/groups;
+    const gx=cx+Math.cos(angle)*orbit, gy=cy+Math.sin(angle)*orbit;
+    const members=d.neurons.filter(n=>n.pop===p.name);
+    const radius=Math.min(scale*.115, 8+Math.sqrt(members.length)*3);
+    members.forEach((n,j)=>{const a=j*2.399963, r=radius*Math.sqrt((j+.5)/members.length);
+      positions[n.id]={x:gx+Math.cos(a)*r,y:gy+Math.sin(a)*r}});
+  });
+  return positions;
+}
+function updateNeuronMenu(){
+  if(!DATA)return;
+  const pop=$('population').value, menu=$('neuron');
+  menu.innerHTML='<option value="">Choose a neuron</option>'+DATA.neurons.filter(n=>pop==='all'||n.pop===pop)
+    .map(n=>`<option value="${n.id}">#${n.id} · ${n.pop}</option>`).join('');
+  menu.value=SELECTED===null?'':String(SELECTED);
+}
+function selectNeuron(id){SELECTED=id;updateNeuronMenu();drawNetwork(DATA)}
 function drawNetwork(d){
-  const canvas=$('net'),ctx=fit(canvas),W=canvas.width,H=canvas.height,r=devicePixelRatio||1;
-  ctx.clearRect(0,0,W,H);const pad=40*r;const sx=(W-2*pad),sy=(H-2*pad);
-  d.connections.forEach(c=>{
-    const a=d.neurons.find(n=>n.pop===c.source),b=d.neurons.find(n=>n.pop===c.target);
-    if(!a||!b)return;
-    ctx.beginPath();ctx.strokeStyle=c.provenance==='literature'?'rgba(111,224,200,0.13)':'rgba(224,164,88,0.13)';
-    ctx.lineWidth=1*r;ctx.moveTo(pad+a.x*sx,pad+a.y*sy);ctx.lineTo(pad+b.x*sx,pad+b.y*sy);ctx.stroke();});
-  d.neurons.forEach(n=>{
-    const x=pad+n.x*sx,y=pad+n.y*sy,rad=(2.2+Math.min(3.4,Math.sqrt(n.spikes)/2.2))*r;
-    ctx.beginPath();ctx.fillStyle=COLORS[POPINDEX[n.pop]%COLORS.length];
-    ctx.globalAlpha=SELECTED===n.id?1:0.85;ctx.arc(x,y,rad,0,6.2832);ctx.fill();
-    if(SELECTED===n.id){ctx.globalAlpha=1;ctx.strokeStyle='#fff';ctx.lineWidth=1.6*r;ctx.stroke()}});
-  ctx.globalAlpha=1;ctx.font=(11*r)+'px system-ui';ctx.fillStyle='#7d95a2';
-  ctx.fillText(`${d.neurons.length} neurons · radius scales with spikes in window · colour = population`,10,18*r);
+  const canvas=$('net'),ctx=fit(canvas),r=devicePixelRatio||1,W=canvas.width/r,H=canvas.height/r;
+  ctx.scale(r,r);ctx.clearRect(0,0,W,H);
+  const pos=networkPositions(d,W,H), pop=$('population').value, direction=$('direction').value;
+  const selected=d.neurons.find(n=>n.id===SELECTED);
+  const edges=d.synapses||[];
+  const related=selected?edges.filter(e=>(direction!=='out'&&e[1]===SELECTED)||(direction!=='in'&&e[0]===SELECTED)):[];
+  const neighbors=new Set(related.flatMap(e=>[e[0],e[1]]));
+  related.forEach(e=>{const a=pos[e[0]],b=pos[e[1]];if(!a||!b)return;
+    ctx.beginPath();ctx.strokeStyle=e[2].startsWith('i')?'rgba(255,157,177,.36)':'rgba(111,224,200,.32)';ctx.lineWidth=1;
+    if(e[0]===e[1])ctx.arc(a.x+5,a.y-5,5,0,Math.PI*2);
+    else{ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y)}ctx.stroke();
+  });
+  d.neurons.forEach(n=>{const p=pos[n.id], active=selected?neighbors.has(n.id):pop==='all'||n.pop===pop;
+    ctx.globalAlpha=active?.95:.13;ctx.beginPath();ctx.fillStyle=COLORS[POPINDEX[n.pop]%COLORS.length];
+    ctx.arc(p.x,p.y,2.5+Math.min(3,Math.sqrt(n.spikes)/2.2),0,Math.PI*2);ctx.fill();
+    if(SELECTED===n.id){ctx.globalAlpha=1;ctx.strokeStyle='#fff';ctx.lineWidth=2;ctx.stroke()}});
+  ctx.globalAlpha=1;
+  const inspector=$('inspector');
+  if(selected){
+    const incoming=edges.filter(e=>e[1]===selected.id).length,outgoing=edges.filter(e=>e[0]===selected.id).length;
+    inspector.innerHTML=`<h3>Neuron #${selected.id}</h3><p>${selected.pop} · ${selected.cell}</p><dl>
+      <div><dt>Spikes in window</dt><dd>${selected.spikes}</dd></div><div><dt>Rate estimate</dt><dd>${selected.rate.toFixed(2)} Hz</dd></div>
+      <div><dt>Incoming synapses</dt><dd>${incoming}</dd></div><div><dt>Outgoing synapses</dt><dd>${outgoing}</dd></div>
+      <div><dt>Shown</dt><dd>${related.length} synapses</dd></div></dl><p style="margin-top:14px">Parallel synapses and self-connections count individually. Lines show connectivity, not spike timing.</p>`;
+    $('net-empty').textContent=related.length?'Showing '+related.length+' instantiated synapses for the selected neuron.':'No synapses in this direction.';
+  }else{inspector.innerHTML='<h3>Neuron inspector</h3><p>Select a neuron on the map or from the menu to see its actual connections.</p><p>Clusters are arranged for clarity, not anatomical location. Colors identify populations.</p>';
+    $('net-empty').textContent='Select a neuron to reveal its instantiated synapses.'}
 }
 function drawHypnogram(d){
   const canvas=$('hyp'),ctx=fit(canvas),W=canvas.width,H=canvas.height,r=devicePixelRatio||1;
@@ -138,7 +196,9 @@ function drawHypnogram(d){
   ctx.fillText(`1 s classifier windows · ${h.map(e=>e.stage).slice(-6).join(' ')}`,10,H-8*r);
 }
 function render(d){
-  DATA=d;
+  DATA=d; SELECTED=null;
+  $('population').innerHTML='<option value="all">All populations</option>'+d.populations.map(p=>`<option value="${p.name}">${p.name} (${p.n})</option>`).join('');
+  updateNeuronMenu();
   $('legend').innerHTML=d.populations.map((p,i)=>`<span><i style="background:${COLORS[i%COLORS.length]}"></i>${p.name} (${p.n})</span>`).join('');
   const ch=$('channel');ch.innerHTML=d.eeg.channels.map(c=>`<option ${c===CHANNEL?'selected':''}>${c}</option>`).join('');
   showStats(d);drawNetwork(d);drawHypnogram(d);
@@ -175,16 +235,18 @@ async function run(){
   finally{$('run').disabled=false}
 }
 $('run').onclick=run;
-$('channel').onchange=e=>{CHANNEL=e.target.value;if(DATA)render(DATA)};
+$('channel').onchange=e=>{CHANNEL=e.target.value;if(DATA){const idx=DATA.eeg.channels.indexOf(CHANNEL);line($('eeg'),[DATA.eeg.samples[idx]],['#8fb8ff'],[`${CHANNEL} · 250 Hz · model units`])}};
+$('population').onchange=()=>{SELECTED=null;updateNeuronMenu();if(DATA)drawNetwork(DATA)};
+$('neuron').onchange=e=>{if(DATA)selectNeuron(e.target.value===''?null:Number(e.target.value))};
+$('direction').onchange=()=>{if(DATA)drawNetwork(DATA)};
+$('clear-selection').onclick=()=>{if(DATA)selectNeuron(null)};
 $('net').onclick=ev=>{
   if(!DATA)return;const c=$('net'),rect=c.getBoundingClientRect();
-  const r=devicePixelRatio||1,pad=40*r,W=c.width,H=c.height;
-  const px=(ev.clientX-rect.left)*r,py=(ev.clientY-rect.top)*r;
-  let best=null,bd=1e9;
-  DATA.neurons.forEach(n=>{const x=pad+n.x*(W-2*pad),y=pad+n.y*(H-2*pad);
-    const dist=Math.hypot(x-px,y-py);if(dist<bd){bd=dist;best=n}});
-  if(best&&bd<26*r){SELECTED=best.id;drawNetwork(DATA);
-    $('inspector').textContent=`#${best.id} · ${best.pop} (${best.cell}) · ${best.spikes} spikes in window · ${best.rate.toFixed(2)} Hz`}
+  const pos=networkPositions(DATA,rect.width,rect.height),x=ev.clientX-rect.left,y=ev.clientY-rect.top;
+  let best=null,bd=14;DATA.neurons.forEach(n=>{const p=pos[n.id],dist=Math.hypot(p.x-x,p.y-y);
+    if(dist<bd){bd=dist;best=n}});
+  if(best){$('population').value='all';selectNeuron(best.id)}
 };
+let resizeTimer;window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(DATA)drawNetwork(DATA)},100)});
 run();
 </script></body></html>

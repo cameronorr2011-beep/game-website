@@ -345,6 +345,11 @@ def simulate(pressure=0.25, rem_drive=0.0, seconds=2.0, seed=7):
                  'realtime_factor': round((steps * DT_MS / 1000.) / max(wall, 1e-9), 3),
                  'pressure': pressure, 'rem_drive': rem_drive, 'seed': seed},
         'neurons': neurons,
+        # Compact triples preserve every instantiated synapse, including parallel
+        # edges and self-connections. Family is the simulated conductance family.
+        'synapses': [[int(src), int(dst), edge['family']]
+                     for edge in net['edges']
+                     for src, dst in zip(edge['src'], edge['dst'])],
         'populations': [{'name': name, 'n': count, 'role': role, 'cell': cell,
                          'rate_hz': rate_snapshot.get(name, 0.)}
                         for name, count, cell, role in POPULATIONS],
